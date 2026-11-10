@@ -1,0 +1,392 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Engine and GeoIP downloads go through the release API with this token.
+# Anonymous requests share a 60-an-hour limit per runner address and are the
+# ones GitHub drops first when it is degraded (2026-11-08: timeouts for
+# unauthenticated users failed the gates three times). user-install.yml stays
+# anonymous on purpose: it is the user's path.
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both, deliberately. The release ledger is checked in and travels
+        # between a Windows checkout with autocrlf and a Linux one, and the
+        # first version of the publish gate refused a release on Linux over
+        # line endings alone. That regression is only visible on two runners.
+        os: [ubuntu-latest, windows-latest]
+        # Every version `requires-python = ">=3.11"` promises. Only 3.12
+        # ran until 2026-08-01, so three quarters of the floor was a claim
+        # nothing checked. test_marker_vocabulary.py compares the two.
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: arm the pre-push publish gate
+        # A fresh clone has no core.hooksPath, and tests/test_release_wiring.py
+        # says so. Do here what a developer does once.
+        run: python scripts/install_hooks.py
+
+      - name: undefined names and duplicate definitions
+        # F821 (undefined name) and F811 (redefinition) only. Not a style pass:
+        # these two are the rules that catch a name that cannot resolve, which
+        # `from __future__ import annotations` hides in an annotation and which
+        # a suite only finds if it happens to execute that line. Both bit on
+        # 2026-07-28 - a `throwaway_venv` used and imported nowhere took a
+        # user-install job red at RUNTIME, and six annotations named a type that
+        # was defined in no module at all.
+        #
+        # Zero violations in all three repos when this was added, so it is a
+        # gate rather than a cleanup backlog. Keep it that way.
+        run: |
+          python -m ruff check --select F821,F811,F601 --no-cache --output-format concise .
+      # -rs prints WHY anything skipped, so a skip is readable in the log
+      # instead of being indistinguishable from a pass.
+      - name: Run the suite
+        shell: bash
+        run: |
+          set -o pipefail   # or tee would swallow pytest's exit code
+          python -m pytest -q -rs | tee ci-report.txt
+
+      # A suite that deselected itself into a green tick is what this step
+      # exists to prevent, and pytest's exit code cannot distinguish it from a
+      # pass. Every consumer has had this guard since 2026-07-25 (both of them
+      # then - invisible_playwright and invisible_firefox, the latter deleted
+      # 2026-08-18); THIS repo, the one they pin, was the only one without it -
+      # the same asymmetry that left it as the only repo whose pre-push hook
+      # ran no tests at all.
+      #
+      # A FLOOR, not a target. The suite is ~805 after 322 tests moved in from
+      # the wrapper on 2026-07-27; 600 is far enough below to survive a
+      # legitimate removal and far enough above to catch a collapsed selection.
+      - name: Refuse a run in which nothing actually ran
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("ci-report.txt").read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          if passed < 600:
+              print(f"only {passed} test(s) ran (expected at least 600) - the "
+                    f"selection deselected the suite", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} tests ran")
+          PY
+
+  # THE ENGINE HAS TO START INSIDE THE HOST THE PRODUCT IS USED FROM. Claude
+  # Desktop on Windows is an MSIX package: files its processes write under
+  # AppData really land in the package's LocalCache, and an engine launched
+  # from the AppData path died with 14001 because Windows resolves `mozglue`
+  # where the file really is. Nobody could start the MCP server from Claude
+  # Desktop on Windows until core 34.30.0, and nothing here ever ran inside
+  # such a host (invisible_playwright discussion #256, issue #22). This job
+  # registers a minimal full-trust package and runs tests/msix/host_probe.py
+  # as its first process: download into a redirected cache, then launch. The
+  # probe also proves the bench is live - the old path must still fail with
+  # 14001 - and refuses as BENCH_NOT_LIVE when it is not, because a job that
+  # cannot fail is indistinguishable from one that passes. windows-2025 is
+  # build 26100, the one the report came from.
+  msix-host:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The BASE interpreter, never a venv: a venv's python.exe starts the base
+      # one as a child, and the child leaves the package.
+      - run: python -m pip install -e .
+      - name: register the probe package in developer mode
+        shell: pwsh
+        run: |
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense /t REG_DWORD /d 1 /f
+          $pkg = Join-Path $env:RUNNER_TEMP "msix-host"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item tests/msix/AppxManifest.xml $pkg
+          Copy-Item "$env:WINDIR\System32\cmd.exe" (Join-Path $pkg "probe.exe")
+          [IO.File]::WriteAllBytes((Join-Path $pkg "logo.png"), [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="))
+          Add-AppxPackage -Register (Join-Path $pkg "AppxManifest.xml")
+          $p = Get-AppxPackage -Name InvisibleCoreMsixHost
+          if (-not $p) { throw "the probe package did not register" }
+          "PFN=$($p.PackageFamilyName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: download and launch the engine inside the package
+        shell: pwsh
+        run: |
+          $py = (Get-Command python).Source
+          $out = Join-Path $env:RUNNER_TEMP "msix-probe.json"
+          $probe = (Resolve-Path tests/msix/host_probe.py).Path
+          Invoke-CommandInDesktopPackage -PackageFamilyName $env:PFN -AppId Probe -Command $py -Args "`"$probe`" `"$out`""
+          $deadline = (Get-Date).AddMinutes(20)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $out)) { Start-Sleep -Seconds 5 }
+          if (-not (Test-Path $out)) { throw "the probe wrote no verdict in 20 minutes" }
+          Get-Content $out
+          $verdict = (Get-Content $out -Raw | ConvertFrom-Json).verdict
+          if ($verdict -ne "PASS") { throw "msix-host verdict: $verdict" }
+
+  # THE PIN REPAIR, THROUGH THE INSTALLER THAT BUILT THE ENVIRONMENT. It runs
+  # from the first line of every client's `__init__`, and until 49.45.0 it had
+  # never worked in a venv uv made: it has no pip, so `python -m pip` died on
+  # `No module named pip` (the README's way in is uv). And on Windows a venv
+  # whose pip is 23.2.1 refused `--force-reinstall` with WinError 5 over a
+  # psutil the process had loaded (23.3.2 and later do not). Measured 2026-10-17;
+  # `tests/test_repair_through_the_installer_e2e.py` builds both venvs with this
+  # checkout's wheel, puts the pin one release off, and asserts the import
+  # repairs itself. uv comes from its own installer, the way the README's
+  # reader gets it.
+  repair-through-the-installer:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: uv, from its own installer (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: uv, from its own installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: the repair, in a venv uv built and in one pip built
+        shell: bash
+        run: |
+          set -o pipefail   # or tee would swallow pytest's exit code
+          python -m pytest tests/test_repair_through_the_installer_e2e.py -m e2e \
+            -o addopts="" -v -rs | tee repair-report.txt
+      # Both directions or nothing: a run where one of them skipped is the
+      # half that used to be broken going unasked.
+      - name: Refuse a run in which the two directions did not both run
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("repair-report.txt").read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          if passed < 3:
+              print(f"only {passed} of the 3 cases ran (uv, the seeded pip, "
+                    f"pip 23.2.1)", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} cases ran")
+          PY
+
+  # THE ARM64 WINDOWS HOST RUNS THE x86_64 ENGINE, AND THIS IS WHERE THAT IS
+  # MEASURED. `EMULATED_LEGS` in seal.py declares it; before 2026-09-25 an
+  # ARM64 Python - the one uv installs on Snapdragon laptops - was refused with
+  # "no asset for platform=win32 arch=arm64". The probe downloads the engine
+  # from an ARM64 interpreter and makes it start and render a page, and exits
+  # 2 (BENCH_NOT_LIVE) if the interpreter is not ARM64 after all.
+  arm64-host:
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - run: python -m pip install -e .
+      - name: an ARM64 Python gets the engine and the engine starts
+        run: python tests/arm64/host_probe.py
+
+  # ONE CONTEXT FOR THE BRANCH PROTECTION, and that is the reason this job
+  # exists. The protection used to list `tests (windows-latest)` and
+  # `tests (ubuntu-latest)`: real names when the matrix had only the operating
+  # system axis, and never emitted again once it gained the Python version axis.
+  # Measured 2026-08-13 on commit c5d7179 - GitHub received eight
+  # `tests (<os>, <ver>)` contexts and waited for two no job produces any more.
+  # Every push printed "2 of 2 required status checks are expected" and went
+  # through regardless, because enforce_admins was false: a decorative
+  # protection. It is the same shape as the defect this project has been
+  # recording for months, "a job that does not run is indistinguishable from a
+  # job that passes", applied to the protection instead of to the workflow.
+  #
+  # Listing the eight real names would have repaired it today and broken at the
+  # next matrix change, in exactly the same way. This job depends on the WHOLE
+  # matrix, so its name never changes: it is the only context to require.
+  #
+  # `if: always()` because without it a failed `needs` SKIPS this job instead of
+  # failing it - and a skipped context is not a red context, it is a context
+  # that never arrives. That would be the same hole, one floor up.
+  # THE BRANDING A PAGE READS IS THIS PACKAGE'S, so it is judged here. The
+  # engine serves branding/<set>/branding.zip, the archive the profile declares
+  # (zoom.stealth.branding.archive), and the official set must read, to a page, as
+  # the retail Firefox the seal claims: before this job the only comparison ran
+  # in the engine's release, so a release of this package that changed a file of
+  # the set was judged by nobody. The judge is the engine's own code, not a copy:
+  # scripts/stock_parity.py of the source commit the seal pins, with its
+  # observable(), against Mozilla's complete MAR of the sealed upstream version
+  # for every platform the seal ships.
+  branding-is-retail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: what the seal (or engine_port.json) pins
+        id: seal
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          seal = json.load(open("src/invisible_core/seal.json", encoding="utf-8"))
+          # The seal's (platform, arch) of each asset, in the names of
+          # archive.mozilla.org; an unknown pair is refused, never skipped.
+          mar = {("win32", "x86_64"): "win64", ("linux", "x86_64"): "linux-x86_64",
+                 ("linux", "arm64"): "linux-aarch64"}
+          pairs = sorted({(a["platform"], a["arch"]) for a in seal["assets"].values()})
+          unknown = [p for p in pairs if p not in mar]
+          if unknown:
+              raise SystemExit(f"the seal ships {unknown}, which have no retail MAR name here")
+          # During a port the branch serves a newer engine than the bundled seal
+          # pins: engine_port.json names it, and the branding must be that
+          # Firefox's (the 157 and 159 ports compared it with the seal's 151).
+          import os
+          pin = seal
+          if os.path.exists("engine_port.json"):
+              pin = json.load(open("engine_port.json", encoding="utf-8"))
+          print(f"source={pin['source_commit']}")
+          print(f"series={pin.get('series_commit') or ''}")
+          print(f"version={pin['upstream_version']}")
+          print("platforms=" + " ".join(mar[p] for p in pairs))
+          EOF
+      - name: the engine's page-surface gate, at the sealed commit
+        run: |
+          if [ -n "${{ steps.seal.outputs.series }}" ]; then
+            # A seal from the patch series: the sealed commit is the Mozilla tag with
+            # the series applied, on no remote. Rebuild it the way the engine's CI did.
+            git init -q series
+            git -C series fetch -q --depth 1 https://github.com/feder-cr/firefox_antidetect_patch "${{ steps.seal.outputs.series }}"
+            git -C series checkout -q FETCH_HEAD
+            python series/tools/engine.py materialize --into engine
+            test "$(git -C engine rev-parse HEAD)" = "${{ steps.seal.outputs.source }}" || {
+              echo "the series at ${{ steps.seal.outputs.series }} does not rebuild the sealed commit ${{ steps.seal.outputs.source }}"
+              exit 1; }
+          else
+          git init -q engine
+          cd engine
+          git remote add origin https://github.com/feder-cr/firefox_antidetect_patch
+          git sparse-checkout set --no-cone /scripts/ /python/mozbuild/
+          git fetch -q --depth 1 --filter=blob:none origin "${{ steps.seal.outputs.source }}"
+          git checkout -q FETCH_HEAD
+          cd ..
+          fi
+          cd engine
+          grep -qs "^def judge_branding" scripts/stock_parity.py || {
+            echo "the engine the seal pins (${{ steps.seal.outputs.source }}) predates the declared branding (P60): its gate cannot judge this set"
+            exit 1; }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/stealth-retail
+          key: retail-mar-${{ steps.seal.outputs.version }}
+      - name: the official set reads as the retail
+        run: |
+          python engine/scripts/stock_parity.py --branding-against-retail \
+            src/invisible_core/branding/official/branding.zip \
+            "${{ steps.seal.outputs.version }}" ${{ steps.seal.outputs.platforms }}
+
+  # A DEFAULT TEST REACHES NOTHING OUTSIDE THIS PROCESS, CHILDREN INCLUDED
+  # ([B345]). invisible_core.testing.world refuses the engine, a display and the
+  # network inside the pytest interpreter, and a child process is out of its
+  # sight. This runs the default selection with nothing outside to reach: a
+  # network namespace with only loopback, an empty engine store and cache, no
+  # display. A default test whose child reaches the world fails here instead of
+  # on the machine of whoever pushes. No fallback: if the namespace cannot be
+  # made, or the network still answers inside it, the job is red and says so,
+  # because a run with the network on would be a green that checked nothing.
+  default-selection-stays-inside:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: arm the pre-push publish gate
+        # As in `tests`: tests/test_release_wiring.py refuses an unarmed clone.
+        run: python scripts/install_hooks.py
+      - name: the default selection, with nothing outside this process
+        shell: bash
+        run: |
+          set -o pipefail   # or tee would swallow pytest's exit code
+          # An empty HOME, so the default engine store and cache are empty
+          # without an override: the suite tests those defaults itself.
+          empty="$(mktemp -d)"
+          sudo unshare --net -- bash -c '
+            set -e
+            ip link set lo up
+            if python3 -c "import socket; socket.create_connection((\"pypi.org\", 443), timeout=5)" 2>/dev/null; then
+              echo "the network still answers inside the namespace: this would check nothing" >&2
+              exit 3
+            fi
+            exec sudo -u "$1" env -u DISPLAY PATH="$2" HOME="$3" \
+              python -m pytest -q -rs
+          ' _ "$USER" "$PATH" "$empty" | tee deprived-report.txt
+      - name: Refuse a run in which nothing actually ran
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path("deprived-report.txt").read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          if passed < 600:
+              print(f"only {passed} test(s) ran (expected at least 600)", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} tests ran with nothing outside the process")
+          PY
+
+  gate:
+    needs: [tests, msix-host, arm64-host, branding-is-retail, repair-through-the-installer,
+            default-selection-stays-inside]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: refuse unless every matrix job succeeded
+        run: |
+          echo "tests: ${{ needs.tests.result }}"
+          echo "msix-host: ${{ needs.msix-host.result }}"
+          echo "arm64-host: ${{ needs.arm64-host.result }}"
+          echo "branding-is-retail: ${{ needs.branding-is-retail.result }}"
+          echo "repair-through-the-installer: ${{ needs.repair-through-the-installer.result }}"
+          echo "default-selection-stays-inside: ${{ needs.default-selection-stays-inside.result }}"
+          test "${{ needs.tests.result }}" = "success"
+          test "${{ needs.msix-host.result }}" = "success"
+          test "${{ needs.arm64-host.result }}" = "success"
+          test "${{ needs.branding-is-retail.result }}" = "success"
+          test "${{ needs.repair-through-the-installer.result }}" = "success"
+          test "${{ needs.default-selection-stays-inside.result }}" = "success"

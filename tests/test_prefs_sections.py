@@ -1,0 +1,314 @@
+"""The prefs pipeline: each section on its own, and the ORDER between them.
+
+`translate_profile_to_prefs` was 203 lines - every spoof this project ships
+leaves through that one dict. It is fourteen named steps now, and this file
+covers what the split makes reachable: each section in isolation, and the two
+ordering rules that are a contract rather than an accident.
+
+THE SPLIT ITSELF was verified by recording the output first (the lesson from
+2026-07-26 section 5, where splitting a stream generator changed it twice
+through float multiplication not being associative). 400 profiles across four
+locales, four timezones, three overlay shapes and both `virtual_display` values,
+hashed before and after: identical. `test_prefs.py` next door still covers the
+whole dict; this covers the seams the split created.
+"""
+from __future__ import annotations
+
+import sys
+
+import pytest
+
+from invisible_core import prefs as P
+from invisible_core._fpforge import generate_profile
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.fixture()
+def profile():
+    return generate_profile(42)
+
+
+# ------------------------------------------------------- the ordering rules
+
+def test_the_caller_overlay_can_override_anything_the_pipeline_set(profile):
+    """It runs LAST, and that is the contract the argument is documented with."""
+    plain = P.translate_profile_to_prefs(profile, timezone="America/New_York")
+    key = "zoom.stealth.hw_concurrency"
+    assert key in plain
+    got = P.translate_profile_to_prefs(profile, extra_prefs={key: 999}, timezone="America/New_York")
+    assert got[key] == 999
+
+
+def test_the_caller_overlay_can_delete_a_pref_entirely(profile):
+    """`None` is a sentinel meaning "remove this key", which is different from
+    setting it to "" - for `general.useragent.override` an empty string means a
+    literally empty UA."""
+    key = "zoom.stealth.hw_concurrency"
+    got = P.translate_profile_to_prefs(profile, extra_prefs={key: None}, timezone="America/New_York")
+    assert key not in got
+
+
+@pytest.mark.parametrize("platform,table", [
+    ("linux", "_LINUX_XVFB_WORKAROUNDS"),
+    ("win32", "_WIN_VIRT_DESKTOP_WORKAROUNDS"),
+])
+def test_the_platform_workarounds_never_take_a_choice_away(
+        monkeypatch, platform, table):
+    """`setdefault`, so a section above always wins. Anything else and a
+    workaround silently overrides a sampled value on one platform only - a bug
+    that reproduces on one developer's machine and nowhere else.
+
+    BOTH branches, with the platform patched. The first version of this ran on
+    the host platform only, and a mutation flipping the LINUX branch to plain
+    assignment SURVIVED the whole suite on Windows - the exact "reproduces
+    nowhere you are looking" shape the test is about. Measured: with
+    `sys.platform` left alone, 1 of the 2 mutations was caught; patched, both.
+    """
+    monkeypatch.setattr(P.sys, "platform", platform)
+    sentinel = object()
+    prefs = {key: sentinel for key in getattr(P, table)}
+    assert prefs, f"{table} is empty; this test would pass over nothing"
+
+    P._apply_platform_workarounds(prefs, virtual_display=True)
+
+    assert all(v is sentinel for v in prefs.values()), (
+        f"a {platform} workaround overwrote a value the pipeline had already "
+        f"chosen")
+
+    # And it DOES apply them when nothing chose first, or the parametrisation
+    # above would pass against a function that does nothing at all.
+    fresh = {}
+    P._apply_platform_workarounds(fresh, virtual_display=True)
+    assert set(fresh) == set(getattr(P, table))
+
+
+def test_the_pipeline_runs_the_overlay_last():
+    """Read off the source, because the property is the ORDER and the order is
+    only visible as a sequence of calls."""
+    import ast
+    import inspect
+
+    src = inspect.getsource(P.translate_profile_to_prefs)
+    tree = ast.parse(src.lstrip())
+    calls = [n.func.id for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id.startswith("_apply_")]
+    assert calls[-1] == "_apply_caller_overlay", (
+        f"the caller overlay is not last; the pipeline ends with {calls[-1]!r}, "
+        f"so a user override can be silently overwritten by whatever follows it")
+    assert calls[-2] == "_apply_platform_workarounds"
+    assert calls[0] == "_apply_gpu_persona", (
+        "the persona must be applied first: _apply_extension_lists is told "
+        "whether one was, and everything else may overwrite what it set")
+
+
+# ------------------------------------------------------------ the sections
+
+def test_a_persona_suppresses_the_extension_clearing(profile):
+    """With a persona the coherent extension lists were already applied; with
+    none, they are cleared so the host-real renderer reports its native set. The
+    two are the same decision seen from two ends, which is why the persona is
+    passed along rather than recomputed."""
+    if sys.platform.startswith("linux"):
+        pytest.skip("the extension clearing is a Windows/mac path")
+    with_persona = {}
+    P._apply_extension_lists(with_persona, persona={"prefs": {}})
+    assert with_persona == {}
+
+    without = {}
+    P._apply_extension_lists(without, persona=None)
+    assert without == {"zoom.stealth.webgl.extensions": "",
+                       "zoom.stealth.webgl2.extensions": ""}
+
+
+def _locale_prefs(tag):
+    """`_apply_locale` takes the DECISION since 36.x, never a raw tag."""
+    from invisible_core._locale import decide_session_locale
+
+    prefs = {}
+    P._apply_locale(prefs, decide_session_locale(tag))
+    return prefs
+
+
+def test_the_locale_defaults_to_en_US_and_normalises_underscores():
+    # `general.useragent.locale` was asserted here beside intl.locale.requested
+    # until 49.46.0, when the pref was found read by nothing in the pinned
+    # engine and removed (tests/test_pref_types.py); the requested locale is
+    # the pref that carries this value.
+    assert _locale_prefs("")["intl.locale.requested"] == "en-US"
+    assert "general.useragent.locale" not in _locale_prefs("it_IT")
+
+    prefs = _locale_prefs("it_IT")
+    assert prefs["intl.locale.requested"] == "it-IT"
+
+
+def test_the_locale_override_carries_the_whole_accept_language_list():
+    """The override carries the WHOLE LIST, the same one as intl.accept_languages.
+
+    This test used to assert `.startswith("fr-FR")` and the docstring promised
+    "navigator.languages stays the desktop's two default elements". Both were
+    wrong, and for the same reason corrected on 2026-08-19: the engine's table
+    maps the language `fr` to "fr, fr-FR", that is, it puts the BARE tag first,
+    and then appends ", en-US, en". Asking for `fr-FR` does not produce a list
+    starting with `fr-FR`.
+
+    The invariant this test defends is that the override and the pref are THE
+    SAME STRING: two names for one value, and the day they diverge
+    navigator.languages and the header say different things.
+
+    ⛔ AND THE TAG-SHAPED PREFS ARE THE LIST'S FIRST ENTRY, since 36.x. Until
+    then this test asserted they stayed "fr-FR", the requested tag, which was
+    the contradiction itself: a page read "fr" from navigator.language while
+    the locale prefs said fr-FR. A French Firefox build's locale is "fr", so
+    the first entry is also the faithful value.
+
+    ⛔ AND SINCE 36.33.0 AN EXPLICIT TAG IS THAT FIRST ENTRY: Playwright's
+    contract is that ``locale`` IS navigator.language, so "fr-FR" goes first
+    and the table gives the tail ("fr-FR, fr, en-US, en"). The invariant above
+    is untouched: one value, every name.
+    """
+    prefs = _locale_prefs("fr-FR")
+    assert prefs["juggler.locale.override"] == prefs["intl.accept_languages"]
+    assert prefs["juggler.locale.override"] == "fr-FR, fr, en-US, en"
+    assert prefs["intl.locale.requested"] == "fr-FR"
+
+
+@pytest.mark.unit
+def test_the_primary_tag_of_the_list_is_what_every_tag_shaped_pref_says():
+    """The case this test pinned is now DECIDED, and the decision is read here.
+
+    `BrowsingContext`'s DidSet takes the PRIMARY TAG of the override to fix
+    Intl's default locale, and with the real table that tag does not always
+    coincide with the requested locale:
+
+        requested it-IT -> list "it-IT, it, en-US, en" -> primary it-IT
+        requested fr-FR -> list "fr, fr-FR, en-US, en" -> primary fr
+        requested en-AU -> list "en-US, en"            -> primary en-US
+
+    (that was the table taken whole, until 36.32.x; since 36.33.0 the
+    requested tag goes first and the table gives the tail, so the primary IS
+    the requested tag)
+
+    Until 36.x this test was named "the primary tag of the list is not always
+    the requested locale" and asserted that `intl.locale.requested` DIFFERED
+    from the primary for fr-FR, leaving the remedy open. The remedy went into
+    the core's one language decision (`decide_session_locale`): every
+    tag-shaped value is the primary, so navigator.language, Intl and the
+    locale prefs give one answer.
+    """
+    for tag, primary in (("it-IT", "it-IT"), ("fr-FR", "fr-FR"), ("en-AU", "en-AU")):
+        prefs = _locale_prefs(tag)
+        first = prefs["juggler.locale.override"].split(",")[0].strip()
+        assert first == primary, tag
+        assert prefs["intl.locale.requested"] == first, tag
+
+
+def test_no_timezone_is_refused_and_never_written_empty():
+    """Until 49.46.0 this was `test_no_timezone_writes_no_timezone_pref`: an
+    empty zone left the pref ABSENT, and an absent override is the host's zone.
+    The owner's rule of 2026-10-17 (28-valori-dell-host.md A16) makes the zone
+    always declared, so an empty one is refused; what still holds from the old
+    test is that "" is never written as a value."""
+    prefs = {}
+    with pytest.raises(ValueError):
+        P._apply_timezone(prefs, "")
+    assert "juggler.timezone.override" not in prefs
+    P._apply_timezone(prefs, " Europe/Rome ")
+    assert prefs["juggler.timezone.override"] == "Europe/Rome"
+
+
+@pytest.mark.parametrize("zone, hint", [
+    ("america/phoenix", "America/Phoenix"),
+    ("Mars/Phobos", None),
+    ("+05:00", None),
+])
+def test_a_zone_the_engine_cannot_open_is_refused(zone, hint):
+    """A: the code was wrong. An explicit zone reached the pref unchecked,
+    and the engine's ICU opens only the exact IANA spelling: SpiderMonkey
+    resolves anything else to the MACHINE's zone, in silence
+    (js/src/vm/DateTime.cpp). The known-bad inputs are a wrong case, a name
+    that is no zone, and an offset Intl accepts but ICU does not open by name;
+    before this, all three were written as the session's zone."""
+    prefs = {}
+    with pytest.raises(ValueError, match="not an IANA zone") as err:
+        P._apply_timezone(prefs, zone)
+    assert "juggler.timezone.override" not in prefs
+    if hint:
+        assert repr(hint) in str(err.value), "the right spelling is not offered"
+    P._apply_timezone(prefs, "America/Phoenix")
+    assert prefs["juggler.timezone.override"] == "America/Phoenix"
+
+
+def test_the_webrtc_host_ip_is_seed_derived_and_looks_like_a_home_router(profile):
+    import ipaddress
+
+    seen = set()
+    for seed in range(200):
+        prefs = {}
+        P._apply_webrtc_host_ip(prefs, generate_profile(seed))
+        ip = prefs["zoom.stealth.webrtc.host_ip"]
+        addr = ipaddress.IPv4Address(ip)
+        assert addr in ipaddress.IPv4Network("192.168.0.0/16"), ip
+        # Neither octet may be 0 or 255: a synthetic candidate on a network or
+        # broadcast address is not a host address a real router hands out.
+        a, b = ip.split(".")[2:]
+        assert 1 <= int(a) <= 254 and 1 <= int(b) <= 254, ip
+        seen.add(ip)
+    assert len(seen) > 150, f"only {len(seen)} distinct LAN IPs across 200 seeds"
+
+
+def test_the_same_seed_gives_the_same_host_ip(profile):
+    a, b = {}, {}
+    P._apply_webrtc_host_ip(a, profile)
+    P._apply_webrtc_host_ip(b, generate_profile(42))
+    assert a == b, "the synthetic ICE candidate must be stable per session"
+
+
+def test_the_theme_moves_the_os_flag_and_not_the_palette(profile):
+    """Until 49.46.0 this was `test_a_light_theme_brings_the_windows_colour_palette`
+    and asserted that a dark theme brought NO palette - the host's colours on
+    both schemes. Both schemes' tables now go to every persona (A4 of
+    28-valori-dell-host.md); the theme decides only what the OS says it is."""
+    from invisible_core._fpforge.palette import _WIN_DARK_COLORS, _WIN_LIGHT_COLORS
+
+    dark, light = {}, {}
+    P._apply_theme(dark, generate_profile(42, pin={"dark_theme": True}))
+    assert dark["ui.systemUsesDarkTheme"] == 1
+
+    P._apply_theme(light, generate_profile(42, pin={"dark_theme": False}))
+    assert light["ui.systemUsesDarkTheme"] == 0
+    palette = set(_WIN_LIGHT_COLORS) | set(_WIN_DARK_COLORS)
+    assert palette <= set(dark) and palette <= set(light)
+    assert {k: dark[k] for k in palette} == {k: light[k] for k in palette}
+
+
+def test_the_codec_prefs_use_names_the_binary_actually_reads(profile):
+    """`media.mediasource.{webm,mp4}.enabled` do not exist in Firefox. Setting a
+    name the binary never reads is a no-op, and the per-seed codec diversity it
+    was meant to produce was fictional - every identity reported the same codec
+    surface."""
+    prefs = {}
+    P._apply_codecs(prefs, profile)
+    assert "media.webm.enabled" in prefs and "media.mp4.enabled" in prefs
+    assert not any("mediasource" in k for k in prefs), sorted(prefs)
+
+
+def test_uploading_a_real_file_is_allowed_by_the_parent_process(profile):
+    """⛔ WITHOUT THIS PREF NO UPLOAD WORKS, AND THE ERROR NAMES NOTHING.
+
+    `set_input_files()` and `FileChooser.set_files()` both end in
+    `File.createFromFileName` inside the content process, and the parent
+    refuses that for any content process whose remote type is not `file`,
+    answering `NS_ERROR_DOM_INVALID_STATE_ERR`. What the caller reads is
+    `An attempt was made to use an object that is not, or is no longer,
+    usable`, which points at no file, no API and no pref.
+
+    Asserted on the WHOLE dict rather than on a section function, because this
+    one has no section of its own: it is a launch-wide capability, and the test
+    that matters is that every session gets it - not that some helper emits it.
+    """
+    prefs = P.translate_profile_to_prefs(profile, timezone="America/New_York")
+    assert prefs.get("dom.file.createInChild") is True, (
+        "without dom.file.createInChild every file upload fails with an "
+        "InvalidStateError that names nothing: see [B178]")

@@ -1,0 +1,636 @@
+"""What `translate_profile_to_prefs` actually emits.
+
+THIS FUNCTION HAD NO TEST. Measured before writing this file: `prefs.py` sat at
+15% statement coverage and `translate_profile_to_prefs` executed zero lines in
+the whole suite - its only appearance was a `monkeypatch.setattr` replacing it
+(`tests/test_launch.py:28`). Every `zoom.stealth.*` pref the patched binary
+reads is produced here, so the body could be replaced with `return {}` and the
+suite stayed green while shipping a browser with no spoofing at all.
+
+Two failures had already happened behind that gap, both found by reading the
+Firefox source rather than by any test:
+
+  * `media.mediasource.{webm,mp4}.enabled` are not Firefox pref names. They are
+    absent from `modules/libpref/init/StaticPrefList.yaml`, so the per-seed
+    codec sampling was inert and every identity reported the same codec surface
+    - an invariant across the fleet, which is the opposite of the intent;
+  * `zoom.stealth.screen.avail_{width,height}` are undeclared AND ignored:
+    `nsScreen::GetAvailRect` derives the available rect from
+    `zoom_stealth_screen_width/height` minus a fixed taskbar.
+
+So the tests here are about NAMES and REACHABILITY, not about values. A pref
+whose name the binary does not read is indistinguishable, from Python, from one
+that works perfectly.
+"""
+from __future__ import annotations
+
+import pytest
+
+from invisible_core._fpforge import generate_profile
+from invisible_core.prefs import translate_profile_to_prefs
+
+pytestmark = pytest.mark.unit
+
+
+def _prefs(seed: int = 42, **kw):
+    kw.setdefault("timezone", "America/New_York")
+    return translate_profile_to_prefs(generate_profile(seed), **kw)
+
+
+# ── the function runs at all, and produces the surface it claims ────────────
+
+def test_it_emits_the_stealth_namespace_rather_than_an_empty_dict():
+    prefs = _prefs()
+    stealth = [k for k in prefs if k.startswith("zoom.stealth.")]
+    assert len(stealth) >= 20, (
+        f"only {len(stealth)} zoom.stealth.* prefs emitted: {sorted(stealth)}")
+
+
+@pytest.mark.parametrize("name", [
+    # One per subsystem the binary gates on. If any of these stops being
+    # emitted, that spoof is silently off and nothing else in the suite knows.
+    "zoom.stealth.screen.width",
+    "zoom.stealth.screen.height",
+    "zoom.stealth.webgl.renderer",
+    "zoom.stealth.webgl.vendor",
+    "zoom.stealth.fpp.hw_seed",
+    "zoom.stealth.audio.max_channel_count",
+    "general.platform.override",
+    "general.useragent.override",
+])
+def test_the_load_bearing_prefs_are_present(name):
+    assert name in _prefs(), f"{name} is no longer emitted"
+
+
+def test_the_codec_prefs_use_names_firefox_actually_declares():
+    """The bug this file was written after.
+
+    `media.mediasource.webm.enabled` / `.mp4.enabled` do not exist in Firefox,
+    so setting them did nothing and the sampled codec diversity never reached a
+    page. The real switches are `media.webm.enabled` / `media.mp4.enabled`.
+    """
+    prefs = _prefs()
+    assert "media.webm.enabled" in prefs
+    assert "media.mp4.enabled" in prefs
+    for dead in ("media.mediasource.webm.enabled", "media.mediasource.mp4.enabled"):
+        assert dead not in prefs, (
+            f"{dead} is back; it is not a Firefox pref name and setting it is a "
+            f"no-op that reads exactly like a working spoof")
+
+
+def test_the_undeclared_screen_prefs_stay_out():
+    """`nsScreen::GetAvailRect` ignores these and derives the rect from
+    screen.width/height. Emitting them costs nothing but implies a control that
+    does not exist, which is how they survived unnoticed."""
+    prefs = _prefs()
+    for dead in ("zoom.stealth.screen.avail_width", "zoom.stealth.screen.avail_height"):
+        assert dead not in prefs, f"{dead} is back and the binary does not read it"
+
+
+# ── the property the whole product rests on ────────────────────────────────
+
+def test_the_same_seed_produces_byte_identical_prefs():
+    """Seed reproducibility, asserted on the SHIPPED prefs rather than on the
+    profile object. Callers rely on it, and the gate that covers it
+    (`fppro_consistency.py`) lives in the workbench and needs a browser - so
+    inside this package nothing asserted it at all."""
+    assert _prefs(7) == _prefs(7)
+
+
+def test_two_seeds_differ_in_the_fields_that_identify_a_machine():
+    """Otherwise every install ships one identity, which is worse than none."""
+    a, b = _prefs(1), _prefs(2)
+    differing = {k for k in a if a[k] != b.get(k)}
+    assert differing, "two seeds produced identical prefs"
+    assert any(k.startswith("zoom.stealth.webgl.") for k in differing), (
+        f"the GPU persona did not move between seeds: {sorted(differing)[:8]}")
+
+
+# ── cross-check against the real Firefox source, where it is available ──────
+#
+# READ AT THE COMMIT THE PINNED ENGINE WAS BUILT FROM (the seal's
+# `source_commit`), not in whatever a working tree has checked out: see
+# `tests/_engine_source.py` for why, and for the day the working tree's answer
+# refused a release.
+
+from _engine_source import EngineSource  # noqa: E402
+
+_SOURCE = EngineSource.pinned()
+
+#: Where a pref literal can live.
+_SOURCE_GLOBS = ("*.cpp", "*.h", "*.js", "*.jsm", "*.mjs", "*.yaml", "*.idl")
+
+_PREF_LITERAL = r"zoom[._]stealth[._][A-Za-z0-9_.]+"
+
+
+def _normalise(hits) -> set[str]:
+    """C++ StaticPrefs mangles dots to underscores; keep both spellings."""
+    found: set[str] = set()
+    for hit in hits:
+        found.add(hit.replace("_stealth_", ".stealth.").replace("zoom_", "zoom."))
+        found.add(hit)
+    return found
+
+
+def _names_the_binary_reads(source: EngineSource = _SOURCE) -> set[str] | None:
+    """Every `zoom.stealth.*` string literal in the engine's source, or None.
+
+    NOT just StaticPrefList.yaml. A pref read from JS with
+    `getBoolPref(name, default)` needs no static declaration and works fine -
+    the first version of this check used the yaml alone and flagged
+    `zoom.stealth.debugger.force_detach`, which devtools/server/actors/thread.js
+    reads perfectly well. Searching for the literal is the honest definition of
+    "the binary reads this".
+
+    `git grep` and not a walk of the files: on the workbench the tree is 412,691
+    files, and walking them from Python took 189 s warm and over ten minutes cold
+    (measured 2026-07-28), in the suite the pre-push hook runs. And at a commit
+    there is nothing to walk - the files are objects, not a checkout.
+
+    ⛔ None, never an empty set, when the search found nothing: the commit is a
+    Firefox tree, so no literal at all means the invocation is wrong - a glob
+    typo, a git that spells a flag differently - and an empty set would report
+    every emitted pref as dead.
+    """
+    out = source.grep(_PREF_LITERAL, _SOURCE_GLOBS)
+    if not out or not out.strip():
+        return None
+    return _normalise(out.split())
+
+
+@pytest.mark.skipif(_SOURCE.unavailable() is not None,
+                    reason=_SOURCE.unavailable() or "")
+def test_every_stealth_pref_emitted_is_one_the_binary_reads():
+    """The check that would have caught every dead-pref bug at the source.
+
+    A `zoom.stealth.*` name the binary never reads is a spoof that silently
+    does nothing, and from Python the two are indistinguishable. Four had
+    already shipped that way: the two codec names, and screen.dpr and
+    webgl.msaa, which appear in NO file of the tree at all.
+    """
+    readable = _names_the_binary_reads()
+    assert readable, (
+        f"the search found no pref literals at {_SOURCE.commit} in {_SOURCE.repo}: "
+        "the invocation is wrong, not the engine")
+    emitted = {k for k in _prefs() if k.startswith("zoom.stealth.")}
+    missing = sorted(k for k in emitted if k not in readable
+                     and k.replace(".", "_") not in readable)
+    assert not missing, (
+        "these prefs are emitted but appear nowhere in the source of the engine "
+        f"the seal pins ({_SOURCE.commit}), so they are no-ops that look like "
+        f"working spoofs: {missing}")
+
+
+@pytest.mark.skipif(_SOURCE.unavailable() is not None,
+                    reason=_SOURCE.unavailable() or "")
+def test_the_cross_check_would_actually_report_a_dead_pref():
+    """Its known-bad input, and the reason it needs one.
+
+    The check above passes when nothing is wrong, which is also what it does if
+    `_names_the_binary_reads()` returns everything, so "the search is too
+    generous" is a way for this gate to go quietly vacuous. A fabricated name
+    must come back absent, and the real ones present, or the search is answering
+    the wrong question.
+    """
+    readable = _names_the_binary_reads()
+    assert readable, "the search found no pref literals at all in the engine tree"
+    invented = "zoom.stealth.this_pref_was_invented_by_a_test"
+    assert invented not in readable, (
+        "a name that exists nowhere in the engine was reported as readable, so "
+        "the cross-check cannot fail and every emitted pref looks alive")
+    # And a spot-check in the other direction: hw_seed is read from three C++
+    # sites, so a search that misses it is missing real reads.
+    assert ("zoom.stealth.fpp.hw_seed" in readable
+            or "zoom_stealth_fpp_hw_seed" in readable), (
+        "the search missed zoom.stealth.fpp.hw_seed, which three C++ sites read; "
+        "it is under-reporting, and every pref will look dead")
+
+
+def _one_commit_repo(tmp_path, name: str, files: dict) -> EngineSource:
+    """A throwaway repository with one commit, read the way the engine is."""
+    import subprocess
+
+    repo = tmp_path / name
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+           "-c", "commit.gpgsign=false"]
+    subprocess.run(git[:3] + ["init", "-q"], check=True)
+    for rel, text in files.items():
+        (repo / rel).write_bytes(text.encode("utf-8"))
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "one"], check=True)
+    sha = subprocess.run(git[:3] + ["rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True).stdout.strip()
+    return EngineSource(repo, sha)
+
+
+def test_the_search_refuses_an_empty_answer_instead_of_returning_one(tmp_path):
+    """An empty result must come back as None, never as "nothing is read".
+
+    A git invocation that stops matching exits 0 or 1 with no output.
+    Returning that empty set makes EVERY emitted pref look dead, which is a wall
+    of false failures; the shape to avoid is the opposite one, where an empty set
+    is treated as a clean answer. Either way the caller must not receive it.
+    """
+    source = _one_commit_repo(tmp_path, "empty-tree",
+                              {"nothing.cpp": "int main() { return 0; }\n"})
+    assert source.unavailable() is None
+    assert _names_the_binary_reads(source) is None, (
+        "a tree with no pref literals produced a non-None result; the caller "
+        "would use it as the readable set and report every pref as dead")
+
+
+def test_the_search_reads_the_commit_and_not_the_checkout(tmp_path):
+    """The positive half, and the property the whole change is for: a literal
+    committed is found, and one that exists only in the working tree is not."""
+    source = _one_commit_repo(tmp_path, "one-hit", {
+        "probe.cpp": 'Preferences::GetBool("zoom.stealth.fpp.hw_seed", false);\n'})
+    (source.repo / "later.cpp").write_bytes(
+        b'Preferences::GetBool("zoom.stealth.only.in.the.checkout", false);\n')
+    found = _names_the_binary_reads(source)
+    assert found and "zoom.stealth.fpp.hw_seed" in found, found
+    assert "zoom.stealth.only.in.the.checkout" not in found, (
+        "an uncommitted file was read: the search is looking at the checkout, "
+        "which is the tree another session may have left anywhere")
+
+
+def test_a_commit_the_repository_does_not_have_is_a_skip_reason(tmp_path):
+    """Not a red and not a silent green: a reason that names the commit."""
+    source = _one_commit_repo(tmp_path, "other", {"a.cpp": "int a;\n"})
+    missing = EngineSource(source.repo, "0" * 40)
+    reason = missing.unavailable()
+    assert reason and "0" * 40 in reason and "fetch" in reason, reason
+
+
+# ── hw_seed doubles as an off-switch, so it must never be zero ──────────────
+
+def test_no_seed_ever_produces_a_zero_hardware_seed():
+    """`zoom.stealth.fpp.hw_seed` is not only a seed - it is a gate.
+
+    Three C++ sites read it and act only when it is > 0: maxTouchPoints
+    (Navigator.cpp), pointer/hover (nsMediaFeatures.cpp) and the audio noise
+    (AnalyserNode.cpp). A session whose value is 0 therefore keeps a clean
+    render hash AND silently reverts to the host's real touch, pointer and
+    audio behaviour - on touch-capable Windows hardware, a capability appearing
+    where the persona says there is none.
+
+    0 used to be in CLEAN_RENDER_SEEDS because it is genuinely clean for the
+    render hash. Measured before it was removed: 223 of 2000 seeds, 11.2% of
+    identities. A value cannot be both a seed and an off-switch.
+    """
+    from invisible_core._webgl_personas import CLEAN_RENDER_SEEDS, render_noise_seed
+
+    # The pool length is part of the contract too: render_noise_seed indexes
+    # with `% len(...)`, so changing the LENGTH remaps every identity. The
+    # first fix removed 0 outright and moved 445 of 500 seeds - an 89% change
+    # in canvas render hash to repair an 11% defect. Replacing the slot keeps
+    # every other index where it was.
+    assert len(CLEAN_RENDER_SEEDS) == 9, (
+        f"the pool is {len(CLEAN_RENDER_SEEDS)} long, not 9; changing the "
+        f"length remaps every seed's render hash, not just the broken ones")
+    assert 0 not in CLEAN_RENDER_SEEDS, (
+        "0 is back in the pool; every seed mapping to it loses touch, pointer "
+        "and audio spoofing while looking perfectly configured")
+    zeros = [s for s in range(3000) if render_noise_seed(s) == 0]
+    assert not zeros, f"{len(zeros)} seeds still produce hw_seed 0, e.g. {zeros[:5]}"
+
+
+def test_the_emitted_hardware_seed_is_positive_for_every_seed():
+    """Asserted on the PREF, not on the pool, so a future indirection that
+    reintroduces zero on the way out is caught too."""
+    for seed in (0, 1, 42, 777, 123456):
+        value = _prefs(seed)["zoom.stealth.fpp.hw_seed"]
+        assert isinstance(value, int) and value > 0, (
+            f"seed {seed} emits hw_seed {value!r}; the C++ guards read that as "
+            f"'spoofing off' for touch, pointer and audio")
+
+
+def test_the_pool_still_offers_real_per_session_diversity():
+    """Removing a value must not collapse the pool to something that stops
+    separating sessions."""
+    from invisible_core._webgl_personas import render_noise_seed
+
+    seen = {render_noise_seed(s) for s in range(3000)}
+    assert len(seen) >= 6, f"only {len(seen)} distinct hardware seeds: {sorted(seen)}"
+
+
+# ── the Windows system-font surface (a Profile field, not a constant) ───────
+#
+# `font: menu` and friends resolve through ui.font.*, and nsXPLookAndFeel tries
+# those prefs BEFORE asking the platform. With them absent Gecko answers from
+# its own per-OS defaults, which in the Unix block name "Sans" at 13.3333px - a
+# family no Windows machine has, on a build whose every other signal says
+# Windows. Measured 2026-08-07: that one disagreement drove the studied system to
+# tampering=True on Linux with Windows clean, same seed and same IP.
+
+_UI_ELEMENTS = (
+    "caption", "icon", "menu", "message-box", "small-caption", "status-bar",
+    "-moz-pull-down-menu", "-moz-button", "-moz-list", "-moz-field",
+)
+_MONO_LANGS = ("ar", "el", "he", "x-cyrillic", "x-unicode", "x-western")
+
+
+def test_every_system_font_element_is_emitted():
+    prefs = _prefs()
+    missing = [f"ui.font.{e}" for e in _UI_ELEMENTS if f"ui.font.{e}" not in prefs]
+    assert not missing, f"system-font prefs not emitted: {missing}"
+    missing_sizes = [f"ui.font.{e}.size" for e in _UI_ELEMENTS
+                     if f"ui.font.{e}.size" not in prefs]
+    assert not missing_sizes, f"sizes not emitted: {missing_sizes}"
+
+
+def test_the_ui_font_sizes_are_strings_because_gecko_parses_float_prefs_from_text():
+    """The type IS the behaviour here, which is why it gets its own test.
+
+    Preferences::GetFloat reads a float pref from its STRING form. Declared as
+    a bare int the pref does not fail and does not warn - it is ignored, and
+    the UI silently falls back to StyleFONT_MEDIUM_PX (16px). A page reading
+    `getComputedStyle(el).fontSize` after `el.style.font = "menu"` sees 16px
+    where Windows says 12px. Nothing else in the suite would notice.
+    """
+    prefs = _prefs()
+    for element in _UI_ELEMENTS:
+        value = prefs[f"ui.font.{element}.size"]
+        assert isinstance(value, str), (
+            f"ui.font.{element}.size is {type(value).__name__} {value!r}; it "
+            f"must be a string or Preferences::GetFloat ignores it")
+        assert value.strip() and float(value) > 0
+
+
+def test_the_monospace_default_size_is_an_int_and_is_the_windows_13():
+    prefs = _prefs()
+    for lang in _MONO_LANGS:
+        value = prefs[f"font.size.monospace.{lang}"]
+        assert isinstance(value, int) and not isinstance(value, bool), (
+            f"font.size.monospace.{lang} is {type(value).__name__}")
+        assert value == 13, (
+            f"font.size.monospace.{lang} is {value}; Firefox ships 13 on "
+            f"Windows and 12 in its Unix block, and we always claim Windows")
+
+
+def test_the_ui_font_family_is_never_a_host_derived_name():
+    """The specific failure this exists for: "Sans".
+
+    Any name that is not a real Windows family is a tell, but "Sans" is the one
+    that actually shipped - it is what fontconfig answers, and it reached a
+    page through `font: menu` on every Linux run before 2026-08-07.
+    """
+    prefs = _prefs()
+    forbidden = {"sans", "sans-serif", "serif", "monospace", "system-ui", ""}
+    for element in _UI_ELEMENTS:
+        family = prefs[f"ui.font.{element}"]
+        assert family.strip().lower() not in forbidden, (
+            f"ui.font.{element} = {family!r} is a generic or host-derived name")
+
+
+def test_the_font_surface_does_not_vary_with_the_seed():
+    """Unlike gpu/screen/hardware, and deliberately.
+
+    Sampling this would manufacture diversity that does not exist: every
+    Windows machine answers Segoe UI at 12px. A fleet whose system font varied
+    per identity would be the signal, not the camouflage. The gpu assertion is
+    here so the test cannot pass by the profile being constant overall.
+
+    ⛔ The control used to be `generate_profile(1).gpu != generate_profile(999_999).gpu`,
+    and it went red on 2026-08-16 without the font surface having moved. The
+    reported GPU name became the PERSONA's - the value the browser actually
+    presents, drawn from ~17 real Windows GPUs by prevalence - instead of a draw
+    from a 444-name pool nothing ever sent to a page ([B96] in
+    `71-bug-archive.md`). Two seeds landing on the same persona is now ordinary,
+    so a two-sample control was asking a question the declared value can answer
+    "equal" to by design. It is the same shape as the font gate that started
+    calling three loaded faces unloaded: a discriminant borrowed from a value we
+    now declare stops discriminating, silently and without being wrong.
+
+    The question is reformulated over a SET, which the persona pool cannot make
+    uniform: across 24 seeds the font surface must be one value and the GPU must
+    take more than one. That is strictly stronger than the two-sample form.
+    """
+    from invisible_core._fpforge import generate_profile
+    profili = [generate_profile(s) for s in range(1, 25)]
+    font = {p.font for p in profili}
+    assert len(font) == 1, "font surface varied across seeds: %r" % (font,)
+    gpu = {p.gpu for p in profili}
+    assert len(gpu) > 1, (
+        "24 seeds produced ONE GPU - the test is not probing, or the persona "
+        "pool has collapsed to a single entry")
+
+
+def test_the_font_surface_is_pinnable_like_every_other_group():
+    from invisible_core._fpforge import generate_profile
+    profile = generate_profile(42, pin={"font.ui_family": "Tahoma",
+                                        "font.monospace_size": 11})
+    prefs = translate_profile_to_prefs(profile, timezone="America/New_York")
+    assert prefs["ui.font.menu"] == "Tahoma"
+    assert prefs["font.size.monospace.ar"] == 11
+
+
+def test_a_caller_override_still_wins_over_the_font_layer():
+    """`extra_prefs` is applied last for every other surface; fonts are not
+    special. An A/B harness has to be able to unset this to measure what the
+    tell looked like."""
+    prefs = _prefs(extra_prefs={"ui.font.menu": "Arial"})
+    assert prefs["ui.font.menu"] == "Arial"
+
+
+def test_the_font_manifest_travels_with_the_profile():
+    """Families, per-face metrics, aliases, ladder and the per-script fallback
+    lists all live in one field, so the profile is the single object that says
+    what Windows looks like."""
+    from invisible_core._fpforge import generate_profile
+    manifest = generate_profile(42).font.manifest
+    assert manifest.count("\nF|") >= 60, "famiglie assenti dal manifest"
+    assert manifest.count("\nA|") >= 40, "the alias table is missing"
+    assert manifest.count("\nS|") >= 100, "the per-script fallback table is missing"
+    #: ⛔ The `L|` row is NOT asserted any more, and it was taken out of the
+    #: manifest on 2026-08-17. It was dead data protected by a test: the
+    #: engine's parser dropped that branch when the coverage ladder moved to
+    #: `zoom.stealth.canvas.alpha_ladder`, and the PACKAGED manifest did not
+    #: carry it already - so every bare launch was already running without it.
+    #: Keeping it here made the two copies differ by one single row, which is
+    #: to say it prevented the flat comparison that now watches them
+    #: (`test_the_two_manifest_copies_are_byte_identical`).
+    prefs = _prefs()
+    assert prefs["zoom.stealth.fonts.manifest"] == manifest
+
+
+def test_the_manifest_is_ascii_and_carries_no_control_bytes():
+    """The C++ reader is a getline plus a split, kept deliberately trivial, and
+    the manifest is now a Python literal rather than a file - which is exactly
+    where this project has corrupted text before, by letting an escape sequence
+    through. A raw string keeps the two backslashes in the alias comment as
+    backslashes; this checks the result rather than trusting the prefix."""
+    from invisible_core._fpforge.profile import FONT_MANIFEST
+    assert FONT_MANIFEST.isascii()
+    # chr(), not escapes: a literal like the one this line used to hold
+    # EVALUATES to a control character, and test_marker_vocabulary rejects that
+    # on sight - correctly, because it cannot tell a test naming the byte from a
+    # Windows path that lost its backslash. It caught this file on the first run.
+    for code in (8, 12, 0, 13):   # backspace, formfeed, NUL, carriage return
+        assert chr(code) not in FONT_MANIFEST, (
+            f"byte di controllo 0x{code:02X} nel manifest")
+    assert "HKLM\\" in FONT_MANIFEST, (
+        "the backslashes in the registry comment were eaten: the literal is "
+        "no longer raw")
+    assert FONT_MANIFEST.endswith("\n")
+
+
+def test_screen_colour_depth_is_declared_not_read_from_the_host():
+    """The panel depth is a declared field, not whatever display is attached.
+
+    This is the field the 2026-08-08 audit caught, and it is worth a test rather
+    than a comment because of HOW it hid. `nsScreen::PixelDepth` fell through to
+    `nsDeviceContext::GetDepth()`, the real display, and every cross-OS
+    comparison we ran said the field agreed - because both development machines
+    are 24-bit. Agreement is not declaration. A user on a 30-bit panel would
+    have reported 30 under a persona that claims a particular Windows machine.
+
+    The mutation the gate has to survive: a profile carrying a depth the host
+    could not produce must reach the pref unchanged. If the translation ever
+    drops the field, the pref goes missing, the binary falls back to the panel,
+    and the value silently becomes correct-on-this-machine again.
+    """
+    from invisible_core._fpforge import generate_profile
+    from invisible_core.prefs import translate_profile_to_prefs
+
+    profile = generate_profile(seed=42)
+    prefs = translate_profile_to_prefs(profile, timezone="America/New_York")
+
+    key = "zoom.stealth.screen.color_depth"
+    assert key in prefs, (
+        "the colour depth pref is missing, so the binary reads the real panel"
+    )
+    assert prefs[key] == 24, f"expected the Windows-canonical 24, got {prefs[key]}"
+
+    # Known-bad input: a depth no mainstream Windows desktop reports. It has to
+    # survive the translation, otherwise the field is decorative.
+    odd = replace_screen_depth(profile, 30)
+    assert translate_profile_to_prefs(odd, timezone="America/New_York")[key] == 30, (
+        "a declared depth did not reach the pref, so the field is not wired"
+    )
+
+
+def replace_screen_depth(profile, depth):
+    """Return a copy of ``profile`` whose screen declares ``depth`` bits."""
+    import dataclasses
+
+    screen = dataclasses.replace(profile.screen, color_depth=depth)
+    return dataclasses.replace(profile, screen=screen)
+
+
+# ── the manifest exists in TWO copies, and they must be the same ──────────────
+
+def test_the_two_manifest_copies_are_byte_identical():
+    """`FONT_MANIFEST` here and `browser/fonts/bundle-fonts.list` in the Firefox
+    tree are the same document in two repositories, and nobody compared them.
+
+    Why two copies exist: the engine reads the PACKAGED file when it is launched
+    without invisible_core (the deliberate floor), and reads this constant
+    through `zoom.stealth.fonts.manifest` when the core launches it. Two
+    readers, two files, and until 2026-08-17 no check at all.
+
+    How close it came: on that same day the two copies differed three times in a
+    few hours - once over the ORDER of the families, because the insertion had
+    been done by hand instead of regenerating, and twice because a change to the
+    generator had reached only one of them. None of those three was found by a
+    test: I saw them comparing by hand.
+
+    SKIPS when the Firefox tree is absent, because this package installs on its
+    own too. A declared skip is not a green.
+    """
+    from invisible_core._fpforge.profile import FONT_MANIFEST
+
+    # The file the PINNED engine bundled, read at its commit (`_engine_source`).
+    if _SOURCE.unavailable():
+        pytest.skip(_SOURCE.unavailable())
+    other = _SOURCE.show("browser/fonts/bundle-fonts.list")
+    assert other is not None, (
+        f"browser/fonts/bundle-fonts.list is not in {_SOURCE.commit}: the engine "
+        "the seal pins bundles no manifest, or it moved")
+    if FONT_MANIFEST == other:
+        return
+
+    a = FONT_MANIFEST.splitlines()
+    b = other.splitlines()
+    only_here = [r for r in a if r not in b][:5]
+    only_there = [r for r in b if r not in a][:5]
+    order = (sorted(a) == sorted(b))
+    raise AssertionError(
+        "the two copies of the manifest do not match.\n"
+        f"  rows here: {len(a)}, in the tree: {len(b)}\n"
+        f"  same SET of rows but a different order: {order}\n"
+        f"  only in the constant: {only_here}\n"
+        f"  only in the file: {only_there}\n"
+        "Regenerate with scripts/gen_bundle_font_manifest.py and rebuild the "
+        "constant FROM THE FILE, instead of editing it by hand: the order is "
+        "what breaks first.")
+MODE_PREF = "gfx.font_rendering.cleartype_params.rendering_mode"
+
+
+def test_the_cleartype_rendering_mode_stays_DEFAULT():
+    """0 = DWRITE_RENDERING_MODE_DEFAULT, pinned so a change is a choice.
+
+    ⛔ This value was 5 (NATURAL_SYMMETRIC) until 2026-08-17, and no test held
+    it: the correction changed the text rasterisation of EVERY profile and the
+    whole suite went through in silence, 906 green. A value that moves
+    everybody's fingerprint and that nobody asserts is a value somebody will put
+    back "for tidiness".
+
+    **Why 0 and not one of the other five.** Measured against a signed retail
+    151.0 over ten drawings with the privileged screenshot: retail varies 9-17
+    grey levels with the text SIZE, mode 5 gave 16-19 at any size and ZERO
+    matches out of ten, mode 0 gives six and gets every small size right. On the
+    SET of greys, which counts for more than the count: retail uses 20, with 0 we
+    share 17 with only 2 strangers, with 5 we shared 16 with 6 strangers.
+
+    **And 0 is not "asking the machine".** DEFAULT tells DirectWrite to choose
+    from the size and the font's `gasp` table: the size is decided by the page,
+    the font is ours. No value enters from the host, so rule 7-quater holds. The
+    other five are constants that suppress that choice.
+
+    The full sweep table is in `70-known-bugs.md` [B152].
+    """
+    modes = set()
+    for seed in (0xB005, 0xC0FFEE, 42, 970411, 1, 0xFFFF):
+        prefs = translate_profile_to_prefs(generate_profile(seed), timezone="America/New_York")
+        assert MODE_PREF in prefs, (
+            "the ClearType rendering mode is no longer emitted. Without it "
+            "DirectWrite reads the MACHINE's settings, which is exactly the "
+            "dependency on the host this declaration closes")
+        modes.add(prefs[MODE_PREF])
+    assert modes == {0}, (
+        f"la modalita' di rendering ClearType emessa e' {sorted(modes)}, non 0. "
+        f"0 e' DWRITE_RENDERING_MODE_DEFAULT, l'unico valore che lascia a "
+        f"DirectWrite la scelta per CORPO del testo, che e' cio' che produce la "
+        f"9-17 variation of a real Firefox. A fixed value suppresses it: 5 "
+        f"measured 0 matches out of 10 against retail. If the change is wanted, "
+        f"re-measure against a retail of the major we declare and rewrite this "
+        f"test with the new numbers.")
+
+
+def test_the_coverage_ladder_is_still_declared_and_has_its_endpoints():
+    """The ladder stays, and 2026-08-17 measured WHY it must not be touched.
+
+    Turning it off improved the level COUNT - 9 matches out of 10 against 6 - and
+    ruined the values: 17 greys out of 20 that a real Firefox never produces,
+    against 2. Optimising the count would have destroyed the thing the count
+    measures, and that is why this test sits beside the one above.
+
+    The endpoints are untouchable: 0 and 255 are fully transparent and fully
+    opaque, and moving them would move the ground and the ink instead of the
+    edges.
+    """
+    for seed in (0xB005, 0xC0FFEE, 42):
+        prefs = translate_profile_to_prefs(generate_profile(seed), timezone="America/New_York")
+        ladder = prefs.get("zoom.stealth.text.coverage_ladder")
+        assert ladder, (
+            "the coverage ladder is no longer declared. On Linux FreeType "
+            "produces 193-256 levels where DirectWrite makes 9-19: without the "
+            "ladder the level count becomes a cross-OS tell you read by "
+            "counting, with no hash needed at all")
+        v = [int(x) for x in ladder.split(",")]
+        assert v[0] == 0 and v[-1] == 255, (
+            f"the ladder's endpoints are {v[0]} and {v[-1]}, not 0 and 255. "
+            f"Moving them moves the ground and the ink, not the edges")
+        assert v == sorted(v), f"the ladder is not monotonic: {v}"
+        assert len(set(v)) == len(v), f"la scala ha pioli ripetuti: {v}"

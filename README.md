@@ -1,0 +1,77 @@
+# invisible_core
+
+Pure config for a patched Firefox stealth profile - **zero Playwright dependency**.
+
+`seed → fingerprint profile → Firefox prefs`, plus patched-binary download,
+proxy config, geo/timezone resolution, and `invisible_core.juggler`: the client
+that drives the engine over its own protocol, with the human input rhythm, which
+every wrapper below shares instead of carrying a copy. Importing it does not start a browser,
+which is the point: the same fingerprint config backs an automation wrapper and,
+through it, an MCP server, without either depending on the other.
+
+(It backed a desktop profile manager too, until that repository was deleted on
+2026-08-18. The package it published, `invisible-firefox`, is still on PyPI.)
+
+The shared foundation used by:
+
+- **[invisible_playwright](https://github.com/feder-cr/invisible_playwright)** - the
+  Playwright automation wrapper (`InvisiblePlaywright`).
+- **[invisible_selenium](https://github.com/feder-cr/invisible_selenium)** and
+  **[invisible_puppeteer](https://github.com/feder-cr/invisible_puppeteer)** - the
+  Selenium and pyppeteer APIs on the same engine.
+
+And through it, for anyone who would rather prompt than script:
+
+- **[invisible-playwright-mcp](https://github.com/feder-cr/invisible-playwright-mcp)**
+  - the wrapper as an MCP server, for a client that brings its own model.
+- **[AIHawk](https://github.com/feder-cr/AIHawk)** - an interface and a model, from
+  one command.
+
+The engine itself lives in
+[firefox_antidetect_patch](https://github.com/feder-cr/firefox_antidetect_patch),
+a Firefox patched at the C++ source level so the fingerprint is produced by the
+browser instead of injected into the page.
+
+```bash
+uv add invisible-core
+```
+
+```python
+from invisible_core import (ensure_binary, generate_profile, prepare_session_geo,
+                            translate_profile_to_prefs)
+
+profile = generate_profile(seed=42)        # deterministic Bayesian fingerprint
+geo     = prepare_session_geo("auto", None)  # zone and language of the exit (here, this machine's public IP)
+prefs   = translate_profile_to_prefs(profile, locale=geo.locale, timezone=geo.timezone)
+binary  = ensure_binary()                   # path to the patched Firefox binary
+```
+
+Same seed → same fingerprint, every time. The timezone is required: a session
+without one would run on the host's own zone.
+
+## What the fields actually mean
+
+Which surfaces a browser fingerprint is made of, what each one gives away, and why
+consistency between them matters more than any single value, is written up at
+**[the invisible_playwright wiki](https://github.com/feder-cr/invisible_playwright/wiki)**.
+Those pages are about the problem, not about this package, and several of them
+record something we got wrong first. A few that document the exact fields this
+package generates:
+
+- [Pinning fingerprint fields](https://github.com/feder-cr/invisible_playwright/blob/main/docs/pinning.md) -
+  how `pin=` interacts with the Bayesian sampler, and which combinations it refuses
+  because they don't occur on real hardware.
+- [How to make Linux and macOS report real Windows fonts](https://github.com/feder-cr/invisible_playwright/blob/main/docs/bundled-fonts-cross-platform.md) -
+  the font side of `generate_profile`, and why the family list is bundled rather than
+  sampled from the host.
+- [Canvas and WebGL fingerprints, identical across OSes](https://github.com/feder-cr/invisible_playwright/blob/main/docs/canvas-webgl-cross-platform-consistency.md) -
+  why the same seed produces a byte-identical hash regardless of what's actually
+  running underneath.
+- [Playwright timezone does not match the proxy IP](https://github.com/feder-cr/invisible_playwright/blob/main/docs/timezone-proxy-mismatch.md) -
+  the surfaces this package's geo/timezone resolution has to keep in agreement.
+
+---
+
+<p align="center">
+  <a href="https://github.com/feder-cr/invisible_core/actions/workflows/ci.yml"><img src="https://github.com/feder-cr/invisible_core/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+</p>

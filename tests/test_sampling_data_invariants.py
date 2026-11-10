@@ -1,0 +1,289 @@
+"""The sampling data decides who every user IS. Editing it has non-obvious reach.
+
+Two facts about this data are load-bearing and neither was held by a test:
+
+  1. **The ORDER of a weighted pool matters as much as the weights.**
+     `select_persona` walks the array accumulating `weight` until it passes a
+     seed-derived point, so POSITION decides the answer. Measured on this tree:
+     reversing the 14 rows of `webgl_gpu_pool.json["win"]` - changing no entry
+     and no probability - gives **1409 of 1500 seeds a different GPU (93.9%)**.
+     That is a larger remap than the `CLEAN_RENDER_SEEDS` incident which
+     produced all the existing documentation, and every existing test passes
+     through it: the mass still sums to 1, no software renderer appears, and the
+     pool is still reachable.
+
+     The trigger does not have to be a person. `json.dumps(..., sort_keys=True)`,
+     a prettifier that sorts arrays, a merge tool resolving a conflict, or a
+     future generator emitting rows in a different order all do it. And because
+     a remapped GPU is still a VALID GPU, nothing downstream looks wrong - the
+     fleet's identities simply all move at once, which is discovered the way a
+     fingerprint regression is discovered, which is late.
+
+  2. **`CLEAN_RENDER_SEEDS` is indexed modulo its length**, so length AND order
+     are both significant. The length was already tested, because a length bug
+     had already happened; the order was not. Reversing the same nine values
+     moves ~89% of seeds. The list is sorted ascending today and contains a
+     deliberate duplicate `5` (the in-place replacement of the removed `0`), so
+     the two most natural tidy-ups - "dedupe" and "re-sort after inserting" -
+     are respectively caught by the length assertion and, until now, not caught
+     at all.
+
+The golden digests below are the cheap, total form of both claims: they cover
+every seed and every field that feeds the draw. The handful of explicit pairs
+exist so that a failure is readable - a digest alone tells you something moved
+but not what.
+
+If you are here because a digest failed: that is the gate working. Do not update
+the constant to make it green. Work out WHY the mapping moved, decide whether
+every existing identity moving is acceptable, and only then re-pin - the same
+rule the release ledger applies to published bytes.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+
+import pytest
+
+from invisible_core._fpforge import _sampler
+from invisible_core._webgl_personas import (
+    CLEAN_RENDER_SEEDS,
+    render_noise_seed,
+    select_persona,
+)
+
+pytestmark = pytest.mark.unit
+
+_DATA = pathlib.Path(_sampler.__file__).with_name("data")
+
+#: Wide enough that a per-class change cannot hide. The reordering finding moved
+#: 94% of seeds, but a single-slot edit moves ~1%, and 1500 is what makes that
+#: visible rather than plausible noise.
+_SWEEP = 1500
+
+#: sha256 over "seed:renderer\n" for seeds 0.._SWEEP. Re-pinned 2026-11-01, after
+#: the five Direct3D 10 class slots (7, 9-12) were replaced in place by real
+#: Windows 11 GPUs: 17 of the 1500 seeds moved (1.1%, against the 0.97% those
+#: slots weighed), every one of them a seed that drew a replaced slot. Before:
+#: 2ee88103..., pinned 2026-07-27 after the software rasterizer left slot 5.
+_PERSONA_MAP_DIGEST = "ff4c386c0dd19914cfb360ebf44bd85f0b49869ce0a767d4acd77c1d602dad8e"
+
+#: Same shape over `render_noise_seed`, which indexes CLEAN_RENDER_SEEDS mod len.
+_RENDER_SEED_DIGEST = "04b3fabf65a60a434ae7a1ddd03cfd876b47681c917b2888891dbfdf01346d2c"
+
+#: Readable anchors, so a failure names something a human recognises. 42 is the
+#: quickstart's seed and until 18.3.0 it drew the software rasterizer.
+_ANCHORS = {
+    0: "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    1: "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    # drew the GeForce 8800 GTX slot until 2026-11-01; that slot is now an RTX 5060 Ti
+    7: "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    42: "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    123: "ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    1234: "ANGLE (AMD, Radeon HD 3200 Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+}
+
+#: The canonical class list. `_sampler._GPU_CLASSES` exists and was referenced by
+#: nothing; using it here is what makes it a definition rather than a comment.
+_CLASSES = set(_sampler._GPU_CLASSES)
+
+
+def _digest(fn) -> str:
+    h = hashlib.sha256()
+    for seed in range(_SWEEP):
+        h.update(f"{seed}:{fn(seed)}\n".encode())
+    return h.hexdigest()
+
+
+# ── the whole mapping, in one value ────────────────────────────────────────
+
+def test_the_seed_to_gpu_mapping_has_not_moved():
+    got = _digest(lambda s: select_persona(s)["renderer"])
+    assert got == _PERSONA_MAP_DIGEST, (
+        f"the seed -> GPU mapping changed for at least one of {_SWEEP} seeds.\n"
+        f"  expected {_PERSONA_MAP_DIGEST}\n  got      {got}\n"
+        f"Reordering webgl_gpu_pool.json['win'] does this without touching a "
+        f"single entry or probability - measured at 1409 of 1500. So does "
+        f"changing a weight. If the move is intended, say how many identities "
+        f"move and why that is acceptable, then re-pin.")
+
+
+def test_the_seed_to_render_noise_mapping_has_not_moved():
+    got = _digest(render_noise_seed)
+    assert got == _RENDER_SEED_DIGEST, (
+        f"render_noise_seed changed.\n  expected {_RENDER_SEED_DIGEST}\n"
+        f"  got      {got}\nIt indexes CLEAN_RENDER_SEEDS modulo the list's "
+        f"LENGTH, so adding, removing OR reordering a value remaps most seeds.")
+
+
+@pytest.mark.parametrize("seed,renderer", sorted(_ANCHORS.items()))
+def test_a_named_seed_still_draws_the_gpu_it_drew(seed, renderer):
+    """The digests above catch everything; these say WHAT, in the failure."""
+    assert select_persona(seed)["renderer"] == renderer
+
+
+def test_the_clean_render_seed_list_is_exact_including_its_order():
+    """Length was already pinned because a length bug happened. Order was not,
+    and it is equally load-bearing. The duplicate 5 is deliberate: it is the
+    in-place replacement of the 0 that was removed, keeping the length at 9 so
+    the modulo mapping did not move."""
+    assert CLEAN_RENDER_SEEDS == [5, 5, 6, 9, 11, 16, 19, 20, 28], (
+        "CLEAN_RENDER_SEEDS changed. Sorting it, de-duplicating it, or "
+        "inserting into it all remap ~89% of identities. The duplicate 5 is "
+        "not a mistake to clean up")
+
+
+# ── the CPT files, which nothing validated at all ──────────────────────────
+
+#: The probabilities are stored rounded to four decimals, so a row legitimately
+#: lands at 0.9999 or 1.0001. Measured worst case across every distribution CPT
+#: on this tree: 1e-4. A tolerance of 1e-6 fails on correct data, which is how a
+#: gate gets switched off; 1e-3 still catches a dropped or doubled row.
+_MASS_TOLERANCE = 1e-3
+
+#: NOT a distribution. `cpt_browsing_given_class.json` is {site: P(visited)} -
+#: fifty INDEPENDENT probabilities per class, summing to about 20 because the
+#: pool is tuned to land 15-30 visited sites. Asserting it sums to 1 would be
+#: asserting the wrong model, so it gets its own check below.
+_INDEPENDENT_PROBABILITY_TABLES = {"cpt_browsing_given_class.json"}
+
+
+def _tables():
+    for path in sorted(_DATA.glob("cpt_*.json")):
+        if path.name in _INDEPENDENT_PROBABILITY_TABLES:
+            continue
+        blob = json.loads(path.read_text(encoding="utf-8"))
+        table = blob.get("table") or blob.get("entries")
+        if isinstance(table, dict):
+            yield path.name, table
+
+
+def test_every_cpt_row_is_a_probability_distribution():
+    """Nothing checked this. `_network.py` reacts to a MISSING parent key by
+    concatenating every table and drawing uniformly over the union, with no
+    warning - so a malformed or incomplete CPT produces a plausible-looking but
+    incoherent identity, forever and silently."""
+    bad = []
+    for name, table in _tables():
+        for key, rows in table.items():
+            if not isinstance(rows, list) or not rows:
+                bad.append(f"{name}[{key}]: empty"); continue
+            total = sum(r.get("prob", 0) for r in rows)
+            if abs(total - 1.0) > _MASS_TOLERANCE:
+                bad.append(f"{name}[{key}]: sums to {total!r}")
+    assert not bad, "CPT rows that are not distributions:\n  " + "\n  ".join(bad)
+
+
+def test_the_browsing_table_stays_a_credible_history_length():
+    """Its rows are independent probabilities, so the sum IS the expected number
+    of visited sites. Drift here breaks nothing loudly - it just makes every
+    profile's history implausibly short or long, which is the kind of tell that
+    only gets noticed from outside."""
+    blob = json.loads(
+        (_DATA / "cpt_browsing_given_class.json").read_text(encoding="utf-8"))
+    table = blob.get("table") or blob.get("entries")
+    for cls, row in table.items():
+        expected = sum(row.values())
+        assert 12 <= expected <= 34, (
+            f"{cls}: expected visited-site count is {expected:.1f}, well outside "
+            f"the 15-30 the pool is tuned for")
+        assert len(row) >= 40, f"{cls}: only {len(row)} sites in the pool"
+
+
+def test_every_cpt_keyed_by_gpu_class_covers_every_class():
+    """A class present in the pool but absent from a CPT falls into the silent
+    uniform-union path above."""
+    missing = []
+    for name, table in _tables():
+        keys = set(table)
+        if not (keys & _CLASSES):
+            continue                     # keyed by something else, e.g. (class, tier)
+        gap = _CLASSES - keys
+        if gap:
+            missing.append(f"{name}: missing {sorted(gap)}")
+    assert not missing, "CPTs that do not cover every GPU class:\n  " + "\n  ".join(missing)
+
+
+def test_the_available_screen_rect_matches_what_the_engine_computes():
+    """The taskbar height has ONE home now, and this asserts it reaches everyone.
+
+    History, because it is why this test exists: the engine returned
+    `{0, 0, w, h - 48}` with 48 written into nsScreen.cpp, and Python said 40 -
+    in the fallback and in all 93 data rows - so every profile REPORTED a 40px
+    taskbar while the browser would report 48. It hid because avail_width and
+    avail_height are not emitted as prefs, so the wrong value never reached a
+    page; it reached Profile.screen.avail_height, which is public API.
+
+    On 2026-08-09 the number stopped being written out three times (the
+    generator, nsScreen.cpp, nsGlobalWindowOuter.cpp) and became
+    constants.TASKBAR_PX, emitted as zoom.stealth.screen.taskbar_px. So the
+    assertion is no longer "two literals happen to agree" but "the sampled rect,
+    the profile field and the pref the engine reads all come from one constant".
+    """
+    from invisible_core import generate_profile
+    from invisible_core.constants import TASKBAR_PX
+    from invisible_core.prefs import translate_profile_to_prefs
+
+    assert TASKBAR_PX == 48, "the value the engine compiles in as its floor"
+
+    deltas = {
+        generate_profile(seed=s).screen.height
+        - generate_profile(seed=s).screen.avail_height
+        for s in range(300)
+    }
+    assert deltas == {TASKBAR_PX}, (
+        f"profiles report a taskbar of {sorted(deltas)} px while the constant "
+        f"says {TASKBAR_PX}")
+
+    # and the number the ENGINE will use comes from the same place
+    for seed in (1, 42, 777):
+        p = generate_profile(seed=seed)
+        prefs = translate_profile_to_prefs(p, timezone="America/New_York")
+        assert prefs["zoom.stealth.screen.taskbar_px"] == TASKBAR_PX
+        assert p.screen.height - p.screen.avail_height == TASKBAR_PX
+
+    # a pin has to move all three together, or it is not one source
+    pinned = generate_profile(seed=42, pin={"screen.taskbar_px": 60})
+    assert pinned.screen.taskbar_px == 60
+    assert translate_profile_to_prefs(pinned, timezone="America/New_York")["zoom.stealth.screen.taskbar_px"] == 60
+
+
+def test_no_pool_for_any_platform_carries_a_software_renderer():
+    """`test_gpu_pool_realism` covers the `win` list, which is the only one the
+    loader reads. This covers all three, because the day someone wires per-OS
+    personas is the day the other two go live - and `lin` carried two llvmpipe
+    entries at a combined 8.97%, seven times the mass of the Windows rasterizer
+    that was removed the day before."""
+    import re
+
+    software = re.compile(r"basic render|llvmpipe|softpipe|swiftshader|"
+                          r"mesa offscreen|virgl|vmware svga", re.I)
+    pool = json.loads((_DATA / "webgl_gpu_pool.json").read_text(encoding="utf-8"))
+    bad = [
+        (os_key, i, e["prefs"]["zoom.stealth.webgl.renderer"])
+        for os_key in ("win", "mac", "lin")
+        for i, e in enumerate(pool[os_key])
+        if software.search(e["prefs"]["zoom.stealth.webgl.renderer"] + " " + e.get("vendor", ""))
+    ]
+    assert not bad, (
+        f"software renderer(s) in a persona pool: {bad}. Replace the slot in "
+        f"place keeping its prob - deleting renormalises the draw")
+
+
+def test_every_pools_probability_mass_is_intact():
+    pool = json.loads((_DATA / "webgl_gpu_pool.json").read_text(encoding="utf-8"))
+    for os_key in ("win", "mac", "lin"):
+        total = sum(e["prob"] for e in pool[os_key])
+        assert abs(total - 1.0) < 0.02, f"{os_key}: mass is {total}"
+
+
+def test_every_class_the_pool_can_draw_is_a_declared_class():
+    """Ties the pool to `_GPU_CLASSES`, which existed as a declaration that
+    nothing read."""
+    from invisible_core._webgl_personas import _gpu_pool
+
+    drawn = {e["gpu_class"] for e in _gpu_pool()}
+    assert drawn <= _CLASSES, (
+        f"the persona pool can draw classes the sampler does not declare: "
+        f"{sorted(drawn - _CLASSES)}")

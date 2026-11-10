@@ -1,0 +1,170 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "invisible_core"
+# Derived from the seal (see src/invisible_core/_version.py): the tag number of
+# the engine this core is sealed to, so a binary bump always moves the version
+# string pip compares before it decides whether to reinstall. A core-only fix
+# against the same engine moves CORE_REVISION instead, by hand - and
+# scripts/version_gate.py refuses to publish content that changed under a
+# version string that did not.
+dynamic = ["version"]
+description = "Pure config for a stealth Firefox profile: seed -> fingerprint -> prefs, engine download, proxy, geo, and the Juggler client the wrappers drive it with. Zero Playwright."
+readme = "README.md"
+requires-python = ">=3.11"
+# TWO LICENSES since 38.34.0, when the Juggler client moved here from the
+# three wrappers (decision D85): `juggler/injected.js` and
+# `juggler/keylayout.py` were extracted from Playwright's driver bundle,
+# which is Apache-2.0. Everything else is MIT. See THIRD_PARTY.md.
+license = "MIT AND Apache-2.0"
+license-files = ["LICENSE", "LICENSE-APACHE"]
+authors = [{ name = "feder-cr", email = "85809106+feder-cr@users.noreply.github.com" }]
+keywords = [
+    "firefox",
+    "stealth",
+    "anti-detect",
+    "fingerprint",
+    "browser",
+    "automation",
+    "privacy",
+]
+# No `License :: OSI Approved :: MIT License` classifier: PEP 639 says the
+# License-Expression field above is the declaration, and a build tool must not
+# add the classifier beside it.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+# No direct URL (`name @ git+https://...`) may appear here. A public index
+# rejects an upload whose Requires-Dist carries one, and a direct reference
+# carries no version specifier, so `pip check` has nothing to compare and
+# reports a definitively broken environment as healthy.
+dependencies = [
+    "platformdirs>=4",
+    # Process identity and the OS-level lifetime guard (invisible_core/process.py).
+    # Both consumers already declared it, so nobody gains a dependency: what
+    # changes is that they stop each carrying their own copy of the same code -
+    # and the manager, which had none, stops leaking its whole browser tree
+    # every time it is killed (measured at 8 survivors, 3 runs of 3).
+    "psutil>=5.9",
+    "requests[socks]>=2.31",
+    "maxminddb>=2.2",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+# The three pytest plugins are the clients' e2e run's (invisible_core.testing.e2e),
+# which tests/test_e2e_run_ends_with_a_verdict.py runs for real.
+dev = ["pytest>=7", "pytest-mock>=3", "responses>=0.24", "build>=1", "ruff>=0.6",
+       "pytest-rerunfailures>=14", "pytest-timeout>=2", "pytest-xdist>=3"]
+
+[project.scripts]
+invisible-core = "invisible_core.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/feder-cr/invisible_core"
+Repository = "https://github.com/feder-cr/invisible_core"
+Issues = "https://github.com/feder-cr/invisible_core/issues"
+
+[tool.pytest.ini_options]
+markers = [
+    # ONE VOCABULARY FOR EVERY REPOSITORY THAT SHARES THE CORE: this one and its
+    # three clients, invisible_playwright, invisible_selenium and
+    # invisible_puppeteer. Aligned 2026-07-27, when they were three; before
+    # that the same word meant different things and selected different sets.
+    #
+    #   `integration` was "multi-module tests, no browser" in invisible_core and
+    #   invisible_playwright, and "launches the real patched Firefox binary" in
+    #   invisible_firefox - which is what `e2e` means. So the manager excluded
+    #   `integration` by default while the other two ran it, and CLAUDE.md's
+    #   "integration is reserved for explicit release runs" was true in one repo
+    #   and wrong in the other two, where it names 57 structural tests that must
+    #   run on every push.
+    #
+    #   invisible_core's addopts said `not slow` while never declaring `slow`,
+    #   so the exclusion matched nothing and the word meant nothing.
+    #
+    # The lists are identical on purpose, and
+    # invisible_core/tests/test_marker_vocabulary.py fails when they drift.
+    # (It compares the parsed lists, so this comment may differ per repo.)
+    "unit: pure logic - no I/O, no network, no subprocess, no browser",
+    "integration: several modules together, in process - no network, no browser",
+    "e2e: needs something outside this process - the network, the real patched binary, or a display",
+    "slow: builds a wheel or an sdist - opt-in only",
+    "linux_only: requires Linux",
+    "wall_clock: its verdict reads a wall-clock duration - the e2e run gives it the machine alone, after the parallel tests",
+]
+# Both exclusions in ONE addopts: declaring the key twice is a TOML error, not
+# a merge, and pytest then sees neither value.
+#
+# `integration` is NOT excluded. It is in-process and fast, it is what covers
+# the release wiring, and it is the selection a push most needs.
+addopts = "-m 'not slow and not e2e' --strict-markers"
+
+# ⛔ THE SUITE TESTS *THIS* CHECKOUT, not whatever the shared interpreter's
+# editable install happens to point at. This repository has not been bitten
+# yet - its .pth points here today by install order, not by construction -
+# but its consumer was, on 2026-08-29: the wrapper's editable install had
+# drifted to a SECOND working copy of that same repository, on an older
+# branch, and a plain `pytest -q` there ran against a package with a whole
+# subsystem missing.
+#
+# The exposure is identical here and the cost of removing it is one line, so
+# it is removed rather than left to install order. `src` resolves relative to
+# this file, so each checkout points at itself.
+pythonpath = ["src"]
+
+[tool.hatch.version]
+source = "code"
+path = "src/invisible_core/_version.py"
+expression = "__version__"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/invisible_core"]
+exclude = ["*.bak", "*-bak"]
+
+# PUBLISHED.json and scripts/ are deliberately absent from both targets. The
+# ledger records a digest of what ships, so it must never be part of what ships:
+# a self-referential ledger would invalidate its own digest on every release.
+[tool.hatch.build.targets.sdist]
+include = ["src/invisible_core", "tests", "README.md", "LICENSE", "LICENSE-APACHE", "THIRD_PARTY.md", "pyproject.toml"]
+
+# Which pre-push gates this repository wants. `.githooks/pre-push` is a stub;
+# the policy is invisible_core.hooks, and this block is the only per-repo part
+# of it. Declared rather than defaulted on purpose: the wrong default silently
+# skips a gate, and a skipped gate reads exactly like a passed one.
+#
+# `pin = false` because this IS the package the other two pin. There is nothing
+# here to compare against.
+#
+# `pytest = true` is new as of 2026-07-27. This repo's hook ran no tests at all,
+# which is why it is the one that pushed red (56b2af2, fourteen tests red on
+# main for two hours) while the two repos that depend on it could not.
+#
+# `release-` is accepted alongside `v` because this repo's tag history has both.
+[tool.invisible.hooks]
+pytest = true
+pin = false
+release_tags = ["v", "release-"]
+
+# What this repository declares about ITSELF to the shared language gate
+# (`python -m invisible_core.english`). `injected.js` came with the Juggler
+# client from invisible-playwright, where it was excluded the same way: it is
+# extracted from the upstream Playwright bundle. Named file by file, never by
+# folder: an exclusion that names nothing is refused by the gate.
+[tool.invisible.english]
+excluded = [
+    "src/invisible_core/juggler/injected.js",
+]

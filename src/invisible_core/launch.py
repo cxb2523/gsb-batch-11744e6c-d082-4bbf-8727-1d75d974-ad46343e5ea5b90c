@@ -1,0 +1,459 @@
+"""Direct-launch helpers shared by the Playwright wrapper and the profile
+manager: write a user.js from a prefs dict, and build the subprocess env the
+patched binary reads at startup. No Playwright, no Qt."""
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+import warnings
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from . import environment
+from ._headless import DESKTOP_ENV
+
+
+def _pref_literal(name: str, v: Any) -> str:
+    """Serialize a pref value the way Firefox's prefs parser accepts it.
+
+    Firefox prefs are int / bool / string only - there is no float pref type;
+    a fractional value (e.g. device-pixel-ratio) is stored as a STRING and the
+    float pref parses it back. ``json.dumps`` would emit a bare ``1.25``, which
+    Firefox rejects with ``prefs parse error: unexpected character`` and which
+    invalidates every ``user_pref`` line after it. That is not hypothetical:
+    ``ui.textScaleFactor`` written as a number once killed the browser on the
+    second context, and the failure looked nothing like a prefs problem.
+
+    ⛔ ANY OTHER TYPE IS REFUSED HERE, not written. ``None`` or a list came out
+    as ``null`` / ``[...]``, the same parse error, and the Juggler client's own
+    writer turned them into the string ``"None"`` instead - a pref that exists
+    with a value nobody asked for. Neither occurs in what the core composes
+    (bool, int and str over 300 seeds, measured when the writers became one);
+    a caller's pref of another type is a mistake to say, at its birth.
+    """
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, (float, str)):
+        return json.dumps(str(v))
+    raise TypeError("pref %r is a %s; Firefox prefs are bool, int or string "
+                    "(a fraction is written as a string)" % (name, type(v).__name__))
+
+
+def write_user_js(profile_dir: "str | os.PathLike[str]", prefs: Dict[str, Any]) -> Path:
+    """Write ``prefs`` as ``user_pref(...)`` lines into ``<profile_dir>/user.js``.
+
+    Creates ``profile_dir`` if missing; overwrites any existing ``user.js``.
+
+    ⛔ THE ONE WRITER, since 38.34.0. The Juggler client carried its own
+    (`_write_user_js`), which every wrapper's launch went through, while this
+    one served the direct launch: they agreed on the lines and differed on the
+    bytes, because this one wrote in text mode and Windows turned every newline
+    into CRLF. They became one when the client moved here (decision D85).
+
+    ⛔ THE PREFS ARE WRITTEN, NOT SENT, and BEFORE the browser starts. Our fork
+    removed prefs from the protocol - `Browser.enable` does not accept them -
+    because a browser configured on the second launch was wrong on the first.
+    The Python path once threw `firefoxUserPrefs` away and started Firefox on
+    an empty profile: everything worked, every test was green, and every
+    stealth declaration was absent. A closed shadow root made it visible, since
+    the patch that reaches inside one is gated on a pref.
+
+    ⛔ INSERTION ORDER, NO HEADER, LF ONLY, and the reason is one: the file has
+    to match what Playwright's driver writes BYTE FOR BYTE (its `defaultArgs`
+    uses `Object.keys()` and writes no comment), and the wrapper's
+    `tests/gates/prefs_byte_parity.py` is the judge. Sorting produces a file
+    that is equally correct and not identical, which that gate caught on its
+    first real run. Bytes, not text: a text-mode write on Windows translates
+    every newline, and a prefs file is read by the browser, not by git.
+    """
+    d = Path(profile_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / "user.js"
+    lines = [f"user_pref({json.dumps(k)}, {_pref_literal(k, v)});" for k, v in prefs.items()]
+    out.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    return out
+
+
+def tz_env(timezone: str) -> str:
+    """DEPRECATED, and it does nothing: returns ``timezone`` unchanged. It
+    goes in the next release.
+
+    It mapped an IANA zone to the ``TZ`` the launch put in the browser's
+    environment, so that the C runtime and ICU agreed with Date and Intl. From
+    the firefox-50 engine nothing a page can reach reads ``TZ``: every realm,
+    worker and worklet, ``document.lastModified`` and EXSLT's date take the
+    zone from ``juggler.timezone.override`` and the context's own
+    (``_apply_timezone``), and the launch no longer writes ``TZ`` at all. The
+    table was also the defect: on Windows no value of ``TZ`` satisfies both the
+    C runtime and ICU, so America/Phoenix gave the machine's zone in a Worker
+    ([B334]), and the zones outside the table were never covered.
+    """
+    warnings.warn(
+        "invisible_core.tz_env is deprecated and does nothing: the engine reads "
+        "the session's zone from juggler.timezone.override, not from TZ. It "
+        "will be removed in the next release.",
+        DeprecationWarning, stacklevel=2)
+    return timezone
+
+
+#: The display backend of EVERY session, hidden or headed (A9 of
+#: 28-valori-dell-host.md). Until 49.46.0 only the hidden session's Xvfb
+#: carried these two, so a headed Linux session inherited the host's: on a
+#: Wayland desktop (WSLg, GNOME) the browser ran on Wayland, with a window
+#: geometry, a scale and a clipboard of a different backend from the one every
+#: other session declares. One declaration for both modes, here, where the
+#: environment is composed; a headed X11 session draws through the desktop's
+#: XWayland, as `DISPLAY` says. Written on every platform, not in a
+#: `sys.platform` branch: the Windows build has no GTK and reads neither, and
+#: one environment for both builds is the thing that cannot drift.
+_DISPLAY_BACKEND = {"MOZ_ENABLE_WAYLAND": "0", "GDK_BACKEND": "x11"}
+
+#: The browser never opens its crash reporter. The engine refuses a launch whose declarations
+#: are incomplete (StealthRefuse), and that refusal ends in an abort on purpose: with the reporter
+#: on, Windows starts crashreporter.exe, which shows a "Crash Reporter" window on the desktop of
+#: whoever runs the browser and waits there for a click (313 windows in one e2e run of the wrapper).
+#: A crash of a headless session has no one to read the dialog and nothing to send, and the
+#: reason of a refusal is in the browser's output, which the launcher already reads. Written
+#: here, in the one place the environment is composed, so every launch carries it, and over
+#: whatever the caller's environment says: a session that opens a dialog is not a session.
+_NO_CRASH_REPORTER = {"MOZ_CRASHREPORTER_DISABLE": "1"}
+
+
+def build_launch_env(
+    prefs: Dict[str, Any],
+    *,
+    timezone: Optional[str] = None,
+    #: The address to DECLARE as srflx, or None to declare nothing. ⛔ It is NOT
+    #: the exit IP, and the old name (`egress_ip`) made it look like one: it is
+    #: the decision `SessionGeo.srflx_to_declare` makes by looking at what the
+    #: exit is CAPABLE of. The twin in the wrapper (`_session.build_env`) carries
+    #: the same name on purpose: there were already two landing points, and two
+    #: different names would have hidden that they are the same thing.
+    srflx_declared: Optional[str] = None,
+    manifest_path: "Optional[str | os.PathLike[str]]" = None,
+    base_env: Optional[Dict[str, str]] = None,
+    #: What the session's hidden surface wants in the browser's environment
+    #: (`make_virtual_display().launch_env()`), or nothing. A value of `None`
+    #: names a variable the browser must NOT carry (the Wayland ones an Xvfb
+    #: session drops). Applied LAST and over a cleared slot: the surface is a
+    #: fact of THIS session, and a headed session opened while a hidden one is
+    #: still alive in the same process must not inherit the hidden one's
+    #: desktop or display through `os.environ`; `INVPW_DESKTOP` is removed
+    #: unconditionally first for the same reason.
+    display_env: Optional[Dict[str, Optional[str]]] = None,
+) -> Dict[str, str]:
+    """Subprocess env for the patched binary - the ONE place that composes it.
+
+    The wrapper's `_session.build_env` delegates here after verifying the font
+    manifest against the executable; until 34.26.0 it was a twin of this body,
+    and the hidden-surface half of the contract lived only in the twin, so a
+    consumer on this builder could not express a removal at all.
+
+    STEALTHFOX_WEBRTC_PUBLIC_IP feeds nICEr the proxy egress IP; an
+    already-set value in base_env wins.
+
+    No ``TZ``: the engine takes the session's zone from the prefs
+    (``juggler.timezone.override``) in every realm, and ``timezone=`` is
+    accepted for one release only to warn that it does nothing (``tz_env``).
+
+    STEALTHFOX_FONT_MANIFEST points the engine at the font manifest THIS package
+    declares, and it has to be an env var rather than the pref of the same name:
+    the font list is built during app startup, inside
+    InitSharedFontListForPlatform, and on the Juggler path the caller's prefs
+    never reach the profile at all - they travel over the wire and are applied
+    by JS once the browser is already running. Measured 2026-08-08: removing a
+    family from this package's copy changed nothing, because the pref read empty
+    and the engine's own file won. An env var is set at process creation and
+    inherited by every content process.
+
+    It carries a PATH. The manifest is ~20 KB and an environment block is not
+    the place for it. `manifest_path=None` writes no variable, which leaves the
+    engine on its packaged copy - the floor a browser launched without this
+    package still has to stand on.
+    """
+    if timezone is not None:
+        warnings.warn(
+            "build_launch_env(timezone=...) is deprecated and does nothing: the "
+            "engine reads the session's zone from juggler.timezone.override, not "
+            "from TZ. It will be removed in the next release.",
+            DeprecationWarning, stacklevel=2)
+    env = dict(os.environ if base_env is None else base_env)
+    if manifest_path is not None:
+        # An already-set value in base_env wins, same rule as the WebRTC IP:
+        # an A/B harness has to be able to point this somewhere else.
+        env.setdefault(environment.FONT_MANIFEST, str(manifest_path))
+    webrtc_ip = env.get(environment.WEBRTC_PUBLIC_IP) or srflx_declared
+    if webrtc_ip:
+        env[environment.WEBRTC_PUBLIC_IP] = webrtc_ip
+        # SOLO dietro un proxy. Un Firefox retail dual-stack emette un srflx
+        # IPv6 con l'indirizzo globale VERO in chiaro (l'mDNS offusca solo gli
+        # hosts): behind an IPv4 proxy that would be a leak and an inconsistency,
+        # without a proxy it is simply what an ordinary browser does. Measured
+        # 2026-08-25: retail 6 candidates, us 3, because we always filtered.
+        env[environment.WEBRTC_DISABLE_IPV6] = "1"
+    env.update(_DISPLAY_BACKEND)
+    env.update(_NO_CRASH_REPORTER)
+    env.pop(DESKTOP_ENV, None)
+    for k, v in (display_env or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
+    return env
+
+
+
+class FontManifestMismatch(RuntimeError):
+    """The manifest this package declares describes faces the engine lacks."""
+
+
+def verify_font_manifest(manifest: str,
+                         binary: "str | os.PathLike[str]") -> "Optional[List[str]]":
+    """Face files `manifest` names that the engine lacks, or None if unchecked.
+
+    THREE outcomes, not two, and collapsing the last two is the trap:
+      * `[]`   - checked, every face is present. Safe.
+      * `[...]`- checked, these are missing. The caller should refuse.
+      * `None` - could NOT check: the engine has no `fonts/` directory beside
+                 it, so it is not a bundle-only layout this can inspect.
+
+    `None` is not a pass and must not be treated as `[]`. It is returned rather
+    than an empty list for the same reason `download.py` prints "an absent
+    check is not a passed check" when an asset carries no omni.ja digest. What
+    the caller may reasonably do with it is proceed anyway: an engine with no
+    bundled fonts of its own cannot be made worse by a manifest it will read
+    against files it does not have either way, and refusing would break every
+    layout that is not ours - including every test fixture, which is how this
+    distinction got written.
+
+    This is the check that makes handing our manifest to the engine safe, and
+    it deliberately is NOT "the two manifests are equal". They are supposed to
+    diverge: the whole point of carrying one here is that this package can move
+    ahead of a published engine. What must hold is narrower and is the thing
+    that fails silently - every `f|` record gives vertical metrics for a named
+    FILE, and metrics for a file the engine does not have are not an error, they
+    are text laid out a few pixels wrong on a page nobody is measuring.
+
+    Empty result means safe. The caller decides what a non-empty one costs: at
+    launch it is worth refusing over, because the alternative is shipping a
+    wrong layout to every session, whereas a browser that will not start is at
+    least loud.
+
+    An engine with no fonts directory at all returns every file as missing
+    rather than an empty list - an absent check must never read like a passed
+    one.
+    """
+    fonts_dir = Path(binary).parent / "fonts"
+    referenced = []
+    for line in manifest.splitlines():
+        if line.startswith("f|"):
+            parts = line.split("|")
+            if len(parts) > 1 and parts[1]:
+                referenced.append(parts[1])
+    if not referenced:
+        return []
+    if not fonts_dir.is_dir():
+        return None
+    have = {p.name for p in fonts_dir.iterdir()}
+    return sorted({f for f in referenced if f not in have})
+
+
+def cached_font_manifest_path(manifest: str) -> "Path | None":
+    """Materialise `manifest` somewhere the engine can read it, once per content.
+
+    The Playwright path does not own the profile directory - Playwright creates
+    it - so the file cannot simply live beside the profile. Addressing it by the
+    sha256 of its own bytes gives a stable path per manifest: launching a
+    thousand sessions with the same core writes one file, and a session with a
+    pinned manifest gets its own without disturbing the others. Nothing has to
+    be cleaned up on teardown, which is the failure mode a per-session temp dir
+    would introduce.
+
+    Returns None for an empty manifest: the engine reads that as "use my own
+    copy", and writing an empty file would say the same thing while looking
+    like a configured one.
+    """
+    if not manifest:
+        return None
+    raw = manifest.encode("ascii")
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    d = state_dir("fonts")
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / f"bundle-fonts-{digest}.list"
+    if not out.is_file() or out.stat().st_size != len(raw):
+        assert bytes([13, 10]) not in raw, "il manifest ha terminazioni CRLF"
+        # Write to a sibling and rename: two sessions starting together must
+        # never let one read the half-written file of the other.
+        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_bytes(raw)
+        os.replace(tmp, out)
+    return out
+
+
+def write_font_manifest(profile_dir: "str | os.PathLike[str]",
+                        manifest: str) -> "Path | None":
+    """Write `manifest` beside the profile and return its path, or None.
+
+    Returns None for an empty manifest rather than writing an empty file: the
+    engine treats an unreadable or empty source as "use my own copy", and an
+    empty file would be an indistinguishable way of saying the same thing while
+    looking like a configured one.
+
+    Written as BYTES with an explicit ascii encode. `write_text` on Windows
+    translates every newline to CRLF, and this project has already shipped a
+    30k-star repository a commit that was 48 additions and 48 deletions for a
+    one-line change because of exactly that. The engine's parser splits on a
+    bare newline.
+    """
+    if not manifest:
+        return None
+    d = Path(profile_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / "bundle-fonts.list"
+    raw = manifest.encode("ascii")
+    # bytes([13, 10]), not a literal: a CR escape written through a shell
+    # heredoc is how this very line was corrupted on the first attempt, which is
+    # the same failure the assertion is guarding against.
+    assert bytes([13, 10]) not in raw, "il manifest ha terminazioni CRLF"
+    out.write_bytes(raw)
+    return out
+
+
+# Imported here rather than at module scope: download.py imports seal.py,
+# and pulling that chain in at import time would make launch.py the heavy
+# module in a package whose consumers import it first.
+from .download import state_dir
+
+from .process import SessionToken
+
+
+@dataclass
+class LaunchPlan:
+    """Everything needed to spawn the patched Firefox for one identity."""
+    binary: str
+    profile_dir: Path
+    argv: List[str]
+    env: Dict[str, str]
+    #: Identity for the process tree this plan will start. Already stamped into
+    #: ``env``, so every process in the tree inherits it; the caller keeps it to
+    #: bind a lifetime guard and to reap by positive identification rather than
+    #: by guessing which firefox is theirs. Defaulted so that anything
+    #: constructing a LaunchPlan positionally keeps working.
+    session_token: SessionToken = field(default_factory=SessionToken)
+
+
+def build_launch_plan(
+    seed: int,
+    *,
+    profile_dir: "str | os.PathLike[str]",
+    proxy: Optional[Dict[str, str]] = None,
+    timezone: str = "auto",
+    locale: str = "auto",
+    pin: Optional[Dict[str, Any]] = None,
+    binary_ver: Optional[str] = None,
+    # <M> THE BINARY THE CALLER ALREADY HAS. Without this parameter the function
+    # ALWAYS resolves an engine - `ensure_binary()` - even when the caller is
+    # holding the binary and wants this plan only for the prefs and the
+    # environment. That is wasted work in the best case and a refusal in the real
+    # one: with a LOCAL seal there is nothing to download, so `ensure_binary()`
+    # raises and takes every caller with it, including the e2e tests that hand
+    # the binary in two lines below. Measured 2026-08-28: 21 reds on the e2e,
+    # identical on both transports, all of them this.
+    binary_path: Optional[str] = None,
+    extra_args: Optional[List[str]] = None,
+    # ⛔ THE DEFAULT WAS "about:blank", REMOVED 2026-08-20 WITH THE NEWTAB REVERT.
+    # A URL on the command line TAKES PRECEDENCE over the startup page, so while
+    # it was there the direct launch did not open about:home even with the five
+    # source files restored to upstream and the newtab prefs gone: it was the
+    # second suppression, independent of `browser.startup.page`.
+    #
+    # And it closes another one, measured 2026-08-20: an initial URL silences the
+    # calls to `accounts.firefox.com` and `addons.mozilla.org` that retail makes
+    # at startup (2/2 without a URL, 0/2 with). On Playwright that argument is
+    # imposed by the library and is not ours; HERE it was ours, and it was a
+    # choice.
+    #
+    # The parameter stays public: anyone who wants a page passes one explicitly.
+    url: str = "",
+    # ⛔ The direct launch must be able to switch this on too, or the function
+    # exists only for whoever comes through the wrapper. The default is False as
+    # it is over there: the point is the default, not the switch.
+    show_cursor: Optional[bool] = None,
+) -> LaunchPlan:
+    """The single direct-launch entry point (no Playwright, no Qt).
+
+    Give it a ``seed`` and a ``profile_dir`` (plus optionally a concrete
+    ``proxy`` dict, ``timezone``/``locale`` - both default to ``"auto"`` and are
+    resolved from the proxy egress - a ``pin`` and a ``binary_ver``); it resolves
+    geo, generates the fingerprint profile, translates it to prefs, writes
+    ``user.js`` into ``profile_dir``, and returns the binary path + argv + env.
+    Any direct-launch consumer uses this so the session-setup logic lives in
+    one place (mirrors the wrapper's __aenter__) - the profile manager did,
+    until its 2026-08-18 deletion.
+    ``proxy`` must already be a concrete endpoint dict (SOCKS/HTTP), not an intent.
+    """
+    # Lazy imports keep launch.py free of import-order coupling with the rest of
+    # the package (this module is imported near the end of invisible_core/__init__).
+    from .download import ensure_binary
+    from ._fpforge import generate_profile
+    from ._geo import prepare_session_geo
+    from .prefs import compose_session_prefs
+
+    # ⛔ THIS PATH HAS NO PROXY, AND IT SAYS SO BEFORE DOING ANYTHING ELSE. It
+    # launches the binary with subprocess, so it holds no protocol connection and
+    # cannot send `Browser.setBrowserProxy`, which since 2026-08-30 is the only
+    # road. There used to be three, and this one wrote routing prefs of its own:
+    # that duplication is what produced the defect, so it was deleted rather than
+    # repaired.
+    #
+    # The refusal sits HERE, above `prepare_session_geo`, and that is not a
+    # detail: that line resolves timezone and locale THROUGH the proxy. Refusing
+    # afterwards would mean half a session had already been built on the proxy's
+    # country.
+    if proxy and (proxy.get("server") or "").strip().lower() not in ("", "direct://"):
+        raise ValueError(
+            "build_launch_plan() cannot take a proxy: it starts the binary "
+            "directly, so there is no protocol connection to send the engine's "
+            "proxy command on, and a browser launched without the proxy it was "
+            "given announces one country and connects from another. Drive the "
+            "proxy through invisible_playwright, which holds the connection.")
+
+    # <M> Resolved only when it is needed. `ensure_binary` checks the engine
+    # against the seal, which is right when we are the ones choosing the engine;
+    # when the caller chooses it, the caller does that check - and the place it
+    # does it is `conn.launch`, not here.
+    if binary_path:
+        binary = str(binary_path)
+    else:
+        binary = str(ensure_binary(binary_ver) if binary_ver else ensure_binary())
+    # Resolves timezone="auto" from the egress, discovers the egress IP and
+    # decides the language, in one call; raises behind a dead proxy
+    # (fail-early, by design). No "auto" branch of its own here: the language
+    # is the geo decision's, like the timezone.
+    geo = prepare_session_geo(timezone, proxy, locale)
+    fp = generate_profile(seed=seed, pin=pin)
+    # One composition for all three entry points (prefs.py). This path takes the
+    # proxy layer and the hard-kill layer; it does NOT write the humanize prefs,
+    # which is what humanize=None means - see compose_session_prefs.
+    prefs = compose_session_prefs(
+        fp, locale=geo.locale, timezone=geo.timezone,
+        proxy=proxy, survive_hard_kill=True,
+        show_cursor=show_cursor,
+    ).prefs
+    pdir = Path(profile_dir)
+    write_user_js(pdir, prefs)
+    env = build_launch_env(prefs, srflx_declared=geo.srflx_to_declare())
+    argv = [binary, "-no-remote", "-profile", str(pdir)]
+    argv += list(extra_args or [])
+    if url:
+        argv.append(url)
+    # Mint the identity here rather than in each consumer: the manager had none
+    # at all and leaked its whole tree on every kill, and a token that is not
+    # part of the plan is a token somebody has to remember to add to the env.
+    token = SessionToken.mint()
+    return LaunchPlan(binary=binary, profile_dir=pdir, argv=argv,
+                      env=token.stamp(env), session_token=token)

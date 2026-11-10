@@ -1,0 +1,311 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# user-install.yml - can a person who has never seen this repo install it and
+# drive a browser, on the two operating systems we claim to support?
+#
+# WHY THIS EXISTS, SEPARATELY FROM e2e.yml.
+# e2e.yml installs the wrapper FROM THE CHECKOUT and then pins Playwright by
+# hand. That is the right shape for testing a change: it exercises the code in
+# the PR. It is the wrong shape for answering "does the published thing work",
+# and the difference is not academic:
+#
+#   * a checkout install never resolves `invisible-core==X.Y.Z` from the index,
+#     so the entire pin mechanism - the part most likely to break a release,
+#     and the reason a binary bump is a two-package release (core, then the
+#     consumer that pins it - three until invisible_firefox was deleted on
+#     2026-08-18) - is outside what that job can see;
+#   * installing a blessed `playwright==<pin>` afterwards REPAIRS the venv. If
+#     the declared range resolves to a client the shipped Juggler cannot speak,
+#     that manual line turns the job green while every fresh install is broken.
+#     What a user gets is what the installer resolves from the declaration,
+#     and that is what has to be under test.
+#
+# So this workflow installs nothing from the checkout except the test files. It
+# runs the README's install lines (`uv add invisible-core`, in a project
+# `uv init` made) against the index, and runs the result the way somebody's
+# first script would.
+#
+# WHY IT MUST NOT BE MADE TOLERANT.
+# There is a real window in which this cannot pass: between publishing the core
+# and publishing the consumers. The tempting fixes - `|| true`, `--no-deps`, a
+# git fallback - all produce a GREEN job that installed nothing, and that lie
+# outlives the window by months. A red run during a publish is correct and
+# readable. See core-on-index.yml, which makes the same argument at length.
+#
+# WHY BOTH OPERATING SYSTEMS.
+# The entry point here is a gui-script, which is built differently on Windows
+# (no console attached) than on Linux, and the install itself resolves a
+# platform-dependent dependency tree. Neither is visible from one runner.
+#
+# THE MISTAKE THIS EXISTS TO CATCH: this is the package BOTH consumers pin with
+# an exact `invisible-core==X.Y.Z`. A core broken on the index breaks both of
+# them at once, and neither consumer's own test would say the cause is upstream
+# - it would look like two unrelated failures. Its tests existed since
+# 2026-07-26 and named this workflow, which did not exist in this repository.
+# ─────────────────────────────────────────────────────────────────────────────
+name: user-install
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "index (what users get) or git (an unpublished commit)"
+        required: false
+        default: index
+        type: choice
+        options: [index, git]
+  schedule:
+    # Daily. The published artifacts do not change on their own, but everything
+    # around them does: pip resolves a new Playwright, GitHub moves a release
+    # asset, an index mirror lags. Those break users without any commit here,
+    # so a run triggered only by pushes would never see them.
+    - cron: "05 6 * * *"   # first of the two (three until invisible_firefox was deleted 2026-08-18): the consumer pins this package, so if it is broken on the index its run is noise
+  # ⛔ THE LEDGER PULL REQUEST, not `release: published` ([B347]). The Release
+  # is created by the publish workflow with GITHUB_TOKEN, and an event that
+  # token causes starts no other workflow: on `release:` this job had never run
+  # at release time. The ledger PR exists only after the upload and `record`,
+  # and merging it waits for this run, so a release does not close before what
+  # it published installs. `python -m invisible_core.install_job` checks the
+  # wiring.
+  pull_request:
+    paths:
+      - PUBLISHED.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: user-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    name: ${{ matrix.os }} - install from ${{ github.event.inputs.source || 'index' }} and launch
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false      # one OS failing must not hide the other's result
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      # Only what the TEST needs. The package under test is installed by the
+      # test itself, into a venv it creates, from the index - installing it
+      # here as well would put a second copy on the path and the assertions
+      # would be reading the wrong one.
+      - name: Test harness only
+        run: python -m pip install --upgrade pip pytest packaging
+
+      # A published version whose seal names a DELETED engine release is a
+      # version nobody can make work: pip resolves it happily and the browser
+      # can never be downloaded. That is what issue #51 looked like from the
+      # outside, and the only reason PyPI escaped it is that the retirement
+      # (everything below firefox-14) happened while every published core still
+      # named firefox-18.
+      #
+      # Escaping by luck is not a property. This asks the question directly, on
+      # every version the index still serves, every day: does the engine release
+      # this wheel is sealed to still exist? Retiring an engine that a published
+      # package needs becomes something we find out about within 24 hours rather
+      # than from a user.
+      #
+      # Deliberately NOT part of the unit suite: it needs the network and the
+      # GitHub API, and a unit suite that fails when a CDN hiccups is a suite
+      # people stop reading.
+      - name: every published seal points at an engine that still exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import io, json, os, sys, tempfile, urllib.error, urllib.request, zipfile
+
+          REPO = "feder-cr/firefox_antidetect_patch"
+          DIST = "invisible-core"
+
+          def gh(url):
+              req = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
+
+          live = {r["tag_name"] for r in
+                  gh(f"https://api.github.com/repos/{REPO}/releases?per_page=100")}
+          print("live engine releases:", sorted(live))
+          if not live:
+              sys.exit("::error::no engine releases found at all - refusing to "
+                       "call that a pass")
+
+          index = json.load(urllib.request.urlopen(
+              f"https://pypi.org/pypi/{DIST}/json", timeout=60))
+          broken, checked = [], 0
+          for version, files in sorted(index["releases"].items()):
+              wheel = next((f for f in files if f["filename"].endswith(".whl")), None)
+              if not wheel or wheel.get("yanked"):
+                  continue
+              blob = urllib.request.urlopen(wheel["url"], timeout=120).read()
+              with tempfile.NamedTemporaryFile(suffix=".whl", delete=False) as tmp:
+                  tmp.write(blob)
+                  path = tmp.name
+              tag = None
+              with zipfile.ZipFile(path) as z:
+                  for name in z.namelist():
+                      if name.endswith("invisible_core/seal.json"):
+                          tag = json.loads(z.read(name))["tag"]
+                          break
+              if tag is None:
+                  print(f"::warning::{version} carries no seal.json")
+                  continue
+              checked += 1
+              status = "ok" if tag in live else "MISSING"
+              print(f"  {version:10} seal={tag:14} {status}")
+              if tag not in live:
+                  broken.append((version, tag))
+
+          if not checked:
+              sys.exit("::error::no published wheel carried a seal - this check "
+                       "verified nothing")
+          if broken:
+              for version, tag in broken:
+                  print(f"::error title=dead engine::{DIST} {version} is sealed to "
+                        f"{tag}, which no longer exists as a release. Anyone who "
+                        f"resolves that version cannot download a browser.")
+              sys.exit(1)
+          print(f"all {checked} published versions point at a live engine")
+          PY
+
+      # PyPI does not serve a new version to pip the instant twine finishes, and
+      # this workflow runs on the ledger pull request, which the publish job
+      # opens seconds after the upload.
+      # MEASURED 2026-07-28: invisible-firefox 0.2.6 was uploaded, the release was
+      # created about forty seconds later, and the pip install below still resolved
+      # 0.2.5. The job reported a forgotten publish that had happened two minutes
+      # earlier, which is the most expensive kind of red: it looks exactly like the
+      # real defect this workflow exists to catch.
+      #
+      # Bounded at five minutes, so a genuinely forgotten publish still fails. The
+      # PER-VERSION endpoint is the authority; the aggregate `info.version` lags it
+      # by minutes and has its own trap, so this asks for the exact URL.
+      #
+      # Only on the ledger pull request. A scheduled or dispatched run is not
+      # racing anything, and a wait there would hide a real absence behind five
+      # minutes of polling.
+      - name: wait for the index to serve this version
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, sys, time, tomllib, urllib.error, urllib.request
+          meta = tomllib.load(open("pyproject.toml", "rb"))["project"]
+          dist = meta["name"]
+          # NOT meta["version"]. This package declares `dynamic = ["version"]` -
+          # the version is DERIVED from the packaged seal's tag plus
+          # CORE_REVISION, and there is no literal in pyproject.toml to read. So
+          # this step raised KeyError: 'version' on line 3, on every release, on
+          # both runners, since it was written: the check that a user can install
+          # this from the index and launch it had never once executed. Found
+          # 2026-08-01 by reading a red run that had been red all along.
+          #
+          # Derived the way the package derives it - but LOADED AS A FILE, not
+          # imported as `invisible_core._version`, which is what the fix for the
+          # KeyError above did and what broke this step the next time it ran.
+          # Importing a submodule executes the PACKAGE first, and this job
+          # installs pip, pytest and packaging only, so `invisible_core/__init__`
+          # died on `No module named 'platformdirs'` - one line below a comment
+          # explaining the previous fix. `_version.py` needs nothing but json,
+          # pathlib and the seal.json sitting beside it, so loading the file
+          # directly is both correct and dependency-free.
+          import importlib.util
+          _spec = importlib.util.spec_from_file_location(
+              "_core_version", "src/invisible_core/_version.py")
+          _mod = importlib.util.module_from_spec(_spec)
+          _spec.loader.exec_module(_mod)
+          version = _mod.__version__
+          url = f"https://pypi.org/pypi/{dist}/{version}/json"
+          deadline = time.monotonic() + 300
+          n = 0
+          while True:
+              n += 1
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as r:
+                      if json.load(r).get("urls"):
+                          print(f"::notice::{dist} {version} is on the index (attempt {n})")
+                          sys.exit(0)
+              except urllib.error.HTTPError as e:
+                  if e.code != 404:
+                      print(f"::warning::index returned HTTP {e.code}; not waiting further")
+                      sys.exit(0)
+              except OSError as e:
+                  print(f"index unreachable ({e}); retrying")
+              if time.monotonic() >= deadline:
+                  print(f"::warning::{dist} {version} still not on the index after 300s; "
+                        f"running the checks anyway so a real absence is reported")
+                  sys.exit(0)
+              time.sleep(10)
+          PY
+
+      # The README's way in is uv, so the user path is uv's: installed the way
+      # its own installer puts it, which is what the README's reader runs. A
+      # venv uv makes has no pip in it, and that is the environment under test.
+      - name: uv, from its own installer (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: uv, from its own installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+          "$env:USERPROFILE\.local\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: The user path, end to end
+        env:
+          # The release walk asks the GitHub API once per published version.
+          # Unauthenticated that is 60 calls an hour PER RUNNER IP, and the
+          # walk hit 403 on its eleventh call when measured by hand. A
+          # rate-limited walk SKIPS, and a skip is not a check.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INVPW_E2E_SOURCE: ${{ github.event.inputs.source || 'index' }}
+        shell: bash
+        run: |
+          set -o pipefail   # or the tee below would swallow pytest's exit code
+          # No display needed and no xvfb installed: nothing here opens the UI.
+          # The manager's browser-driving tests are marked `integration` and
+          # live elsewhere; this job is about the install path only.
+          # The conftest loads invisible_core.testing.world, which needs the
+          # package this runner does not have on purpose: blocked, so it is
+          # never imported. Every test here is e2e, which it would allow anyway.
+          python -m pytest tests/test_user_install_e2e.py -m e2e \
+            -o addopts="" -p no:invisible_core.testing.world -v -rs | tee e2e-report.txt
+
+      # A run whose tests all SKIPPED is not a pass, and it is the failure this
+      # suite is most exposed to: every test here is gated on `-m e2e` and
+      # several on a platform. `-rs` above prints the skips; this turns "nothing
+      # ran" into a refusal rather than a green tick.
+      - name: Refuse a run in which nothing actually ran
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          # pytest's own exit code cannot distinguish "all passed" from "all
+          # skipped", so the count is read back from the report it wrote.
+          report = pathlib.Path("e2e-report.txt")
+          if not report.is_file():
+              print("no report written; the step above did not run", file=sys.stderr)
+              sys.exit(1)
+          text = report.read_text(encoding="utf-8", errors="ignore")
+          m = re.search(r"(\d+) passed", text)
+          passed = int(m.group(1)) if m else 0
+          if passed < 5:
+              print(f"only {passed} test(s) actually ran (expected at least 5) - a suite that skipped "
+                    f"itself is not a pass", file=sys.stderr)
+              sys.exit(1)
+          print(f"{passed} tests ran")
+          PY
