@@ -1,0 +1,116 @@
+name: Desktop Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (for example: v1.1.1)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  desktop-build:
+    name: Build desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-22.04
+            platform: linux-x64
+          - os: macos-15-intel
+            platform: macos-x64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          architecture: x64
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          CORE_VERSION="$(node -p "require('./packages/core/package.json').version")"
+          DESKTOP_VERSION="$(node -p "require('./packages/desktop/package.json').version")"
+          CONFIG_VERSION="$(node -p "require('./packages/desktop/neutralino.config.json').version")"
+          test "${CORE_VERSION}" = "${DESKTOP_VERSION}"
+          test "${CORE_VERSION}" = "${CONFIG_VERSION}"
+          test "${RELEASE_TAG}" = "v${CORE_VERSION}"
+
+      - name: Build and smoke-check extracted desktop app
+        working-directory: packages/desktop
+        run: pnpm run build
+
+      - name: Save platform assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: packages/desktop/dist/release/*
+          if-no-files-found: error
+
+  desktop-publish:
+    name: Attach verified desktop assets
+    needs: desktop-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare full-download update manifest
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const tag = process.env.RELEASE_TAG;
+          const base = `https://github.com/${process.env.GH_REPO}/releases`;
+          // Legacy clients cannot upgrade the Node/runtime layout using .neu.
+          // A new endpoint keeps them from installing an incomplete update.
+          fs.writeFileSync('release-assets/update_manifest_v2.json', JSON.stringify({
+            applicationId: 'org.npmsafe.desktop',
+            version: tag.replace(/^v/, ''),
+            resourcesURL: `${base}/download/${tag}/resources.neu`,
+            requiresFullDownload: true,
+            downloadURL: `${base}/tag/${tag}`,
+            data: { requiresFullDownload: true, downloadURL: `${base}/tag/${tag}` },
+          }, null, 2) + '\n');
+          JS
+
+      - name: Attach release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" --title "${RELEASE_TAG}" --generate-notes
+          fi
+          gh release upload "${RELEASE_TAG}" release-assets/* --clobber

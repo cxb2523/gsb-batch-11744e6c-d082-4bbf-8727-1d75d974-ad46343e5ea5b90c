@@ -1,0 +1,69 @@
+{
+  "name": "@npm-safe/core",
+  "version": "1.1.3",
+  "description": "Local-first npm supply-chain scanner with metadata checks, bounded tarball inspection, CI gates, SQLite cache, and optional LLM analysis.",
+  "keywords": [
+    "npm",
+    "security",
+    "supply-chain",
+    "scanner",
+    "static-analysis",
+    "dependency-scanner",
+    "malware-detection",
+    "tarball",
+    "llm",
+    "cli"
+  ],
+  "license": "Apache-2.0",
+  "author": "Nisconder",
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "homepage": "https://github.com/nisconder/npm-safe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nisconder/npm-safe.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nisconder/npm-safe/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "npm-safe": "./dist/cli/cli.js"
+  },
+  "files": [
+    "dist",
+    "skill"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "better-sqlite3": "^12.11.1",
+    "commander": "^14.0.3",
+    "semver": "^7.8.5",
+    "type-fest": "^4.0.0",
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^26.4.0",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:cli": "tsc -p tsconfig.json",
+    "test": "node scripts/run-tests.mjs"
+  }
+}

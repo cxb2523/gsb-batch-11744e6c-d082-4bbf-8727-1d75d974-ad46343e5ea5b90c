@@ -1,0 +1,23 @@
+name: npm-safe
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Scan direct and transitive npm dependencies
+        # Add --deep to verify and inspect every published tarball. Deep mode
+        # fails closed when any package cannot be completely inspected.
+        run: npx --yes @npm-safe/core@1.0.5 ci --lockfile --fail-level dangerous

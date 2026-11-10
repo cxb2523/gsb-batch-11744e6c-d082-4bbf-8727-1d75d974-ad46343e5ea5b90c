@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Local pnpm cache/store (created when global pnpm dirs are not writable)
+.pnpm-cache/
+.pnpm-store/
+.pnpm-state/
+.node-gyp/
+
+# Build output
+dist/
+
+# Runtime data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+# npm-safe local runtime (config/history written when running inside the repo)
+.npm-safe/
+last-batch.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Internal planning/tooling
+.omo/
+.codegraph/
+
+# Local skills and agent config
+.opencode/
+
+# TypeScript
+*.tsbuildinfo
+.evaluation-demo/
+
+.next/
+.codex-remote-attachments/
