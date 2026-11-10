@@ -1,0 +1,54 @@
+name: Star history
+
+# Keeps docs/star-history.{json,svg} current. The README embeds the SVGs and
+# the website reads the JSON, so both refresh without a code change.
+#
+# The stargazers API rejects anonymous reads, which is why this runs here with
+# the Actions token rather than in the browser.
+
+on:
+  schedule:
+    - cron: '17 4 * * *' # daily, 04:17 UTC
+  workflow_dispatch: # regenerate on demand
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/star-history.mjs'
+      - 'scripts/lib/starSvg.mjs'
+      - 'apps/website/src/lib/starChart.js'
+      - '.github/workflows/star-history.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Regenerate star history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/star-history.mjs
+
+      - name: Commit if the chart moved
+        run: |
+          # Stage first: on the very first run these files are untracked, and
+          # `git diff` alone would report no change and skip the seed commit.
+          git add -A docs/
+          if git diff --cached --quiet; then
+            echo "No change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update star history [skip ci]"
+          git push

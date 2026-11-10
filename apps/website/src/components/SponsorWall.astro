@@ -1,0 +1,237 @@
+---
+// The sponsor wall — one component, two placements:
+//
+//   <SponsorWall cap={8} />   homepage: top sponsors, the rest behind
+//                             "+N more →" on /sponsors
+//   <SponsorWall />           /sponsors: the full wall
+//
+// Every call to action goes straight to GitHub Sponsors from wherever it's
+// rendered; the only link to /sponsors is the overflow count, which is the
+// one thing that page uniquely holds.
+//
+// Populated, it's a mosaic: each tile is sized against the largest sponsor
+// and packed into a dense grid, so bigger supporters read as bigger without
+// the wall sprawling. Empty, it's ghost slots fading out from a live "your
+// logo here" invite, then the pitch.
+//
+// The wall simply mirrors GitHub Sponsors: active sponsors are on it, lapsed
+// ones roll off at the next daily sync, one-time donations age out when
+// GitHub stops counting them as active. No hand-kept lists, no lifetime
+// placement promises — the copy only claims what the sync actually delivers.
+import { SPONSOR_URL, sponsors } from '../lib/sponsors.js'
+
+const { cap } = Astro.props
+
+const all = sponsors()
+const shown = cap ? all.slice(0, cap) : all
+const overflow = all.length - shown.length
+const empty = all.length === 0
+
+// ---- tile sizing -----------------------------------------------------------
+// Area is what the eye compares, so size follows the SQUARE ROOT of the amount
+// ratio: a 50x bigger sponsorship buys roughly 2.4x the footprint rather than
+// 50x. MAX is a constant, so however large sponsorships get, the wall has a
+// fixed ceiling. When every sponsor gives the same, there's no hierarchy to
+// show, so they all sit at one middling size instead of all maxing out.
+const MIN = 62, MID = 100, MAX = 148
+const ROW = 10, GAP = 14 // grid rail + gutter; a tile spanning n rows is 24n-14 tall
+
+const amounts = shown.map((s) => s.monthly || 0)
+const hi = amounts.length ? Math.max(...amounts) : 0
+const lo = amounts.length ? Math.min(...amounts) : 0
+const flat = hi <= 0 || hi === lo
+
+const sizeFor = (a) => (flat ? MID : MIN + (MAX - MIN) * Math.sqrt((a || 0) / hi))
+const spanFor = (h) => Math.max(2, Math.round((h + GAP) / (ROW + GAP)))
+
+// Quickdraw's own shape colors, so a sponsor without a logo still looks native.
+const MONO = ['#4263eb', '#ae3ec9', '#099268', '#e16919', '#e03131', '#0e8f9b', '#7c4dcc', '#f1ac4b']
+const hashOf = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h }
+const initialsOf = (n) => n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
+
+// Only a clear leader goes wide, and only once the wall is big enough for it
+// to look deliberate rather than lopsided.
+const tiles = shown.map((s, i) => {
+  const wide = i === 0 && !flat && shown.length >= 3
+  const h = (wide ? 1.25 : 1) * sizeFor(s.monthly)
+  // Once a tile is tall enough for two lines, stack the mark above the name so
+  // the name gets the full width instead of being squeezed beside the avatar.
+  const stack = wide || h >= 100
+  return {
+    ...s,
+    wide,
+    stack,
+    rows: spanFor(h),
+    cols: wide ? 2 : 1,
+    mark: Math.round(Math.max(22, Math.min(52, h * (stack ? 0.32 : 0.3)))),
+    fs: Math.max(12.5, Math.min(19, h * 0.13)).toFixed(1),
+    mono: MONO[hashOf(s.name) % MONO.length],
+    initials: initialsOf(s.name),
+  }
+})
+
+const ghosts = [0.72, 0.52, 0.36, 0.24, 0.15]
+---
+{empty ? (
+  <div class="wall empty">
+    <div class="ghost-row">
+      {ghosts.slice(0, 2).map((o) => <div class="slot ghost" style={`--o: ${o}`} aria-hidden="true"></div>)}
+      <a class="slot your-slot" href={SPONSOR_URL} rel="noopener">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Your logo here
+      </a>
+      {ghosts.slice(0, 2).reverse().map((o) => <div class="slot ghost" style={`--o: ${o}`} aria-hidden="true"></div>)}
+    </div>
+    <div class="pitch">
+      <svg class="heart" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.2 4.6 6.8 4.6c2.2 0 3.9 1.2 5.2 3 1.3-1.8 3-3 5.2-3 3.6 0 5.8 3.4 4.3 7.2C19.5 16.4 12 21 12 21Z"/></svg>
+      <p class="pitch-title">Nobody's here yet.</p>
+      <p class="pitch-copy">
+        Back the project and your logo goes right here, in front of every
+        developer who comes looking for a whiteboard SDK.
+      </p>
+      <a class="btn" href={SPONSOR_URL} rel="noopener">Claim the first spot</a>
+    </div>
+  </div>
+) : (
+  <div class="wall">
+    <div class="mosaic">
+      {tiles.map((s) => (
+        <a
+          class:list={['tile', { hero: s.wide, stack: s.stack }]}
+          href={s.url}
+          rel="noopener sponsored"
+          title={s.name}
+          style={`--rows:${s.rows};--cols:${s.cols};--mark:${s.mark}px;--fs:${s.fs}px;--mono:${s.mono}`}
+        >
+          {s.logo ? (
+            <img class="logo" src={s.logo} alt={s.name} loading="lazy" />
+          ) : (
+            <>
+              {/* the monogram sits underneath, so a dead avatar URL simply
+                  uncovers it instead of leaving a broken glyph */}
+              <span class="mark">
+                <span class="initials">{s.initials}</span>
+                {s.avatar && <img src={s.avatar} alt="" loading="lazy" onerror="this.remove()" />}
+              </span>
+              <span class="nm">{s.name}</span>
+            </>
+          )}
+        </a>
+      ))}
+      <a class="slot your-slot in-grid" href={SPONSOR_URL} rel="noopener">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Your logo
+      </a>
+    </div>
+    {overflow > 0 && (
+      <p class="more"><a href="/sponsors/">+ {overflow} more sponsor{overflow === 1 ? '' : 's'} →</a></p>
+    )}
+  </div>
+)}
+
+<style>
+  .wall {
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 24px;
+  }
+  .wall.empty { border-style: dashed; border-width: 1.5px; padding: 26px 26px 34px; text-align: center; }
+
+  /* ---- mosaic ---- */
+  /* A fine row rail plus dense flow: big tiles claim two columns, small ones
+     backfill whatever gap is left, so the block resolves into a rectangle
+     instead of a ragged trailing row. */
+  .mosaic {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+    grid-auto-rows: 10px;
+    grid-auto-flow: row dense;
+    gap: 14px;
+  }
+  .mosaic > * { grid-row: span var(--rows); grid-column: span var(--cols, 1); min-width: 0; }
+
+  .tile {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: #fff; border: 1px solid var(--line); border-radius: 13px;
+    padding: 0 16px; text-decoration: none; color: inherit; overflow: hidden;
+    transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+  }
+  .tile:hover {
+    transform: translateY(-3px); text-decoration: none;
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    box-shadow: 0 14px 30px -20px rgba(28, 27, 24, 0.55);
+  }
+  .tile.stack { flex-direction: column; gap: 10px; }
+  .tile.hero { gap: 12px; }
+
+  .mark {
+    position: relative; flex: none; overflow: hidden;
+    width: var(--mark); height: var(--mark); border-radius: 50%;
+    background: var(--mono); display: grid; place-items: center;
+  }
+  .mark .initials {
+    color: #fff; font-weight: 800; letter-spacing: -0.02em;
+    font-size: calc(var(--mark) * 0.42); line-height: 1;
+  }
+  .mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+  .nm {
+    font-weight: 700; font-size: var(--fs); color: var(--ink); letter-spacing: -0.01em;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tile .logo { max-height: 58%; max-width: 82%; object-fit: contain; display: block; }
+
+  /* ---- the invite slot, in both states ---- */
+  .slot {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    border: 1.5px dashed var(--line); border-radius: 13px;
+    color: var(--ink-soft); font-weight: 600; font-size: 13.5px;
+  }
+  .slot.ghost { flex: 0 0 172px; height: 64px; opacity: var(--o, 1); }
+  .your-slot {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    color: color-mix(in srgb, var(--accent) 75%, var(--ink));
+    background: color-mix(in srgb, var(--accent) 4%, transparent);
+    text-decoration: none;
+    transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  }
+  .your-slot:hover {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+    transform: translateY(-3px); text-decoration: none;
+  }
+  .your-slot.in-grid { --rows: 4; }
+  .ghost-row .your-slot { flex: 0 0 172px; height: 64px; }
+
+  /* ---- empty state ---- */
+  /* the row runs off both edges rather than wrapping; padding/negative margin
+     give the hover lift room to breathe without breaking that crop */
+  .ghost-row {
+    display: flex; justify-content: center; gap: 12px;
+    overflow: hidden; padding: 10px 0; margin: -10px 0;
+  }
+  .pitch { margin-top: 30px; }
+  .heart { color: color-mix(in srgb, var(--accent) 70%, var(--ink)); margin-bottom: 6px; }
+  .pitch-title { font-weight: 700; font-size: 18px; margin: 0 0 8px; color: var(--ink); }
+  .pitch-copy {
+    color: var(--ink-soft); max-width: 52ch; margin: 0 auto 22px;
+    text-wrap: balance; line-height: 1.6;
+  }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600;
+    background: var(--ink); color: var(--paper); font-size: 15.5px;
+  }
+  .btn:hover { text-decoration: none; background: #000; }
+
+  .more { margin: 14px 0 0; font-size: 14px; text-align: center; }
+
+  @media (max-width: 640px) {
+    .wall { padding: 16px; }
+    .wall.empty { padding: 18px 16px 26px; }
+    .mosaic { grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap: 12px; }
+    .pitch { margin-top: 22px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tile, .your-slot { transition: none; }
+    .tile:hover, .your-slot:hover { transform: none; }
+  }
+</style>

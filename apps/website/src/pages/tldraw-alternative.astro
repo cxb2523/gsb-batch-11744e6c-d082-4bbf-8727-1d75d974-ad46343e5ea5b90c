@@ -1,0 +1,124 @@
+---
+import Landing from '../layouts/Landing.astro'
+import CompareTable from '../components/CompareTable.astro'
+import { APP_URL, GITHUB_URL, SITE_URL } from '../consts.js'
+
+const title = 'Open-source tldraw alternative — Quickdraw'
+const description =
+  'Looking for a tldraw alternative? Quickdraw is an MIT-licensed whiteboard SDK with no license fee: React, React Native, and framework-free packages, zero dependencies, built-in sync.'
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebPage',
+      name: title,
+      url: `${SITE_URL}/tldraw-alternative/`,
+      description,
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Is there a free alternative to tldraw?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. Quickdraw is an MIT-licensed whiteboard SDK you can use in commercial products with no license fee. Excalidraw is another MIT option if you only need React.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does tldraw require a paid license?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: "tldraw's SDK is source-available under a custom license with a paid business tier for production use without attribution. See tldraw.dev for current terms.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I migrate from tldraw to Quickdraw?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'The APIs differ, but the concepts map closely: both have a store of records, snapshots for persistence, and diff streams for sync. Most integrations move in an afternoon.',
+          },
+        },
+      ],
+    },
+  ],
+}
+---
+<Landing title={title} description={description} jsonLd={jsonLd}>
+  <header class="page-head">
+    <h1>An open-source tldraw alternative</h1>
+    <p class="lede">
+      tldraw is a great SDK — and its custom license, with a paid business
+      tier, is how it's funded. If you'd rather build on an MIT license with
+      no fee attached, that's exactly why Quickdraw exists.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="/docs/">Get started</a>
+      <a class="btn" href={APP_URL} rel="noopener">Try the live app</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>Side by side</h2>
+    <CompareTable />
+    <p class="fine-print">
+      Reflects public docs as of August 2026 — see
+      <a href="https://tldraw.dev/community/license" rel="noopener nofollow">tldraw's license page</a>.
+      Spot an error? <a href={`${GITHUB_URL}/issues`}>Tell us and we'll fix it.</a>
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>Where Quickdraw differs</h2>
+    <p>
+      <strong>The license is MIT.</strong> Use it in a commercial product,
+      modify it, redistribute it. There's no license key to manage and no
+      tier to upgrade to later. A small "Quickdraw" mark sits in the board's
+      corner by default; turning it off is a boolean, not a purchase.
+    </p>
+    <p>
+      <strong>The core doesn't need React.</strong> tldraw's SDK is a React
+      library. Quickdraw's engine is plain ESM with zero dependencies — it
+      runs in any web page, and the React package is a thin binding over it.
+      There's also a React Native package with Apple Pencil pressure and
+      palm rejection, which tldraw doesn't ship.
+    </p>
+    <p>
+      <strong>Sync is a data-model primitive.</strong> Every change emits a
+      JSON-safe diff. Send it over a WebSocket, apply it with
+      <code>store.applyDiff(diff, 'remote')</code>, and remote changes stay
+      out of local undo history. No sync server product required.
+    </p>
+    <h2>Where tldraw is ahead</h2>
+    <p>
+      Honesty helps you choose: tldraw has years of polish, a bigger team, a
+      richer shape ecosystem, and a hosted sync service. If you need embedded
+      frames, custom shape plugins, or a supported sync backend today — and
+      the license works for you — it's a strong choice. Quickdraw covers the
+      core whiteboard experience completely and is improving in public, with
+      an MIT license the whole way.
+    </p>
+  </section>
+
+  <section>
+    <h2>Two minutes to a board</h2>
+    <pre><code>{`npm install @quickdrawjs/react
+
+import { Quickdraw } from '@quickdrawjs/react'
+import '@quickdrawjs/core/quickdraw.css'
+
+export default function Board() {
+  return <Quickdraw theme="light" grid="dots" />
+}`}</code></pre>
+    <p class="more-links">
+      More: <a href="/docs/">documentation</a> ·
+      <a href="/excalidraw-alternative/">Excalidraw alternative</a> ·
+      <a href="/tldraw-vs-excalidraw/">tldraw vs Excalidraw</a> ·
+      <a href="/blog/">blog</a>
+    </p>
+  </section>
+</Landing>

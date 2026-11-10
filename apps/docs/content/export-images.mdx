@@ -1,0 +1,65 @@
+---
+title: Exporting images
+description: PNG export of the whole board or a selection, on paper or transparent — via the toolbar or the exportImage API.
+---
+
+# Exporting images
+
+## From the toolbar
+
+The board menu exports PNG out of the box: the whole board or the current
+selection, on the paper background or transparent, plus copy-as-image to
+the clipboard. By default exports download as
+`quickdraw-<timestamp>.png`.
+
+## Intercepting exports
+
+Pass `onSave` to receive the blob instead — upload it, attach it, preview
+it:
+
+```jsx
+<Quickdraw onSave={async (blob, background) => {
+  const form = new FormData()
+  form.append('file', blob, 'board.png')
+  await fetch('/api/upload', { method: 'POST', body: form })
+}} />
+```
+
+```js
+// plain JS
+createQuickdraw({ container, onSave: (blob, background) => upload(blob) })
+```
+
+## The API
+
+`exportImage` gives you full control from code:
+
+```js
+const blob = await editor.exportImage({
+  background: true,   // paper background; false = transparent
+  scale: 2,           // output pixel density
+  margin: 48,         // page-space padding around the content
+  ids: null,          // a Set of shape ids to export just those
+})
+```
+
+Export the current selection:
+
+```js
+const blob = await editor.exportImage({
+  background: false,
+  ids: new Set(editor.selection),
+})
+```
+
+Exports render the same way the canvas does — grids included when the
+paper background is kept — so what you see is what you save.
+
+## React Native
+
+`exportPng` crosses the bridge and resolves with a data URL, ready for
+sharing sheets or `FileSystem` writes:
+
+```js
+const dataUrl = await board.current.exportPng({ scale: 2 })
+```

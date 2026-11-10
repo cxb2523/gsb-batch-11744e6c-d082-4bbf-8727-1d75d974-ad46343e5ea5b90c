@@ -1,0 +1,119 @@
+---
+import Landing from '../layouts/Landing.astro'
+import CompareTable from '../components/CompareTable.astro'
+import { GITHUB_URL, SITE_URL } from '../consts.js'
+
+const title = 'tldraw vs Excalidraw (vs Quickdraw): which whiteboard SDK in 2026?'
+const description =
+  'tldraw vs Excalidraw compared for embedding a whiteboard: licensing, React requirements, React Native support, sync, and pricing — plus where Quickdraw fits as the MIT third option.'
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebPage',
+      name: title,
+      url: `${SITE_URL}/tldraw-vs-excalidraw/`,
+      description,
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Is tldraw or Excalidraw better for embedding a whiteboard?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'tldraw offers deeper SDK polish under a custom license with a paid tier; Excalidraw is MIT and free but React-only with a smaller embedding API. Quickdraw is a third option: MIT, framework-free core, and React Native support.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Is tldraw free for commercial use?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: "tldraw's SDK can be used commercially, but production use without attribution requires a paid business license. Check tldraw.dev for current terms.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Is Excalidraw free for commercial use?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes, Excalidraw is MIT-licensed. Its embeddable component targets React apps.',
+          },
+        },
+      ],
+    },
+  ],
+}
+---
+<Landing title={title} description={description} jsonLd={jsonLd}>
+  <header class="page-head">
+    <h1>tldraw vs Excalidraw — and the third option</h1>
+    <p class="lede">
+      You need a whiteboard in your product and the shortlist writes itself:
+      tldraw or Excalidraw. They're both good. They also make different
+      trade-offs — and depending on your stack, the right answer might be
+      neither.
+    </p>
+  </header>
+
+  <section class="prose">
+    <h2>The short version</h2>
+    <ul>
+      <li><strong>Pick tldraw</strong> if you want the deepest SDK on the market, you're in React, and the custom license (with its paid business tier) works for your budget.</li>
+      <li><strong>Pick Excalidraw</strong> if you want MIT-licensed software with a big community, you're in React, and its hand-drawn style plus element set covers your needs.</li>
+      <li><strong>Pick Quickdraw</strong> if you want MIT licensing <em>and</em> need to run outside React — a plain web page, a custom framework, or React Native — or you want sync primitives without a dedicated server product.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Feature by feature</h2>
+    <CompareTable />
+    <p class="fine-print">
+      Reflects public docs as of August 2026 — see
+      <a href="https://tldraw.dev/community/license" rel="noopener nofollow">tldraw's license</a> and
+      <a href="https://github.com/excalidraw/excalidraw" rel="noopener nofollow">Excalidraw's repo</a>.
+      Spot an error? <a href={`${GITHUB_URL}/issues`}>Tell us and we'll fix it.</a>
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>Licensing, in plain words</h2>
+    <p>
+      <strong>tldraw</strong> moved from MIT to a custom license in 2024. You
+      can build and ship with it, but production use without its attribution
+      requires a paid business license. That's a reasonable way to fund an
+      excellent SDK — just budget for it.
+    </p>
+    <p>
+      <strong>Excalidraw</strong> is MIT. No fees at any scale. The
+      constraint is technical rather than legal: the embeddable package is
+      built for React, and collaboration runs through its room server.
+    </p>
+    <p>
+      <strong>Quickdraw</strong> is MIT too, packages for React, React
+      Native, and the bare web, and keeps sync in the data model — every
+      change is a JSON diff you can ship over any transport. It's the
+      youngest of the three; what it has is complete, and it's
+      <a href={GITHUB_URL} rel="noopener">built in the open</a>.
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>Questions that decide it</h2>
+    <ul>
+      <li><strong>Are you in React?</strong> No → tldraw and Excalidraw are out; Quickdraw's core is framework-free.</li>
+      <li><strong>Do you need mobile-native?</strong> Only Quickdraw ships a React Native package.</li>
+      <li><strong>Is the budget zero?</strong> Excalidraw and Quickdraw are MIT; tldraw has a paid tier you may eventually need.</li>
+      <li><strong>Do you need advanced canvas features today</strong> (frames, plugins, hosted sync)? tldraw is furthest ahead.</li>
+    </ul>
+    <p class="more-links">
+      More: <a href="/tldraw-alternative/">tldraw alternative</a> ·
+      <a href="/excalidraw-alternative/">Excalidraw alternative</a> ·
+      <a href="/blog/tldraw-vs-excalidraw-vs-quickdraw/">the long-form comparison</a> ·
+      <a href="/docs/">Quickdraw docs</a>
+    </p>
+  </section>
+</Landing>

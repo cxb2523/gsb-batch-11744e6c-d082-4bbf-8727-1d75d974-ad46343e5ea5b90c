@@ -1,0 +1,81 @@
+---
+title: React Native
+description: The Quickdraw React Native component — Apple Pencil pressure, palm rejection, Expo support, and the typed WebView bridge.
+---
+
+# React Native
+
+```sh
+npm install @quickdrawjs/react-native react-native-webview
+```
+
+The engine ships *inside the package* as a single self-contained HTML page —
+no network fetch, works offline, nothing to cache. It renders in a WebView
+with a typed message bridge, so from your app's side it's an ordinary
+component: props in, events out, a ref with async methods.
+
+Works in Expo Go and EAS builds — the package has no native modules of its
+own.
+
+## Basic usage
+
+```jsx
+import { useRef } from 'react'
+import { Quickdraw } from '@quickdrawjs/react-native'
+
+export default function Board() {
+  const board = useRef(null)
+  return (
+    <Quickdraw
+      ref={board}
+      theme="dark"
+      grid="dots"
+      onChange={(diff) => console.log('changed', diff)}
+      style={{ flex: 1 }}
+    />
+  )
+}
+```
+
+## Props
+
+| Prop | Type | Default | |
+| --- | --- | --- | --- |
+| `theme` | `'light' \| 'dark'` | `'light'` | Live-switchable |
+| `grid` | `'none' \| 'lines' \| 'ruled' \| 'dots' \| 'crosses' \| 'iso'` | `'lines'` | Live-switchable |
+| `readonly` | `boolean` | `false` | Lock input |
+| `hideUi` | `boolean` | `false` | Hide the toolbar |
+| `themeToggle` / `gridControl` | `boolean` | `true` | Board-menu switches |
+| `watermark` | `boolean` | `true` | The [corner mark](/docs/watermark/) |
+| `snapshot` | JSON | — | Document loaded on init |
+| `styles` | object | — | Initial pen styles |
+| `style` | RN style | — | Passed to the WebView container |
+
+Callbacks: `onReady()`, `onChange(diff, source)`,
+`onSelectionChange(ids)`, `onThemeChange(id)`, `onGridChange(id)`,
+`onSave(dataUrl, background)`.
+
+## The bridge
+
+Ref methods are promise-based — requests cross the bridge and resolve with
+the engine's answer:
+
+```js
+const snapshot = await board.current.getSnapshot()   // plain JSON
+await board.current.loadSnapshot(saved)
+const png = await board.current.exportPng({ scale: 2 })  // data URL
+board.current.setTool('draw')
+board.current.undo()
+```
+
+## Pencil and palm rejection
+
+Stroke width follows Apple Pencil / S Pen pressure automatically. Once a
+stylus is seen, palm touches steer the camera instead of drawing — no
+configuration needed.
+
+## Syncing with web clients
+
+`onChange` emits the same JSON diffs the web packages produce, so a React
+Native client and a web client can share one relay. See
+[Real-time sync](/docs/sync/).

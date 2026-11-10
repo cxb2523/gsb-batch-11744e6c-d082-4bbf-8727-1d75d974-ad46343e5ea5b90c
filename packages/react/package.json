@@ -1,0 +1,49 @@
+{
+  "name": "@quickdrawjs/react",
+  "version": "0.3.0",
+  "description": "React component for Quickdraw — the MIT-licensed infinite-canvas whiteboard SDK.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "react",
+    "whiteboard",
+    "canvas",
+    "drawing",
+    "infinite-canvas",
+    "react-whiteboard",
+    "tldraw-alternative",
+    "excalidraw-alternative"
+  ],
+  "dependencies": {
+    "@quickdrawjs/core": "0.3.0"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "license": "MIT",
+  "homepage": "https://tryquickdraw.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quickdrawjs/quickdraw.git",
+    "directory": "packages/react"
+  },
+  "bugs": "https://github.com/quickdrawjs/quickdraw/issues",
+  "publishConfig": {
+    "access": "public"
+  }
+}

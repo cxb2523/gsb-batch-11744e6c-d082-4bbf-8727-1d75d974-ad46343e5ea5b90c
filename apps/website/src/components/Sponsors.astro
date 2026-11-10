@@ -1,0 +1,53 @@
+---
+// Homepage sponsors section — the top sponsors, with the rest behind the
+// wall's own "+N more →" link to /sponsors. Every call to action goes
+// straight to GitHub Sponsors. The wall carries its own CTA when empty, so
+// the extra button only appears once there are sponsors and the pitch card
+// is gone.
+import SponsorWall from './SponsorWall.astro'
+import { SPONSOR_URL, sponsors } from '../lib/sponsors.js'
+
+const hasSponsors = sponsors().length > 0
+---
+<section class="sponsors" id="sponsors">
+  <h2>Sponsors keep it MIT</h2>
+  <p class="section-lede">
+    Quickdraw has no license fees and never will. Sponsors are what keep it that way.
+  </p>
+
+  <SponsorWall cap={8} />
+
+  {hasSponsors && (
+    <div class="sponsor-actions">
+      <a class="btn primary" href={SPONSOR_URL} rel="noopener">Become a sponsor</a>
+    </div>
+  )}
+</section>
+
+<style>
+  /* index.astro's section rhythm is scoped to that file — restate it here.
+     Heading and lede stay left, like every other section; only the wall
+     card centers its own contents. */
+  .sponsors { margin-top: 96px; }
+  h2 { font-size: clamp(26px, 4vw, 34px); line-height: 1.2; margin: 0 0 16px; letter-spacing: -0.01em; }
+  /* no max-width: the line is short enough to sit on one row at desktop
+     widths, and wrapping it mid-sentence read worse than letting it run */
+  .section-lede { color: var(--ink-soft); margin: 0 0 26px; }
+
+  .sponsor-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600;
+    border: 1.5px solid var(--ink); color: var(--ink); font-size: 15.5px;
+  }
+  .btn:hover { text-decoration: none; background: var(--paper-2); }
+  .btn.primary { background: var(--ink); color: var(--paper); }
+  .btn.primary:hover { background: #000; }
+
+  @media (max-width: 640px) {
+    .sponsors { margin-top: 68px; }
+  }
+  @media (max-width: 460px) {
+    .sponsor-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .btn { text-align: center; }
+  }
+</style>

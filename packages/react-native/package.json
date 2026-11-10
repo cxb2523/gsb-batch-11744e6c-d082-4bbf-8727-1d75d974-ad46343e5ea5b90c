@@ -1,0 +1,62 @@
+{
+  "name": "@quickdrawjs/react-native",
+  "version": "0.3.0",
+  "description": "React Native component for Quickdraw — the MIT-licensed infinite-canvas whiteboard SDK (WebView-based).",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-html.mjs",
+    "prepack": "node scripts/build-html.mjs",
+    "prepare": "node scripts/build-html.mjs"
+  },
+  "sideEffects": false,
+  "keywords": [
+    "react-native",
+    "whiteboard",
+    "canvas",
+    "drawing",
+    "infinite-canvas",
+    "sketch",
+    "react-native-whiteboard",
+    "expo",
+    "tldraw-alternative",
+    "excalidraw-alternative"
+  ],
+  "dependencies": {
+    "@quickdrawjs/core": "0.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "peerDependencies": {
+    "react": ">=17",
+    "react-native": ">=0.70",
+    "react-native-webview": ">=11"
+  },
+  "license": "MIT",
+  "homepage": "https://tryquickdraw.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quickdrawjs/quickdraw.git",
+    "directory": "packages/react-native"
+  },
+  "bugs": "https://github.com/quickdrawjs/quickdraw/issues",
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,99 @@
+---
+import Base from './Base.astro'
+import { SITE_URL, GITHUB_URL, APP_URL } from '../consts.js'
+
+// Shared layout for markdown pages; blog posts (those with a date) get
+// article schema, byline, and the footer CTA.
+const { frontmatter } = Astro.props
+const fm = frontmatter ?? Astro.props
+const isPost = Boolean(fm.date)
+
+const jsonLd = isPost
+  ? {
+      '@context': 'https://schema.org',
+      '@type': 'BlogPosting',
+      headline: fm.title,
+      description: fm.description,
+      datePublished: fm.date,
+      author: { '@type': 'Organization', name: 'Quickdraw', url: SITE_URL },
+      mainEntityOfPage: new URL(Astro.url.pathname, SITE_URL).href,
+    }
+  : null
+---
+<Base title={`${fm.title} — Quickdraw`} description={fm.description} ogType={isPost ? 'article' : 'website'} jsonLd={jsonLd}>
+  <main class="article">
+    <article>
+      {isPost && (
+        <p class="meta">
+          <a href="/blog/">← Blog</a>
+          <span class="sep">·</span>
+          <time datetime={fm.date}>{new Date(fm.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</time>
+        </p>
+      )}
+      <h1>{fm.title}</h1>
+      <slot />
+    </article>
+    {isPost && (
+      <aside class="post-cta">
+        <div>
+          <strong>Quickdraw is an MIT-licensed whiteboard SDK.</strong>
+          <p>React, React Native, and plain JS — free for commercial use.</p>
+        </div>
+        <div class="cta-actions">
+          <a class="btn primary" href="/docs/">Get started</a>
+          <a class="btn" href={APP_URL} rel="noopener">Try the app</a>
+          <a class="btn" href={GITHUB_URL} rel="noopener">GitHub</a>
+        </div>
+      </aside>
+    )}
+  </main>
+</Base>
+
+<style is:global>
+  .article { max-width: 720px; margin: 0 auto; padding: 52px 20px 0; }
+  .article .meta { color: var(--ink-soft); font-size: 14px; margin: 0 0 10px; }
+  .article .meta .sep { margin: 0 8px; opacity: 0.5; }
+  .article h1 {
+    font-size: clamp(30px, 4.6vw, 40px); line-height: 1.16;
+    letter-spacing: -0.018em; margin: 0 0 26px; text-wrap: balance;
+  }
+  .article h2 {
+    font-size: 24px; margin: 44px 0 14px; letter-spacing: -0.01em;
+    padding-top: 18px; border-top: 1px solid var(--line);
+  }
+  .article h3 { font-size: 19px; margin: 28px 0 10px; }
+  .article p, .article li { font-size: 16.5px; line-height: 1.7; color: #2e2c27; }
+  .article li { margin-bottom: 6px; }
+  .article a { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 3px; }
+  .article a:hover { text-decoration-color: var(--accent); }
+  .article pre { margin: 18px 0; }
+  .article kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em;
+    background: #fff; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 6px; padding: 2px 7px;
+  }
+  .article table {
+    border-collapse: collapse; width: 100%; font-size: 15px; margin: 18px 0;
+    background: #fff; border: 1px solid var(--line);
+  }
+  .article th, .article td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .article thead th { background: var(--paper-2); font-size: 14px; }
+  .article tbody tr:last-child td { border-bottom: none; }
+  .article blockquote { border-left: 3px solid var(--accent); margin: 18px 0; padding: 4px 0 4px 18px; color: var(--ink-soft); }
+  .article img { max-width: 100%; border-radius: var(--radius); }
+
+  .post-cta {
+    margin-top: 56px; padding: 26px 30px;
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    display: flex; flex-wrap: wrap; gap: 18px; align-items: center; justify-content: space-between;
+  }
+  .post-cta p { margin: 4px 0 0; color: var(--ink-soft); font-size: 15px; }
+  .post-cta .cta-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .post-cta .btn {
+    display: inline-block; padding: 9px 18px; border-radius: 999px; font-weight: 600;
+    border: 1.5px solid var(--ink); color: var(--ink); font-size: 14.5px; text-decoration: none;
+  }
+  .post-cta .btn:hover { background: var(--paper-2); }
+  .post-cta .btn.primary { background: var(--ink); color: var(--paper); }
+  .post-cta .btn.primary:hover { background: #000; }
+</style>

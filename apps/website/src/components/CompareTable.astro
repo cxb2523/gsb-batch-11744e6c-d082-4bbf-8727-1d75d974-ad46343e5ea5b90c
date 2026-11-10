@@ -1,0 +1,104 @@
+---
+// The one comparison table, shared by the homepage and the comparison pages.
+// Cells are yes / no / partial marks so the differences read at a glance;
+// nuance goes in the small note under the mark, not in a wall of prose.
+const yes = { kind: 'yes' }
+const no = { kind: 'no' }
+const partial = (note) => ({ kind: 'partial', note })
+const text = (value, strong = false) => ({ kind: 'text', value, strong })
+
+const ROWS = [
+  { label: 'License', cells: [text('MIT', true), text('Custom'), text('MIT', true)] },
+  { label: 'Free for commercial use, no paid tiers', cells: [yes, partial('paid business license tier'), yes] },
+  { label: 'React component', cells: [yes, yes, yes] },
+  { label: 'Works without React', cells: [yes, no, no] },
+  { label: 'React Native package', cells: [yes, no, no] },
+  { label: 'Zero-dependency core', cells: [yes, no, no] },
+  { label: 'Bundle size (min + gzip)', cells: [text('~25 kB', true), text('~496 kB'), text('~344 kB')] },
+  { label: 'Pressure ink + palm rejection', cells: [yes, yes, partial('pressure only')] },
+  { label: 'Diff-based sync primitive', cells: [yes, yes, partial('via excalidraw-room')] },
+]
+---
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th></th>
+        <th class="us">Quickdraw</th>
+        <th>tldraw SDK</th>
+        <th>Excalidraw</th>
+      </tr>
+    </thead>
+    <tbody>
+      {ROWS.map((row) => (
+        <tr>
+          <td class="feature">{row.label}</td>
+          {row.cells.map((cell, i) => (
+            <td class={i === 0 ? 'us' : ''}>
+              {cell.kind === 'yes' && (
+                <span class="mark yes" role="img" aria-label="Yes">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10.5 8.5 14 15 6.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
+              )}
+              {cell.kind === 'no' && (
+                <span class="mark no" role="img" aria-label="No">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+                </span>
+              )}
+              {cell.kind === 'partial' && (
+                <span class="partial-cell">
+                  <span class="mark partial" role="img" aria-label="Partial">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+                  </span>
+                  <small>{cell.note}</small>
+                </span>
+              )}
+              {cell.kind === 'text' && (cell.strong ? <strong>{cell.value}</strong> : <span class="soft">{cell.value}</span>)}
+            </td>
+          ))}
+        </tr>
+      ))}
+    </tbody>
+  </table>
+</div>
+<p class="table-note">
+  Bundle sizes are minified + gzipped. Competitor figures from
+  <a href="https://bundlephobia.com/package/tldraw" rel="nofollow">Bundlephobia</a>
+  (tldraw 5.2.5, Excalidraw 0.18.1); Quickdraw measured the same way. Weight is
+  one axis of many — both alternatives ship more features than Quickdraw does.
+</p>
+
+<style>
+  .table-wrap {
+    overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius);
+    background: #fff;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 15px; }
+  th, td { text-align: center; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+  thead th { font-size: 14px; background: var(--paper-2); }
+  thead th.us {
+    color: var(--accent-ink);
+    background: color-mix(in srgb, var(--accent) 10%, var(--paper-2));
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.feature, th:first-child { text-align: left; }
+  td.feature { color: var(--ink); font-weight: 500; }
+  td.us { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+  .mark {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 50%; vertical-align: middle;
+  }
+  .mark svg { width: 15px; height: 15px; }
+  .mark.yes { background: #dcf2e3; color: #157347; }
+  .mark.no { background: #fbe3e0; color: #c0392b; }
+  .mark.partial { background: #fdf0d3; color: #a5720d; }
+  .partial-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; }
+  .partial-cell small { font-size: 11.5px; color: var(--ink-soft); line-height: 1.3; }
+  .soft { color: var(--ink-soft); }
+
+  .table-note {
+    margin: 10px 2px 0; font-size: 13px; line-height: 1.5; color: var(--ink-soft);
+  }
+  .table-note a { color: inherit; }
+</style>

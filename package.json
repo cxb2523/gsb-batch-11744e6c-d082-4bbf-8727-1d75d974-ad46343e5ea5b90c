@@ -1,0 +1,37 @@
+{
+  "name": "quickdraw-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Quickdraw \u2014 the MIT-licensed infinite-canvas whiteboard SDK. Monorepo root.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/react-demo",
+    "examples/sync",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run && npm run test --workspace=quickdraw-sync-example",
+    "test:watch": "vitest",
+    "build": "npm run build --workspace=@quickdrawjs/react-native",
+    "dev": "npm run dev --workspace=quickdraw-react-demo",
+    "dev:sync": "npm run dev --workspace=quickdraw-sync-example",
+    "typecheck": "tsc -p tsconfig.json",
+    "star-history": "node scripts/star-history.mjs",
+    "publish:all": "npm publish --workspace=@quickdrawjs/core --access public && npm publish --workspace=@quickdrawjs/react --access public && npm publish --workspace=@quickdrawjs/react-native --access public"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  },
+  "license": "MIT",
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true
+  }
+}

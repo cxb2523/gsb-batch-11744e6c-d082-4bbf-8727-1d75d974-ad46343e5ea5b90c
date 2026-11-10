@@ -1,0 +1,164 @@
+---
+import { SITE_URL, APP_URL, GITHUB_URL, SITE_NAME, SITE_TAGLINE } from '../consts.js'
+
+const {
+  title = `${SITE_NAME} — ${SITE_TAGLINE}`,
+  description = 'Quickdraw is a free, MIT-licensed whiteboard SDK for React, React Native, and plain JavaScript. An open-source tldraw alternative: no license fee, no license key, zero dependencies.',
+  ogType = 'website',
+  jsonLd = null,
+} = Astro.props
+
+const canonical = new URL(Astro.url.pathname, SITE_URL).href
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <link rel="canonical" href={canonical} />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="sitemap" href="/sitemap-index.xml" />
+  <meta property="og:type" content={ogType} />
+  <meta property="og:site_name" content={SITE_NAME} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:url" content={canonical} />
+  <meta property="og:image" content={`${SITE_URL}/og.png`} />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content={`${SITE_URL}/og.png`} />
+  {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+  <slot name="head" />
+</head>
+<body>
+  <header class="site-header">
+    <nav>
+      <a class="brand" href="/">
+        <svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <path d="M7 21 C7 12, 13 6.5, 20 7.5 C26.5 8.5, 27.5 16, 22 18.8 C17.5 21, 13 19.5, 14 15" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"/>
+          <circle cx="24.5" cy="24.5" r="2.6" fill="#2f6fed"/>
+        </svg>
+        Quickdraw
+      </a>
+      <div class="links">
+        <a href="/docs/">Docs</a>
+        <a href="/blog/">Blog</a>
+        <a href={GITHUB_URL} rel="noopener">GitHub</a>
+        <a class="cta" href={APP_URL} rel="noopener">Open the app</a>
+      </div>
+    </nav>
+  </header>
+  <slot />
+  <footer class="site-footer">
+    <div class="cols">
+      <div>
+        <strong>Quickdraw</strong>
+        <p>The MIT-licensed infinite-canvas whiteboard SDK. Free forever, for any use.</p>
+      </div>
+      <div>
+        <strong>Project</strong>
+        <a href={GITHUB_URL} rel="noopener">GitHub</a>
+        <a href={`${GITHUB_URL}/issues`} rel="noopener">Issues</a>
+        <a href={`${GITHUB_URL}/discussions`} rel="noopener">Discussions</a>
+        <a href={`${GITHUB_URL}/blob/main/CHANGELOG.md`} rel="noopener">Changelog</a>
+        <a href="/sponsors/">Sponsors</a>
+      </div>
+      <div>
+        <strong>Packages</strong>
+        <a href="https://www.npmjs.com/package/@quickdrawjs/core" rel="noopener">@quickdrawjs/core</a>
+        <a href="https://www.npmjs.com/package/@quickdrawjs/react" rel="noopener">@quickdrawjs/react</a>
+        <a href="https://www.npmjs.com/package/@quickdrawjs/react-native" rel="noopener">@quickdrawjs/react-native</a>
+      </div>
+      <div>
+        <strong>Learn</strong>
+        <a href="/docs/">Documentation</a>
+        <a href="/blog/">Blog</a>
+        <a href="/react-whiteboard/">React whiteboard</a>
+        <a href="/react-native-whiteboard/">React Native whiteboard</a>
+        <a href={APP_URL} rel="noopener">Try it online</a>
+      </div>
+      <div>
+        <strong>Compare</strong>
+        <a href="/tldraw-alternative/">tldraw alternative</a>
+        <a href="/excalidraw-alternative/">Excalidraw alternative</a>
+        <a href="/tldraw-vs-excalidraw/">tldraw vs Excalidraw</a>
+      </div>
+    </div>
+    <p class="fine">MIT licensed. Built in the open — contributions welcome.</p>
+  </footer>
+</body>
+</html>
+
+<style is:global>
+  :root {
+    --paper: #faf8f4;
+    --paper-2: #f1eee6;
+    --ink: #1c1b18;
+    --ink-soft: #57544c;
+    --line: #e3dfd4;
+    --accent: #2f6fed;
+    --accent-ink: #244fa8;
+    --note: #fff3b0;
+    --radius: 14px;
+    --max: 1080px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-ink); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre {
+    background: #14130f; color: #f4f2ea; padding: 18px 20px; border-radius: var(--radius);
+    overflow-x: auto; font-size: 13.5px; line-height: 1.6;
+  }
+  :not(pre) > code { background: var(--paper-2); padding: 2px 6px; border-radius: 6px; font-size: 0.9em; }
+
+  .site-header {
+    position: sticky; top: 0; z-index: 100;
+    background: color-mix(in srgb, var(--paper) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .site-header nav {
+    max-width: var(--max); margin: 0 auto; padding: 12px 20px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; color: var(--ink); }
+  .brand:hover { text-decoration: none; }
+  .site-header .links { display: flex; align-items: center; gap: 22px; font-weight: 500; font-size: 15px; }
+  .site-header .links a { color: var(--ink-soft); }
+  .site-header .links a:hover { color: var(--ink); text-decoration: none; }
+  .site-header .cta {
+    background: var(--ink); color: var(--paper) !important; padding: 8px 16px;
+    border-radius: 999px; font-weight: 600;
+  }
+  .site-header .cta:hover { background: #000; }
+
+  .site-footer { border-top: 1px solid var(--line); margin-top: 90px; background: var(--paper-2); }
+  .site-footer .cols {
+    max-width: var(--max); margin: 0 auto; padding: 44px 20px 10px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 28px;
+  }
+  .site-footer strong { display: block; margin-bottom: 10px; }
+  .site-footer a { display: block; color: var(--ink-soft); padding: 3px 0; font-size: 14.5px; }
+  .site-footer p { color: var(--ink-soft); font-size: 14.5px; margin: 0; }
+  .site-footer .fine {
+    max-width: var(--max); margin: 0 auto; padding: 18px 20px 26px; font-size: 13px;
+  }
+  @media (max-width: 640px) {
+    .site-header .links { gap: 14px; font-size: 14px; }
+    .site-header .links a:not(.cta):not(:last-of-type) { display: none; }
+  }
+</style>

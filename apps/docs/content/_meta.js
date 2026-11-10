@@ -1,0 +1,17 @@
+export default {
+  index: 'Getting started',
+  '-- frameworks': { type: 'separator', title: 'Frameworks' },
+  react: 'React',
+  'react-native': 'React Native',
+  core: 'Plain JavaScript',
+  '-- guides': { type: 'separator', title: 'Guides' },
+  persistence: 'Persistence',
+  sync: 'Real-time sync',
+  headless: 'Headless & custom UI',
+  theming: 'Themes, colors & grids',
+  'export-images': 'Exporting images',
+  watermark: 'The corner mark',
+  shortcuts: 'Keyboard shortcuts',
+  '-- concepts': { type: 'separator', title: 'Concepts' },
+  'data-model': 'The data model',
+}

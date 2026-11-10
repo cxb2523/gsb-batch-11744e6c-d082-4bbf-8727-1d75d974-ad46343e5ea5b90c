@@ -1,0 +1,658 @@
+---
+import Base from '../layouts/Base.astro'
+import CompareTable from '../components/CompareTable.astro'
+import StarButton from '../components/StarButton.astro'
+import StarHistory from '../components/StarHistory.astro'
+import Sponsors from '../components/Sponsors.astro'
+import { readStarHistory } from '../lib/starData.js'
+import { APP_URL, GITHUB_URL, SITE_URL } from '../consts.js'
+
+const starData = readStarHistory()
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'SoftwareApplication',
+      name: 'Quickdraw',
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'Web, iOS, Android',
+      url: SITE_URL,
+      description:
+        'MIT-licensed infinite-canvas whiteboard SDK for React, React Native, and plain JavaScript. An open-source tldraw alternative with no license fee.',
+      offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      license: 'https://opensource.org/license/mit',
+      sameAs: [GITHUB_URL],
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Is Quickdraw really free for commercial use?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. Quickdraw is MIT-licensed. You can embed it in commercial products, modify it, and redistribute it with no license key and no fees — forever.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'How is Quickdraw different from tldraw?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: "tldraw's SDK uses a custom license with a paid business tier. Quickdraw is MIT-licensed with no fees, has zero runtime dependencies, and ships React, React Native, and framework-free packages.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does Quickdraw support real-time collaboration?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Sync is built into the data model: every change emits a JSON-safe diff you can send over any transport (WebSocket, WebRTC, anything), and remote diffs never pollute local undo history.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does Quickdraw work in React Native and Expo?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. @quickdrawjs/react-native wraps the engine in a WebView with a typed bridge — Apple Pencil pressure, palm rejection, offline support, snapshot and PNG export included.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I remove the Quickdraw mark in the corner?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes — pass watermark: false. It is on by default because it helps people find the project, but removing it is free and does not require a license.',
+          },
+        },
+      ],
+    },
+  ],
+}
+
+// Hero proof points. Sizes are measured, not rounded down: `@quickdrawjs/core`
+// bundles to 73.5 kB minified / 24.4 kB gzipped, plus 1.6 kB of gzipped CSS.
+const badges = [
+  {
+    label: 'MIT licensed',
+    hue: '#2f6fed',
+    // Two bold shapes, not a five-stroke balance — anything finer turns to
+    // mush at 11px. Square, cube and circle also keep the three distinct.
+    icon: `<rect x="3.4" y="3.4" width="17.2" height="17.2" rx="5.2"/><path d="m8.2 12.1 2.7 2.7 4.9-5.6"/>`,
+  },
+  {
+    label: '25 kB min+gzip',
+    hue: '#0f9d58',
+    icon: `<path d="M12 2.9 20.6 7.5v9L12 21.1 3.4 16.5v-9z" stroke-linejoin="round"/><path d="M3.4 7.5 12 12.1l8.6-4.6"/><path d="M12 12.1v9"/>`,
+  },
+  {
+    label: 'Zero dependencies',
+    hue: '#d97706',
+    icon: `<circle cx="12" cy="12" r="8.6"/><path d="m6 18 12-12"/>`,
+  },
+]
+
+// Each feature card carries its own hue (--c) and a hand-drawn-ish line icon.
+const features = [
+  {
+    title: 'Pressure ink',
+    body: "The pen's width follows stylus pressure — or velocity for mouse users — and strokes taper like a real pen.",
+    hue: '#2f6fed',
+    icon: `<path fill="currentColor" stroke="none" d="M2.6 20.9c-.5.1-.8-.5-.4-.8 3.6-2.6 6.3-5.9 8.6-9.6 2.3-3.7 5-6.7 8.6-8.6.5-.3 1 .3.6.7-2.7 2.8-4.7 5.8-6.6 9.1-2.3 4-5.6 7.6-10.8 9.2Z"/><path d="M19.6 2.3c1.1-.7 2.2-1 3.2-.9" stroke-linecap="round"/>`,
+  },
+  {
+    title: 'Hand-drawn shapes',
+    body: 'Rectangles, ellipses, triangles, diamonds, hexagons, stars — with a subtle sketched wobble, four fill styles, and editable labels.',
+    hue: '#d97706',
+    icon: `<path d="M12 2.7c.3 0 .5.2.6.4l3.6 6.2c.2.4-.1.9-.6.9H8.4c-.5 0-.8-.5-.6-.9l3.6-6.2c.1-.2.3-.4.6-.4Z" stroke-linejoin="round"/><rect x="2.6" y="13.4" width="8" height="8" rx="1.8"/><circle cx="17.4" cy="17.4" r="4"/>`,
+  },
+  {
+    title: 'Real-time sync',
+    body: 'Every change emits a JSON-safe diff. Ship it over any transport; remote changes never pollute local undo.',
+    hue: '#0f9d58',
+    icon: `<path d="M3.8 12a8.2 8.2 0 0 1 14-5.8" stroke-linecap="round"/><path d="M18.2 2.6v3.9h-3.9" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.2 12a8.2 8.2 0 0 1-14 5.8" stroke-linecap="round"/><path d="M5.8 21.4v-3.9h3.9" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/>`,
+  },
+  {
+    title: 'Palm rejection',
+    body: 'Once a stylus is seen, fingers steer the camera and the pen draws. Apple Pencil feels native.',
+    hue: '#7c4dcc',
+    icon: `<path d="M8.4 11.2V4.9a1.7 1.7 0 0 1 3.4 0v5.1" stroke-linecap="round"/><path d="M11.8 10V3.7a1.7 1.7 0 0 1 3.4 0v6.4" stroke-linecap="round"/><path d="M15.2 10.5V6.3a1.7 1.7 0 0 1 3.4 0V14c0 4.2-2.7 7.3-6.7 7.3-3.4 0-5.2-1.7-6.8-4.4l-2-3.4a1.7 1.7 0 0 1 2.9-1.7l1.6 2.6" stroke-linecap="round" stroke-linejoin="round"/>`,
+  },
+  {
+    title: 'Infinite canvas',
+    body: 'Pan, wheel zoom, two-finger pinch, zoom-to-fit. Ruled or dotted grids that adapt to the zoom.',
+    hue: '#0e8f9b',
+    icon: `<path d="M2.7 5.6V3.4a.7.7 0 0 1 .7-.7h2.2M18.4 2.7h2.2c.4 0 .7.3.7.7v2.2M21.3 18.4v2.2c0 .4-.3.7-.7.7h-2.2M5.6 21.3H3.4a.7.7 0 0 1-.7-.7v-2.2" stroke-linecap="round"/><path d="M8.7 9.3c-1.9 0-3.4 1.2-3.4 2.7s1.5 2.7 3.4 2.7c2.9 0 3.4-5.4 6.6-5.4 1.9 0 3.4 1.2 3.4 2.7s-1.5 2.7-3.4 2.7c-2.9 0-3.7-5.4-6.6-5.4Z"/>`,
+  },
+  {
+    title: 'And the rest',
+    body: 'Arrows with draggable bend, sticky notes, images, laser pointer, PNG export, per-gesture undo, light & dark themes, full keyboard map.',
+    hue: '#d1476b',
+    icon: `<path d="M11 2.9c.3-.9 1.6-.9 1.9 0l1.4 3.7c.1.3.3.5.6.6l3.7 1.4c.9.3.9 1.6 0 1.9l-3.7 1.4c-.3.1-.5.3-.6.6l-1.4 3.7c-.3.9-1.6.9-1.9 0l-1.4-3.7a1 1 0 0 0-.6-.6l-3.7-1.4c-.9-.3-.9-1.6 0-1.9l3.7-1.4c.3-.1.5-.3.6-.6z" stroke-linejoin="round"/><path d="m5.6 15.6.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" stroke-linejoin="round"/><path d="m18.2 14.4.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6z" stroke-linejoin="round"/>`,
+  },
+]
+---
+<Base jsonLd={jsonLd}>
+  <main>
+    <section class="hero">
+      <div class="copy">
+        <ul class="badges">
+          {badges.map((b) => (
+            <li style={`--c: ${b.hue}`}>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={b.icon} />
+              {b.label}
+            </li>
+          ))}
+        </ul>
+        <h1>The <span class="scribble">open&#8209;source</span> whiteboard&nbsp;SDK</h1>
+        <p class="lede">
+          A complete infinite-canvas whiteboard for React, React&nbsp;Native,
+          and the plain web. Pressure ink, shapes, sticky notes, undo,
+          real&#8209;time&#8209;ready sync — free for commercial use, forever.
+        </p>
+        <div class="actions">
+          <a class="btn primary" href={APP_URL} rel="noopener">Try the app</a>
+          <StarButton stars={starData.stars} />
+        </div>
+        <a class="install" href="https://www.npmjs.com/package/@quickdrawjs/react" rel="noopener" title="View @quickdrawjs/react on npm">
+          <span class="npm-mark" aria-hidden="true">npm</span>
+          <span class="install-cmd"><span class="prompt">$</span> <span class="cmd-long">npm install @quickdrawjs/react</span><span class="cmd-short">npm i @quickdrawjs/react</span></span>
+          <span class="install-go" aria-hidden="true">→</span>
+        </a>
+      </div>
+      <div class="board-frame">
+        <div id="hero-board" aria-label="Live Quickdraw whiteboard — draw here"></div>
+        <div id="hero-hint" aria-hidden="true">
+          <div class="hint-stage">
+            <div class="hint-doodle-wrap">
+            <svg class="hint-doodle" viewBox="0 0 220 90" width="220" height="90" fill="none" aria-hidden="true">
+              <path
+                class="hint-squiggle"
+                pathLength="1"
+                d="M18 62 C 40 18, 62 18, 78 50 C 92 78, 110 78, 124 50 C 138 22, 158 22, 172 44 C 182 60, 194 62, 204 52"
+                stroke="var(--accent, #e8590c)" stroke-width="4" stroke-linecap="round" />
+            </svg>
+            <svg class="hint-hand" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="var(--ink, #1c1b18)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" fill="rgba(255,255,255,0.92)"/>
+              <path d="m15 5 4 4"/>
+            </svg>
+            </div>
+            <span class="hint-pill">Draw something!</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <h2>A simple, joyful drawing experience</h2>
+      <div class="grid">
+        {features.map((f) => (
+          <div class="card" style={`--c: ${f.hue}`}>
+            <div class="card-head">
+              <h3>{f.title}</h3>
+              <span class="card-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" set:html={f.icon} />
+              </span>
+            </div>
+            <p>{f.body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <section class="quickstart" id="quickstart">
+      <h2>Install, render, done</h2>
+      <div class="qs-panel">
+        <div class="qs-tabs" role="tablist" aria-label="Choose your platform">
+          <button class="qs-tab on" role="tab" aria-selected="true" data-qs="react">React</button>
+          <button class="qs-tab" role="tab" aria-selected="false" data-qs="js">Plain JS</button>
+          <button class="qs-tab" role="tab" aria-selected="false" data-qs="rn">React Native</button>
+        </div>
+        <div class="qs-body">
+          <div class="qs-pane on" data-qs-pane="react">
+            <pre><code>{`npm install @quickdrawjs/react`}</code></pre>
+            <pre><code>{`import { Quickdraw } from '@quickdrawjs/react'
+import '@quickdrawjs/core/quickdraw.css'
+
+export default function Board() {
+  return <Quickdraw theme="light" grid="lines" />
+}`}</code></pre>
+          </div>
+          <div class="qs-pane" data-qs-pane="js">
+            <pre><code>{`npm install @quickdrawjs/core`}</code></pre>
+            <pre><code>{`import { createQuickdraw } from '@quickdrawjs/core'
+import '@quickdrawjs/core/quickdraw.css'
+
+createQuickdraw({
+  container: document.getElementById('board'),
+})`}</code></pre>
+          </div>
+          <div class="qs-pane" data-qs-pane="rn">
+            <pre><code>{`npm install @quickdrawjs/react-native react-native-webview`}</code></pre>
+            <pre><code>{`import { Quickdraw } from '@quickdrawjs/react-native'
+
+<Quickdraw
+  theme="dark"
+  onChange={(diff) => sync(diff)}
+  style={{ flex: 1 }}
+/>`}</code></pre>
+          </div>
+        </div>
+      </div>
+      <p class="qs-note">
+        That's the whole integration. Persistence is one call —
+        <code>store.getSnapshot()</code> returns plain JSON.
+        <a href="/docs/">Read the docs →</a>
+      </p>
+    </section>
+
+    <section class="compare" id="compare">
+      <h2>How it compares</h2>
+      <p class="section-lede">
+        tldraw and Excalidraw are both excellent. Quickdraw is for teams that
+        want an MIT license, a framework-free core, and React Native support
+        in the same package.
+      </p>
+      <CompareTable />
+      <p class="fine-print">
+        Comparison reflects public docs as of August 2026 — see
+        <a href="https://tldraw.dev/community/license" rel="noopener nofollow">tldraw's license</a> and
+        <a href="https://github.com/excalidraw/excalidraw" rel="noopener nofollow">Excalidraw's repo</a>.
+        Spot an error? <a href={`${GITHUB_URL}/issues`}>Tell us and we'll fix it.</a>
+      </p>
+    </section>
+
+    <section class="support" id="support">
+      <div class="support-card">
+        <svg class="support-star" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.6l3.1 6.7 7.3.9-5.4 5 1.4 7.2L12 17.8l-6.4 3.6L7 14.2 1.6 9.2l7.3-.9L12 1.6z"/></svg>
+        <h2>Built in the open. Powered by stars.</h2>
+        <p>
+          Quickdraw is free forever — no license fees, no upsell. If it saves
+          you one, a GitHub star is how other developers find it.
+        </p>
+        <StarHistory
+          starredAt={starData.starredAt}
+          createdAt={starData.createdAt}
+          stars={starData.stars}
+        />
+        <div class="support-actions">
+          <StarButton stars={starData.stars} variant="cream" />
+          <a class="btn-npm" href="https://www.npmjs.com/package/@quickdrawjs/react" rel="noopener">
+            <span class="npm-mark" aria-hidden="true">npm</span>
+            @quickdrawjs/react
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <Sponsors />
+
+    <section class="faq" id="faq">
+      <h2>Questions people ask</h2>
+      <details open>
+        <summary>Is Quickdraw really free for commercial use?</summary>
+        <p>Yes. MIT means you can embed it in commercial products, modify it, and redistribute it — no license key, no fees, forever. The license can't be revoked for versions you already have.</p>
+      </details>
+      <details>
+        <summary>Can I remove the Quickdraw mark in the corner?</summary>
+        <p>Yes — pass <code>watermark: false</code>. It's on by default because it helps people find the project, but removing it is free. No license required.</p>
+      </details>
+      <details>
+        <summary>How do I persist a board?</summary>
+        <p><code>store.getSnapshot()</code> returns plain JSON; <code>store.loadSnapshot(snap)</code> restores it. Save it to localStorage, your database, a file — it's just data.</p>
+      </details>
+      <details>
+        <summary>Does it support real-time collaboration?</summary>
+        <p>The data model was built for it: every change emits a JSON-safe diff, and <code>store.applyDiff(diff, 'remote')</code> applies peer changes without touching local undo history. Bring any transport.</p>
+      </details>
+      <details>
+        <summary>Can I build my own toolbar?</summary>
+        <p>Yes — pass <code>hideUi</code> and drive the headless API: <code>editor.setTool()</code>, <code>editor.setStyle()</code>, <code>store.undo()</code>, and friends.</p>
+      </details>
+      <details>
+        <summary>How big is it?</summary>
+        <p>The core engine bundles to ~73&nbsp;kB minified, ~25&nbsp;kB over the wire (gzipped), with zero runtime dependencies — plain ESM that runs in any modern browser without a build step.</p>
+      </details>
+    </section>
+
+    <section class="cta-final">
+      <h2>Add a whiteboard to your app today</h2>
+      <div class="actions">
+        <a class="btn primary" href="/docs/">Get started</a>
+        <a class="btn" href={APP_URL} rel="noopener">Try the app</a>
+      </div>
+    </section>
+  </main>
+</Base>
+
+<script>
+  import { createQuickdraw } from '@quickdrawjs/core'
+  import '@quickdrawjs/core/quickdraw.css'
+
+  const container = document.getElementById('hero-board')
+  if (container) {
+    const board = createQuickdraw({ container, theme: 'light', grid: 'lines' })
+    const { store } = board.editor
+    const saved = sessionStorage.getItem('qd-hero')
+    if (saved) {
+      try { store.loadSnapshot(JSON.parse(saved), 'remote') } catch {}
+    }
+    // "draw something" nudge: only over an untouched board, gone at first touch
+    const hint = document.getElementById('hero-hint')
+    if (hint) {
+      const hide = () => hint.classList.add('off')
+      if (store.shapes().length > 0) hide()
+      else container.addEventListener('pointerdown', hide, { once: true })
+    }
+    let t
+    store.listen(() => {
+      clearTimeout(t)
+      t = setTimeout(() => {
+        try { sessionStorage.setItem('qd-hero', JSON.stringify(store.getSnapshot())) } catch {}
+      }, 400)
+    })
+  }
+
+  // quickstart tabs
+  const tabs = document.querySelectorAll('.qs-tab')
+  const panes = document.querySelectorAll('.qs-pane')
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      tabs.forEach((t2) => {
+        const on = t2 === tab
+        t2.classList.toggle('on', on)
+        t2.setAttribute('aria-selected', String(on))
+      })
+      panes.forEach((p) => p.classList.toggle('on', p.dataset.qsPane === tab.dataset.qs))
+    })
+  })
+</script>
+
+<style>
+  main { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+  section { margin-top: 96px; }
+  h2 { font-size: clamp(26px, 4vw, 34px); line-height: 1.2; margin: 0 0 24px; letter-spacing: -0.01em; }
+
+  .hero {
+    margin-top: 56px;
+    display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: 52px; align-items: center;
+  }
+  /* Small tinted chips — each carries a wash of its own hue rather than a
+     hard outline, so the row reads as one quiet line above the headline. */
+  .badges {
+    list-style: none; display: flex; flex-wrap: wrap; gap: 6px;
+    margin: 0 0 20px; padding: 0;
+  }
+  .badges li {
+    --c: var(--accent);
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 600; line-height: 1;
+    letter-spacing: 0.012em; font-variant-numeric: tabular-nums;
+    color: color-mix(in srgb, var(--c) 58%, var(--ink));
+    background: color-mix(in srgb, var(--c) 8%, #fff);
+    border: 1px solid color-mix(in srgb, var(--c) 15%, transparent);
+    border-radius: 999px; padding: 4px 10px 4px 8px;
+  }
+  .badges svg { color: var(--c); flex: none; opacity: 0.92; }
+  h1 {
+    font-size: clamp(34px, 4.6vw, 50px); line-height: 1.12; margin: 0 0 18px;
+    letter-spacing: -0.02em; text-wrap: balance;
+  }
+  .scribble {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='10' viewBox='0 0 220 10'%3E%3Cpath d='M3 7 Q40 2 80 6 T160 5 T217 6' fill='none' stroke='%232f6fed' stroke-width='3.4' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: 0 100%; background-size: 100% 8px;
+    padding-bottom: 8px; white-space: nowrap;
+  }
+  .lede { font-size: 17.5px; color: var(--ink-soft); margin: 0 0 28px; max-width: 44ch; text-wrap: pretty; }
+  .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600;
+    border: 1.5px solid var(--ink); color: var(--ink); font-size: 15.5px;
+  }
+  .btn:hover { text-decoration: none; background: var(--paper-2); }
+  .btn.primary { background: var(--ink); color: var(--paper); }
+  .btn.primary:hover { background: #000; }
+  .install {
+    margin-top: 26px; display: inline-flex; align-items: center; gap: 12px;
+    font-size: 13.5px; color: var(--ink-soft);
+    border: 1px dashed var(--line); border-radius: 10px;
+    padding: 9px 14px; background: transparent;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .install:hover { text-decoration: none; border-color: var(--ink-soft); background: #fff; }
+  .install:hover .install-go { transform: translateX(3px); color: var(--accent-ink); }
+  .install-cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .cmd-short { display: none; }
+  .install .prompt { color: var(--accent); user-select: none; margin-right: 6px; }
+  .install-go { transition: transform 140ms ease; color: var(--ink-soft); }
+  .npm-mark {
+    background: #cb3837; color: #fff; font-weight: 800; font-size: 11px;
+    letter-spacing: 0.02em; padding: 3px 7px; border-radius: 5px; line-height: 1;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .board-frame { position: relative; }
+  #hero-board {
+    height: 470px; border-radius: var(--radius);
+    border: 1.5px solid var(--line);
+    box-shadow: 0 24px 60px -28px rgba(28, 27, 24, 0.28);
+    overflow: hidden; background: #fff;
+  }
+  #hero-hint {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  #hero-hint.off { display: none; }
+  .hint-stage {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  /* the wrap is exactly the SVG's box, so the hand's offset-path (element
+     coordinates) and the squiggle (SVG viewBox) share one origin */
+  .hint-doodle-wrap { position: relative; width: 220px; height: 90px; }
+  .hint-doodle { overflow: visible; display: block; }
+  .hint-squiggle {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: hint-draw 3.2s ease-in-out infinite;
+  }
+  .hint-hand {
+    position: absolute; top: 0; left: 0;
+    /* same curve as .hint-squiggle, so the pencil tip rides the line */
+    offset-path: path('M18 62 C 40 18, 62 18, 78 50 C 92 78, 110 78, 124 50 C 138 22, 158 22, 172 44 C 182 60, 194 62, 204 52');
+    offset-rotate: 0deg;
+    /* offset-path anchors the glyph CENTER to the curve (Chrome has no
+       offset-anchor), so shift the box until the pencil tip — bottom-left
+       of the glyph — is what touches the line */
+    transform: translate(14px, -14px);
+    animation: hint-trace 3.2s ease-in-out infinite;
+    filter: drop-shadow(0 3px 4px rgba(28, 27, 24, 0.25));
+  }
+  @supports not (offset-path: path('M0 0 L1 1')) {
+    .hint-hand { display: none; }
+  }
+  .hint-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 16px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+    box-shadow: 0 10px 26px -14px rgba(28, 27, 24, 0.35);
+    backdrop-filter: blur(4px);
+    color: var(--ink); font-weight: 600; font-size: 14.5px;
+  }
+  /* line and pen share the same fade window (74–90%) so they vanish together */
+  @keyframes hint-draw {
+    0% { stroke-dashoffset: 1; opacity: 1; }
+    62% { stroke-dashoffset: 0; opacity: 1; }
+    74% { stroke-dashoffset: 0; opacity: 1; }
+    90%, 100% { stroke-dashoffset: 0; opacity: 0; }
+  }
+  @keyframes hint-trace {
+    0% { offset-distance: 0%; opacity: 0; }
+    6% { opacity: 1; }
+    62% { offset-distance: 100%; opacity: 1; }
+    74% { offset-distance: 100%; opacity: 1; }
+    90%, 100% { offset-distance: 100%; opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hint-squiggle { animation: none; stroke-dashoffset: 0; }
+    .hint-hand { animation: none; offset-distance: 100%; }
+  }
+
+  .features .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 18px; }
+  .card {
+    --c: var(--accent);
+    position: relative; overflow: hidden; isolation: isolate;
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 18px 20px 20px;
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  }
+  /* A faint wash of the card's own hue, bloomed from the icon corner. */
+  .card::before {
+    content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(260px 150px at 92% -10%, color-mix(in srgb, var(--c) 12%, transparent), transparent 72%);
+    opacity: 0.75; transition: opacity 180ms ease;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--c) 38%, var(--line));
+    box-shadow: 0 18px 34px -22px color-mix(in srgb, var(--c) 60%, rgba(28, 27, 24, 0.5));
+  }
+  .card:hover::before { opacity: 1; }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 7px;
+  }
+  .card-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; width: 34px; height: 34px;
+    border-radius: 10px; color: var(--c);
+    background: color-mix(in srgb, var(--c) 11%, #fff);
+    border: 1px solid color-mix(in srgb, var(--c) 24%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    transition: transform 180ms ease, background 180ms ease;
+  }
+  .card:hover .card-icon {
+    transform: rotate(-4deg) scale(1.04);
+    background: color-mix(in srgb, var(--c) 16%, #fff);
+  }
+  .card h3 { margin: 0; font-size: 17px; letter-spacing: -0.005em; }
+  .card p { margin: 0; color: var(--ink-soft); font-size: 15px; line-height: 1.6; text-wrap: pretty; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .card, .card-icon { transition: none; }
+    .card:hover { transform: none; }
+    .card:hover .card-icon { transform: none; }
+  }
+
+  .qs-panel {
+    background: #14130f; border-radius: var(--radius); overflow: hidden;
+    border: 1px solid #2a2822;
+  }
+  .qs-tabs {
+    display: flex; gap: 4px; padding: 10px 12px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  }
+  .qs-tab {
+    appearance: none; border: none; background: transparent; cursor: pointer;
+    color: rgba(244, 242, 234, 0.55); font: 600 14px/1 inherit;
+    font-family: inherit; padding: 10px 14px 12px; border-radius: 8px 8px 0 0;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .qs-tab:hover { color: rgba(244, 242, 234, 0.85); }
+  .qs-tab.on { color: #f4f2ea; border-bottom-color: var(--accent); }
+  .qs-body { padding: 6px 0; }
+  .qs-pane { display: none; }
+  .qs-pane.on { display: block; }
+  .qs-pane pre { margin: 0; border-radius: 0; background: transparent; padding: 14px 22px; }
+  .qs-pane pre:first-child {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    color: #9adb7c;
+  }
+  .qs-note { color: var(--ink-soft); font-size: 15px; margin-top: 14px; }
+  .qs-note a { margin-left: 6px; }
+  .qs-note code { margin: 0 2px; }
+
+  .section-lede { color: var(--ink-soft); max-width: 62ch; margin: -8px 0 26px; }
+  .fine-print { font-size: 13px; color: var(--ink-soft); margin-top: 12px; }
+
+  .faq details {
+    background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 22px; margin-bottom: 10px;
+  }
+  .faq summary { font-weight: 600; cursor: pointer; }
+  .faq p { color: var(--ink-soft); margin: 10px 0 4px; }
+
+  .support-card {
+    text-align: center; background: #14130f; color: #f4f2ea;
+    border-radius: calc(var(--radius) + 6px); padding: 56px 32px 52px;
+    position: relative; overflow: hidden;
+  }
+  .support-card::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(420px 200px at 18% 0%, rgba(47, 111, 237, 0.22), transparent 70%),
+      radial-gradient(420px 220px at 85% 100%, rgba(255, 209, 84, 0.14), transparent 70%);
+  }
+  .support-card > * { position: relative; }
+  .support-star { width: 34px; height: 34px; color: #ffd154; margin-bottom: 14px; }
+  .support-card h2 { color: #f4f2ea; margin-bottom: 12px; }
+  .support-card p {
+    color: rgba(244, 242, 234, 0.72); max-width: 52ch; margin: 0 auto 30px;
+    text-wrap: pretty;
+  }
+  .support-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; align-items: center; }
+  .btn-npm {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 12px 24px; border-radius: 999px; font-weight: 650;
+    border: 1.5px solid rgba(244, 242, 234, 0.35); color: #f4f2ea;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14.5px;
+  }
+  .btn-npm:hover { border-color: rgba(244, 242, 234, 0.7); background: rgba(244, 242, 234, 0.06); text-decoration: none; }
+
+  .cta-final { text-align: center; padding: 30px 0 10px; }
+  .cta-final .actions { justify-content: center; }
+
+  @media (max-width: 880px) {
+    .hero { grid-template-columns: 1fr; gap: 34px; margin-top: 46px; }
+    #hero-board { height: 380px; }
+    h1 { font-size: clamp(32px, 6.2vw, 44px); }
+    .lede { max-width: 52ch; }
+  }
+
+  @media (max-width: 640px) {
+    section { margin-top: 68px; }
+    .hero { margin-top: 30px; gap: 26px; }
+    .badges { gap: 5px; margin-bottom: 15px; }
+    .badges li { font-size: 11px; padding: 4px 9px 4px 7px; }
+    h1 { font-size: clamp(29px, 8.4vw, 38px); line-height: 1.14; margin-bottom: 14px; }
+    .scribble { background-size: 100% 7px; padding-bottom: 6px; }
+    .lede { font-size: 16px; max-width: none; margin-bottom: 24px; }
+    .install { margin-top: 20px; }
+    #hero-board { height: clamp(300px, 52vh, 400px); }
+    .support-card { padding: 42px 22px 40px; }
+  }
+
+  /* Below ~460px the two buttons no longer sit side by side without
+     wrapping to ragged widths — stack them full-bleed instead. */
+  @media (max-width: 460px) {
+    .actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .btn { padding: 13px 20px; text-align: center; font-size: 16px; }
+    .support-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .btn-npm { justify-content: center; }
+    .install {
+      display: flex; width: 100%;
+      padding: 11px 13px; gap: 10px; font-size: 12.5px;
+    }
+    .install-go { margin-left: auto; }
+  }
+
+  @media (max-width: 400px) {
+    .cmd-long { display: none; }
+    .cmd-short { display: inline; }
+  }
+</style>

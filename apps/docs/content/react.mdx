@@ -1,0 +1,102 @@
+---
+title: React
+description: The <Quickdraw /> React component — props, callbacks, refs, and controlled usage with an external store.
+---
+
+# React
+
+```sh
+npm install @quickdrawjs/react
+```
+
+The package re-exports everything from `@quickdrawjs/core`, so one import
+gives you the component *and* the engine (`Store`, `Editor`, diff helpers).
+
+## Basic usage
+
+```jsx
+import { Quickdraw } from '@quickdrawjs/react'
+import '@quickdrawjs/core/quickdraw.css'
+
+export default function Board() {
+  return (
+    <div style={{ position: 'fixed', inset: 0 }}>
+      <Quickdraw theme="light" grid="lines" />
+    </div>
+  )
+}
+```
+
+The component renders a `div` that fills its container. Give the container
+real dimensions.
+
+## Props
+
+| Prop | Type | Default | |
+| --- | --- | --- | --- |
+| `theme` | `'light' \| 'dark'` | `'light'` | Live-switchable |
+| `grid` | `'none' \| 'lines' \| 'ruled' \| 'dots' \| 'crosses' \| 'iso'` | `'lines'` | The backdrop; live-switchable |
+| `readonly` | `boolean` | `false` | Lock input (also hides the toolbar) |
+| `hideUi` | `boolean` | `false` | Hide the stock toolbar — [bring your own](/docs/headless/) |
+| `themeToggle` | `boolean` | `true` | Show the theme switch in the board menu |
+| `gridControl` | `boolean` | `true` | Show the grid switch in the board menu |
+| `watermark` | `boolean` | `true` | The [corner mark](/docs/watermark/); mount-time only |
+| `store` | `Store` | — | External store for [controlled usage](#controlled-usage) |
+| `snapshot` | JSON | — | Document loaded on mount (ignored when `store` is given) |
+| `camera` | `{ x, y, z }` | — | Initial camera |
+| `styles` | `{ color, size, dash, fill, font }` | — | Initial pen styles |
+| `autoFit` | `boolean` | `false` | Fit content on mount and container resize |
+| `className`, `style` | — | — | Applied to the host div |
+
+## Callbacks
+
+| Prop | Fires |
+| --- | --- |
+| `onMount(editor, ui)` | Once, after the board is ready |
+| `onChange(diff, source, editor)` | Every document change — see [the data model](/docs/data-model/) |
+| `onSelectionChange(ids, editor)` | Selection changed |
+| `onThemeChange(themeId, editor)` | The in-board switch moved the theme |
+| `onGridChange(gridId, editor)` | The in-board switch moved the grid |
+| `onSave(blob, background)` | Toolbar PNG export — [intercept it](/docs/export-images/) |
+
+`onThemeChange` / `onGridChange` exist so the board menu's switches can flow
+back into your app state:
+
+```jsx
+const [theme, setTheme] = useState('light')
+
+<Quickdraw theme={theme} onThemeChange={setTheme} />
+```
+
+## The ref
+
+The ref exposes the whole engine — every imperative API in these docs is
+reachable from it:
+
+```jsx
+const ref = useRef(null)
+
+<Quickdraw ref={ref} />
+
+ref.current.editor.setTool('draw')
+ref.current.editor.fitContent({ animate: 220 })
+ref.current.editor.store.undo()
+ref.current.ui.setHidden(true)
+```
+
+## Controlled usage
+
+Pass your own `Store` when the document outlives the component — shared
+between views, preloaded before render, or synced with peers:
+
+```jsx
+import { Quickdraw, useQuickdrawStore } from '@quickdrawjs/react'
+
+function App({ savedSnapshot }) {
+  const store = useQuickdrawStore(savedSnapshot) // stable across renders
+  return <Quickdraw store={store} />
+}
+```
+
+Two components rendering the same `store` show the same live document —
+that's the quickest way to see the [sync model](/docs/sync/) working.

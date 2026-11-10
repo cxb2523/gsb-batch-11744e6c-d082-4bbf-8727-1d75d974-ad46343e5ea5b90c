@@ -1,0 +1,49 @@
+---
+// Shared frame for the comparison / keyword landing pages: Base + the common
+// typography. Content differs per page; the look shouldn't.
+import Base from './Base.astro'
+const { title, description, jsonLd = null } = Astro.props
+---
+<Base title={title} description={description} jsonLd={jsonLd}>
+  <main class="landing">
+    <slot />
+  </main>
+</Base>
+
+<style is:global>
+  .landing { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+  .landing section { margin-top: 64px; }
+  .landing .page-head { margin-top: 56px; max-width: 720px; }
+  .landing h1 { font-size: clamp(32px, 4.6vw, 46px); line-height: 1.12; letter-spacing: -0.02em; margin: 0 0 16px; text-wrap: balance; }
+  .landing h2 { font-size: clamp(24px, 3.4vw, 30px); margin: 0 0 20px; letter-spacing: -0.01em; }
+  .landing .lede { font-size: 17.5px; color: var(--ink-soft); margin: 0 0 26px; text-wrap: pretty; }
+  .landing .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .landing .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 999px; font-weight: 600;
+    border: 1.5px solid var(--ink); color: var(--ink); font-size: 15.5px;
+  }
+  .landing .btn:hover { text-decoration: none; background: var(--paper-2); }
+  .landing .btn.primary { background: var(--ink); color: var(--paper); }
+  .landing .btn.primary:hover { background: #000; }
+  .landing .prose p { color: var(--ink-soft); max-width: 68ch; margin: 0 0 16px; font-size: 16px; }
+  .landing .prose ul { color: var(--ink-soft); max-width: 68ch; font-size: 16px; padding-left: 22px; }
+  .landing .prose li { margin-bottom: 8px; }
+  .landing .prose strong { color: var(--ink); }
+  .landing .prose h2 { margin-top: 40px; }
+  .landing .fine-print { font-size: 13px; color: var(--ink-soft); margin-top: 12px; }
+  .landing .more-links { color: var(--ink-soft); font-size: 15px; margin-top: 14px; }
+  .landing pre { margin: 0; }
+
+  @media (max-width: 640px) {
+    .landing section { margin-top: 56px; }
+    .landing .page-head { margin-top: 30px; }
+    .landing h1 { font-size: clamp(29px, 8.4vw, 38px); line-height: 1.14; }
+    .landing .lede { font-size: 16px; margin-bottom: 24px; }
+  }
+  /* Same as the home hero: below ~460px the buttons stack full-bleed
+     instead of wrapping to ragged widths. */
+  @media (max-width: 460px) {
+    .landing .actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .landing .btn { padding: 13px 20px; text-align: center; font-size: 16px; }
+  }
+</style>

@@ -1,0 +1,100 @@
+---
+title: The data model
+description: How Quickdraw documents work — a flat store of records, transactions that emit JSON diffs, and source-tagged history.
+---
+
+# The data model
+
+One idea underpins persistence, sync, and undo: **every change to the
+document is a diff, and the diff is plain JSON.**
+
+## Records
+
+A document is a flat map of immutable records — strokes, shapes, notes,
+text, images, and their assets. `store.get(id)` returns a record;
+mutating never edits a record in place, it replaces it.
+
+```js
+store.get(id)        // one record
+store.shapes()       // all drawable records
+store.ids()          // every id
+store.size           // record count
+```
+
+## Diffs
+
+Every mutation happens in a transaction, and every transaction emits:
+
+```js
+{
+  added:   { [id]: record },
+  removed: { [id]: record },
+  updated: { [id]: [from, to] }
+}
+```
+
+Three properties make this shape do all the work:
+
+1. **JSON-safe.** Records are plain objects; a diff survives
+   `JSON.stringify` untouched. Any transport, any database.
+2. **Invertible.** `invertDiff(diff)` swaps added/removed and flips
+   `[from, to]` — that's undo.
+3. **Composable.** `composeDiff(a, b)` merges consecutive diffs — that's
+   how a multi-event gesture becomes a single undo entry.
+
+Both helpers are exported from `@quickdrawjs/core`.
+
+## Listening
+
+```js
+const stop = store.listen((diff, source) => { ... })
+const stopUser = store.listen(fn, { source: 'user' })   // only local changes
+```
+
+## Sources
+
+Every change carries a source: `'user'` for local edits, `'remote'` for
+changes applied from outside (a peer, a restore). The store keeps
+`'remote'` changes **out of the local undo stack** — the foundation of
+[correct multiplayer undo](/docs/sync/).
+
+```js
+store.applyDiff(diff, 'remote')
+store.loadSnapshot(snap, 'remote')
+```
+
+## Writing
+
+```js
+store.put(record)                  // add or replace
+store.update(id, { x: 100 })       // shallow patch
+store.remove([id1, id2])
+store.transact(() => {             // many writes, one diff, one undo entry
+  store.put(a)
+  store.update(b.id, { w: 200 })
+})
+```
+
+## History
+
+```js
+store.undo(); store.redo()
+store.canUndo; store.canRedo
+store.listenHistory(fn)            // can-undo/can-redo changed
+```
+
+Undo entries are diffs, composed per gesture — a freehand stroke of two
+hundred pointer events is one entry.
+
+## Snapshots
+
+```js
+const snap = store.getSnapshot()   // the whole document, plain JSON
+store.loadSnapshot(snap, 'remote')
+```
+
+Snapshots and diffs are the same records, whole — there is exactly one
+serialization story in the engine. Log the diff stream and you can replay
+a board stroke by stroke; snapshot and reload and you're back where you
+were. See [Persistence](/docs/persistence/) and
+[Real-time sync](/docs/sync/) for the applied versions.

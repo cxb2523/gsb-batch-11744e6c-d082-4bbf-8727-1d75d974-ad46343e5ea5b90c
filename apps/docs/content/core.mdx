@@ -1,0 +1,87 @@
+---
+title: Plain JavaScript
+description: Use the framework-free Quickdraw core in any web page — zero dependencies, no build step required.
+---
+
+# Plain JavaScript
+
+```sh
+npm install @quickdrawjs/core
+```
+
+The core is dependency-free ESM. It doesn't need React, a bundler, or a
+build step — any modern browser runs it as-is:
+
+```html
+<div id="board" style="position: fixed; inset: 0"></div>
+<script type="module">
+  import { createQuickdraw } from '@quickdrawjs/core'
+  // (or from a CDN like esm.sh while prototyping)
+
+  const board = createQuickdraw({
+    container: document.getElementById('board'),
+    theme: 'light',
+    grid: 'dots',
+  })
+</script>
+```
+
+Don't forget the stylesheet: `@quickdrawjs/core/quickdraw.css` (import it
+from your bundler, or copy it into a `<link>` tag).
+
+## `createQuickdraw(options)`
+
+Returns `{ editor, ui, destroy }`.
+
+| Option | Type | Default | |
+| --- | --- | --- | --- |
+| `container` | `HTMLElement` | required | The board fills it |
+| `theme` | `'light' \| 'dark'` | `'light'` | |
+| `grid` | `'none' \| 'lines' \| 'ruled' \| 'dots' \| 'crosses' \| 'iso'` | `'lines'` | |
+| `readonly` | `boolean` | `false` | View-only board |
+| `hideUi` | `boolean` | `false` | No toolbar — [headless](/docs/headless/) |
+| `themeToggle` / `gridControl` | `boolean` | `true` | Board-menu switches |
+| `watermark` | `boolean` | `true` | The [corner mark](/docs/watermark/) |
+| `store` | `Store` | new store | Share a document across boards |
+| `camera` | `{ x, y, z }` | — | Initial camera |
+| `styles` | object | — | Initial pen styles |
+| `onSave` | `(blob, background) => void` | download | Intercept [PNG export](/docs/export-images/) |
+
+Call `board.destroy()` when the host element goes away.
+
+## The editor
+
+```js
+const { editor } = board
+
+editor.setTool('draw')     // 'select' | 'hand' | 'draw' | 'highlight' | 'eraser'
+                           // | 'laser' | 'arrow' | 'line' | 'geo' | 'text' | 'note'
+editor.setTheme('dark')
+editor.setGrid('lines')
+editor.fitContent({ animate: 220 })
+editor.setStyle('color', 'blue')
+editor.selectAll()
+editor.deleteSelection()
+
+editor.on('tool', () => {})        // also: 'theme', 'grid', 'selection',
+                                   // 'camera', 'history', 'styles'
+```
+
+## The store
+
+```js
+const { store } = board.editor
+
+store.getSnapshot()                          // plain JSON
+store.loadSnapshot(snap, 'remote')           // restore, outside undo history
+store.listen((diff, source) => {})           // every change
+store.undo(); store.redo()
+```
+
+The full document API is covered in [The data model](/docs/data-model/).
+
+## Multiple boards, one document
+
+Pass the same `Store` to two `createQuickdraw` calls and both render the
+same live document — edits in one appear in the other instantly. This is
+the local version of [real-time sync](/docs/sync/).

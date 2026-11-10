@@ -1,0 +1,34 @@
+/* Quickdraw paper palette on top of the Nextra docs theme. */
+
+:root {
+  --qd-paper: #faf8f4;
+  --qd-ink: #1c1b18;
+}
+
+/* light mode gets the site's warm paper background */
+html.light body,
+html.light {
+  background: var(--qd-paper) !important;
+}
+html.light .nextra-nav-container-blur {
+  background: rgba(250, 248, 244, 0.85) !important;
+}
+html.light .nextra-sidebar-footer,
+html.light aside {
+  --nextra-bg: 250, 248, 244;
+}
+
+/* npm mark in the navbar, matching the GitHub icon's hover feel */
+.qd-npm-link {
+  display: flex;
+  align-items: center;
+  transition: opacity 0.15s;
+}
+.qd-npm-link:hover {
+  opacity: 0.75;
+}
+
+/* slightly rounder code blocks, matching the marketing site */
+.nextra-code pre {
+  border-radius: 12px;
+}

@@ -1,0 +1,90 @@
+---
+title: Headless & custom UI
+description: Hide Quickdraw's toolbar and drive the editor from your own interface — every tool and style is reachable from the public API.
+---
+
+# Headless & custom UI
+
+The stock toolbar is built entirely on the public API — so anything it can
+do, your own UI can do. Pass `hideUi` and the canvas renders bare:
+
+```jsx
+<Quickdraw ref={ref} hideUi />
+```
+
+```js
+// plain JS
+const board = createQuickdraw({ container, hideUi: true })
+```
+
+## Tools
+
+```js
+editor.setTool('draw')
+// 'select' | 'hand' | 'draw' | 'highlight' | 'eraser' | 'laser'
+// | 'arrow' | 'line' | 'geo' | 'text' | 'note'
+
+editor.setGeoKind('star')
+// 'rectangle' | 'ellipse' | 'triangle' | 'diamond' | 'hexagon' | 'star'
+
+editor.on('tool', () => highlight(editor.tool))
+```
+
+## Styles
+
+```js
+editor.setStyle('color', 'blue')   // twelve named colors — see Theming
+editor.setStyle('size', 'l')       // 's' | 'm' | 'l' | 'xl'
+editor.setStyle('dash', 'dashed')  // 'draw' | 'solid' | 'dashed' | 'dotted'
+editor.setStyle('fill', 'semi')    // 'none' | 'semi' | 'solid' | 'pattern'
+
+editor.currentStyles()             // what the next shape will look like
+editor.on('styles', refresh)
+```
+
+With a selection active, `setStyle` restyles the selected shapes; without
+one, it sets the pen for what you draw next — the same behavior the stock
+styles panel has.
+
+## Selection
+
+```js
+editor.setSelection([id1, id2])
+editor.selectAll()
+editor.selection                   // a Set of ids
+editor.selectionBounds()           // page-space bounds or null
+editor.duplicateSelection()
+editor.deleteSelection()
+editor.bringToFront(); editor.sendToBack()
+editor.on('selection', refresh)
+```
+
+## Camera
+
+```js
+editor.fitContent({ animate: 220 })     // zoom to fit
+editor.setCamera({ x, y, z })
+editor.pan(dx, dy)                      // screen-space delta
+editor.zoomAt(sx, sy, 1.2)              // zoom about a screen point
+editor.screenToPage(sx, sy)
+editor.on('camera', onMove)
+```
+
+## History
+
+```js
+store.undo(); store.redo()
+store.canUndo; store.canRedo
+store.listenHistory(refresh)       // fires when can-undo/can-redo change
+```
+
+## Showing the stock UI selectively
+
+You don't have to go all-or-nothing. Keep the toolbar but drop the board
+menu's theme/grid switches (when your app owns those settings):
+
+```js
+createQuickdraw({ container, themeToggle: false, gridControl: false })
+```
+
+Or toggle the whole toolbar at runtime: `ui.setHidden(true)`.

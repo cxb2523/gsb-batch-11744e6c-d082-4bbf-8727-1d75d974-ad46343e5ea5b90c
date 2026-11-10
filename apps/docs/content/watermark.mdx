@@ -1,0 +1,44 @@
+---
+title: The corner mark
+description: The small Quickdraw mark in the board's corner — what it is, why it's on by default, and how to turn it off (free).
+---
+
+# The corner mark
+
+Every board shows a small "Quickdraw" mark in the bottom-right corner. It
+links to [tryquickdraw.com](https://tryquickdraw.com), stays quiet until
+hovered, and follows the board's theme.
+
+## Why it exists
+
+It's how people find the project. Quickdraw has no license fees and no paid
+tiers — boards in the wild pointing back home are what keeps an MIT-licensed
+SDK growing. Leaving it on is the easiest way to support the project.
+
+## Turning it off
+
+It's a boolean, not a purchase:
+
+```jsx
+<Quickdraw watermark={false} />
+```
+
+```js
+// plain JS
+createQuickdraw({ container, watermark: false })
+```
+
+```jsx
+// React Native
+<Quickdraw watermark={false} />
+```
+
+That's the whole procedure. No license key, no email, no tier.
+
+## Behavior details
+
+- The mark stays visible when the toolbar is hidden (`hideUi`) — hosts
+  building custom chrome still credit the engine unless they opt out.
+- It never appears in [PNG exports](/docs/export-images/); it's interface, not
+  document.
+- In React, `watermark` is read at mount time.

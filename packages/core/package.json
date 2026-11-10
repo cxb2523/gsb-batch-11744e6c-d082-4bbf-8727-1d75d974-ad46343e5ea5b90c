@@ -1,0 +1,48 @@
+{
+  "name": "@quickdrawjs/core",
+  "version": "0.3.0",
+  "description": "Framework-free infinite-canvas whiteboard engine — the heart of Quickdraw, the MIT-licensed drawing SDK.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./quickdraw.css": "./src/quickdraw.css",
+    "./styles.css": "./src/quickdraw.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "README.md"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "keywords": [
+    "whiteboard",
+    "canvas",
+    "drawing",
+    "infinite-canvas",
+    "sketch",
+    "freehand",
+    "tldraw-alternative",
+    "excalidraw-alternative",
+    "diagram"
+  ],
+  "license": "MIT",
+  "homepage": "https://tryquickdraw.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quickdrawjs/quickdraw.git",
+    "directory": "packages/core"
+  },
+  "bugs": "https://github.com/quickdrawjs/quickdraw/issues",
+  "publishConfig": {
+    "access": "public"
+  }
+}

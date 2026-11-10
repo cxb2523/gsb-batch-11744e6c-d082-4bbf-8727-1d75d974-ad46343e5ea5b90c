@@ -1,0 +1,207 @@
+---
+// Star history chart, drawn from the GitHub API.
+//
+// Rendered at build time with real data (so it is in the served HTML) and
+// refreshed in the browser, so a page served from a week-old deploy still
+// shows today's line. If the build-time fetch failed the shell renders hidden
+// and the client fills it in.
+import { buildStarChart, VIEW } from '../lib/starChart.js'
+
+const { starredAt = [], createdAt = null, stars = 0, class: className = '' } = Astro.props
+const chart = buildStarChart(starredAt, { createdAt, now: Date.now(), total: stars })
+
+const { w, h, padL, padR } = VIEW
+const gridX2 = w - padR
+const blank = { line: '', area: '', yTicks: [], xTicks: [], last: { x: -99, y: -99 }, total: 0 }
+const c = chart ?? blank
+---
+
+<figure class:list={['starhist', className]} hidden={!chart} data-star-history>
+  <svg
+    viewBox={`0 0 ${w} ${h}`}
+    role="img"
+    aria-label={`Star history for Quickdraw on GitHub — ${c.total} stars to date`}
+  >
+    <defs>
+      <linearGradient id="qd-sh-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#ffd154" stop-opacity="0.34" />
+        <stop offset="70%" stop-color="#ffd154" stop-opacity="0.05" />
+        <stop offset="100%" stop-color="#ffd154" stop-opacity="0" />
+      </linearGradient>
+      <filter id="qd-sh-glow" x="-20%" y="-40%" width="140%" height="200%">
+        <feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="#ffd154" flood-opacity="0.45" />
+      </filter>
+    </defs>
+
+    {[0, 1, 2].map((i) => (
+      <line
+        class="sh-grid"
+        data-sh-grid={i}
+        x1={padL}
+        x2={gridX2}
+        y1={c.yTicks[i]?.y ?? -99}
+        y2={c.yTicks[i]?.y ?? -99}
+      />
+    ))}
+
+    <path class="sh-area" data-sh-area d={c.area} fill="url(#qd-sh-fill)" />
+    <path class="sh-line" data-sh-line d={c.line} filter="url(#qd-sh-glow)" />
+
+    <circle class="sh-dot-halo" data-sh-halo cx={c.last.x} cy={c.last.y} r="7" />
+    <circle class="sh-dot" data-sh-dot cx={c.last.x} cy={c.last.y} r="3.6" />
+
+    {[0, 1, 2].map((i) => (
+      <text class="sh-ylabel" data-sh-y={i} x={padL - 10} y={(c.yTicks[i]?.y ?? -99) + 4}>
+        {c.yTicks[i]?.v ?? ''}
+      </text>
+    ))}
+    {[0, 1, 2].map((i) => (
+      <text
+        class="sh-xlabel"
+        data-sh-x={i}
+        x={c.xTicks[i]?.x ?? -99}
+        y={h - 10}
+        text-anchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'}
+      >
+        {c.xTicks[i]?.label ?? ''}
+      </text>
+    ))}
+  </svg>
+
+  <figcaption>
+    <svg class="sh-star" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+      ><path d="M12 1.6l3.1 6.7 7.3.9-5.4 5 1.4 7.2L12 17.8l-6.4 3.6L7 14.2 1.6 9.2l7.3-.9L12 1.6z"
+    /></svg>
+    <span data-sh-total>{c.total}</span> stars and counting
+  </figcaption>
+</figure>
+
+<script>
+  import { buildStarChart } from '../lib/starChart.js'
+  import { loadStarCount, loadStarHistory } from '../lib/liveStars.js'
+
+  const fig = document.querySelector('[data-star-history]')
+  if (fig) {
+    const svg = fig.querySelector('svg')
+    const line = fig.querySelector('[data-sh-line]')
+    const q = (sel) => fig.querySelector(sel)
+    const area = fig.querySelector('[data-sh-area]')
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    let armed = false
+
+    // Trace the line on when it first scrolls into view, with the fill washing
+    // in behind it. Armed exactly once — a refresh must never restart it.
+    const animate = () => {
+      if (reduced || armed || !line.getTotalLength) return
+      const len = line.getTotalLength()
+      if (!len) return
+      armed = true
+      line.style.strokeDasharray = String(len)
+      line.style.strokeDashoffset = String(len)
+      area.style.opacity = '0'
+      new IntersectionObserver(
+        (entries, obs) => {
+          for (const e of entries) {
+            if (!e.isIntersecting) continue
+            line.style.transition = 'stroke-dashoffset 1100ms cubic-bezier(.22,.75,.3,1)'
+            line.style.strokeDashoffset = '0'
+            area.style.transition = 'opacity 900ms ease 220ms'
+            area.style.opacity = '1'
+            obs.disconnect()
+          }
+        },
+        { threshold: 0.25 },
+      ).observe(svg)
+    }
+
+    /** Drop the dash animation — the old length would clip a changed path. */
+    const settle = () => {
+      line.style.transition = 'none'
+      line.style.strokeDasharray = 'none'
+      line.style.strokeDashoffset = '0'
+      area.style.transition = 'none'
+      area.style.opacity = '1'
+    }
+
+    const draw = (chart) => {
+      if (!chart) return
+      const moved = line.getAttribute('d') !== chart.line
+      area.setAttribute('d', chart.area)
+      line.setAttribute('d', chart.line)
+      if (armed && moved) settle()
+      for (const dot of ['[data-sh-dot]', '[data-sh-halo]']) {
+        q(dot).setAttribute('cx', chart.last.x)
+        q(dot).setAttribute('cy', chart.last.y)
+      }
+      chart.yTicks.forEach((t, i) => {
+        const label = q(`[data-sh-y="${i}"]`)
+        label.setAttribute('y', t.y + 4)
+        label.textContent = String(t.v)
+        const grid = q(`[data-sh-grid="${i}"]`)
+        grid.setAttribute('y1', t.y)
+        grid.setAttribute('y2', t.y)
+      })
+      chart.xTicks.forEach((t, i) => {
+        const label = q(`[data-sh-x="${i}"]`)
+        label.setAttribute('x', t.x)
+        label.textContent = t.label
+      })
+      q('[data-sh-total]').textContent = String(chart.total)
+      fig.hidden = false
+      animate() // no-op unless this is the first paint (build-time fetch failed)
+    }
+
+    if (!fig.hidden) animate()
+
+    // Refresh from the committed snapshot (newer than this deploy if the
+    // nightly job has run since) and carry the line out to the live count.
+    Promise.all([loadStarHistory(), loadStarCount().catch(() => 0)])
+      .then(([history, count]) => {
+        draw(
+          buildStarChart(history.starredAt, {
+            createdAt: history.createdAt,
+            now: Date.now(),
+            total: Math.max(count, history.stars),
+          }),
+        )
+      })
+      .catch(() => {})
+  }
+</script>
+
+<style>
+  /* Sized to sit under the card's copy rather than dominate it. */
+  .starhist { margin: 0 auto 30px; max-width: 660px; }
+  .starhist[hidden] { display: none; }
+  /* Direct child only — the caption's star icon is an svg too. */
+  .starhist > svg { width: 100%; height: auto; display: block; overflow: visible; }
+
+  .sh-grid { stroke: rgba(244, 242, 234, 0.11); stroke-width: 1; stroke-dasharray: 3 6; }
+  .sh-area { stroke: none; }
+  .sh-line {
+    fill: none; stroke: #ffd154; stroke-width: 2.6;
+    stroke-linejoin: round; stroke-linecap: round;
+  }
+  .sh-dot { fill: #ffd154; }
+  .sh-dot-halo { fill: #ffd154; opacity: 0.22; }
+
+  .sh-ylabel, .sh-xlabel {
+    fill: rgba(244, 242, 234, 0.42); font-size: 13px; font-weight: 500;
+    font-family: ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums;
+  }
+  .sh-ylabel { text-anchor: end; }
+
+  figcaption {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    margin-top: 4px; font-size: 13.5px; color: rgba(244, 242, 234, 0.5);
+  }
+  figcaption span { color: #ffd154; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sh-star { width: 13px; height: 13px; color: #ffd154; }
+
+  /* The SVG scales down uniformly, so labels need bigger user units to stay
+     legible on a phone. */
+  @media (max-width: 640px) {
+    .sh-ylabel, .sh-xlabel { font-size: 19px; }
+    .starhist { margin-bottom: 24px; }
+  }
+</style>

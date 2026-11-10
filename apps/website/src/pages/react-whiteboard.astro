@@ -1,0 +1,114 @@
+---
+import Landing from '../layouts/Landing.astro'
+import { APP_URL, GITHUB_URL, SITE_URL } from '../consts.js'
+
+const title = 'React whiteboard component — free & MIT licensed | Quickdraw'
+const description =
+  'Add a whiteboard to your React app with one component: <Quickdraw />. Pressure ink, shapes, sticky notes, undo, dark mode, PNG export, and JSON persistence. MIT licensed, free for commercial use.'
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebPage',
+      name: title,
+      url: `${SITE_URL}/react-whiteboard/`,
+      description,
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'What is the best free whiteboard component for React?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Quickdraw and Excalidraw are both MIT-licensed React whiteboard options. Quickdraw ships a single <Quickdraw /> component with pressure ink, shapes, undo, themes, and JSON persistence, plus React Native and framework-free packages.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'How do I save a whiteboard drawing in React?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'With Quickdraw, editor.store.getSnapshot() returns the document as plain JSON. Save it anywhere; pass it back as the snapshot prop to restore.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Can I build a collaborative whiteboard in React?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. Quickdraw emits a JSON-safe diff on every change; send diffs over a WebSocket and apply remote ones with store.applyDiff(diff, "remote"). Remote changes never touch local undo.',
+          },
+        },
+      ],
+    },
+  ],
+}
+---
+<Landing title={title} description={description} jsonLd={jsonLd}>
+  <header class="page-head">
+    <h1>A whiteboard component for React</h1>
+    <p class="lede">
+      One import, one component, a complete whiteboard: pressure ink, shapes,
+      sticky notes, arrows, images, infinite canvas, undo, light and dark
+      themes, PNG export. MIT licensed — free in commercial products.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="/docs/">Get started</a>
+      <a class="btn" href={APP_URL} rel="noopener">Try the live app</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>The whole integration</h2>
+    <pre><code>{`npm install @quickdrawjs/react
+
+import { Quickdraw } from '@quickdrawjs/react'
+import '@quickdrawjs/core/quickdraw.css'
+
+export default function Board() {
+  return (
+    <div style={{ position: 'fixed', inset: 0 }}>
+      <Quickdraw theme="light" grid="dots" />
+    </div>
+  )
+}`}</code></pre>
+  </section>
+
+  <section class="prose">
+    <h2>Persistence is one prop and one call</h2>
+    <p>
+      The document is plain JSON. <code>onChange</code> fires on every edit;
+      <code>snapshot</code> restores a saved board:
+    </p>
+    <pre><code>{`<Quickdraw
+  snapshot={saved}
+  autoFit
+  onChange={(diff, source, editor) =>
+    save(editor.store.getSnapshot())}
+/>`}</code></pre>
+    <h2>Collaboration without a sync product</h2>
+    <p>
+      Every change emits a JSON-safe diff. A working multiplayer board over a
+      bare WebSocket relay is four lines:
+    </p>
+    <pre><code>{`const { store } = ref.current.editor
+store.listen((diff) => socket.send(JSON.stringify(diff)), { source: 'user' })
+socket.onmessage = (e) => store.applyDiff(JSON.parse(e.data), 'remote')`}</code></pre>
+    <h2>Bring your own toolbar</h2>
+    <p>
+      Pass <code>hideUi</code> and the canvas renders bare — every tool is
+      reachable from <code>editor.setTool()</code>,
+      <code>editor.setStyle()</code>, <code>store.undo()</code>, and friends.
+      The stock toolbar is built on the same public API.
+    </p>
+    <p class="more-links">
+      More: <a href="/docs/">documentation</a> ·
+      <a href="/blog/add-whiteboard-to-react-app/">step-by-step tutorial</a> ·
+      <a href="/react-native-whiteboard/">React Native whiteboard</a> ·
+      <a href={GITHUB_URL} rel="noopener">GitHub</a>
+    </p>
+  </section>
+</Landing>

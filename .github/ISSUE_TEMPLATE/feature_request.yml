@@ -1,0 +1,25 @@
+name: Feature request
+description: A tool, API, or behavior you wish Quickdraw had
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to build?
+      description: >
+        The use case matters more than the proposed API — describe what you're
+        embedding Quickdraw into and what's missing.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: If you have an API shape or behavior in mind, sketch it here.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+      description: >
+        The headless API (`hideUi`, `editor.*`, `store.*`) covers a lot —
+        if you tried it and hit a wall, say where.

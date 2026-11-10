@@ -1,0 +1,17 @@
+{
+  "name": "quickdraw-website",
+  "private": true,
+  "version": "0.0.0",
+  "description": "tryquickdraw.com \u2014 the Quickdraw marketing site and blog.",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.3.0",
+    "@quickdrawjs/core": "^0.3.0",
+    "astro": "^5.7.0"
+  }
+}

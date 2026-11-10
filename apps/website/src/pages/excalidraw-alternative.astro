@@ -1,0 +1,107 @@
+---
+import Landing from '../layouts/Landing.astro'
+import CompareTable from '../components/CompareTable.astro'
+import { APP_URL, GITHUB_URL, SITE_URL } from '../consts.js'
+
+const title = 'Excalidraw alternative for React, React Native & plain JS — Quickdraw'
+const description =
+  'Quickdraw is an MIT-licensed Excalidraw alternative that works outside React: a zero-dependency core for any web page, a React component, and a React Native package with stylus support.'
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebPage',
+      name: title,
+      url: `${SITE_URL}/excalidraw-alternative/`,
+      description,
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'Does Excalidraw work without React?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: "Excalidraw's embeddable component is a React library. To embed a whiteboard in a non-React page you need a different SDK — Quickdraw's core is framework-free ESM with zero dependencies.",
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Is there an Excalidraw for React Native?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Excalidraw does not ship a React Native package. @quickdrawjs/react-native wraps the Quickdraw engine in a WebView with a typed bridge, Apple Pencil pressure, and palm rejection.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Is Quickdraw free like Excalidraw?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes — both are MIT-licensed and free for commercial use. The difference is scope: Quickdraw also ships framework-free and React Native packages.',
+          },
+        },
+      ],
+    },
+  ],
+}
+---
+<Landing title={title} description={description} jsonLd={jsonLd}>
+  <header class="page-head">
+    <h1>An Excalidraw alternative that works everywhere</h1>
+    <p class="lede">
+      Excalidraw is MIT-licensed and well loved — if you're embedding a
+      whiteboard in a React web app, it's a fine pick. Quickdraw is for when
+      you need the same thing outside React: a plain web page, a React Native
+      app, or a core you can drive headless.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="/docs/">Get started</a>
+      <a class="btn" href={APP_URL} rel="noopener">Try the live app</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>Side by side</h2>
+    <CompareTable />
+    <p class="fine-print">
+      Reflects public docs as of August 2026 — see
+      <a href="https://github.com/excalidraw/excalidraw" rel="noopener nofollow">Excalidraw's repo</a>.
+      Spot an error? <a href={`${GITHUB_URL}/issues`}>Tell us and we'll fix it.</a>
+    </p>
+  </section>
+
+  <section class="prose">
+    <h2>When Quickdraw is the better fit</h2>
+    <ul>
+      <li><strong>You're not using React.</strong> The core is dependency-free ESM. <code>createQuickdraw({'{'} container {'}'})</code> works in any page — no build step required.</li>
+      <li><strong>You're building for iOS or Android.</strong> The React Native package brings the full engine to Expo and bare RN apps, with Apple Pencil pressure and palm rejection.</li>
+      <li><strong>You want sync without a dedicated server.</strong> Every change emits a JSON diff; apply remote diffs with <code>store.applyDiff(diff, 'remote')</code> over any transport. Excalidraw's collaboration runs through excalidraw-room.</li>
+      <li><strong>You want a small surface.</strong> One store, one editor, one toolbar — ~25 kB minified and gzipped, against ~344 kB for the Excalidraw component. Small enough to read in a sitting.</li>
+    </ul>
+    <h2>When Excalidraw is the better fit</h2>
+    <p>
+      Excalidraw has a huge community, a mature element library, and years of
+      edge-case handling. If you're deep in React, want its hand-drawn look
+      exactly, or lean on its ecosystem (libraries, mermaid import, the
+      excalidraw.com app), stick with it — it's genuinely good software.
+    </p>
+  </section>
+
+  <section>
+    <h2>Try it in a plain HTML page</h2>
+    <pre><code>{`<div id="board" style="position: fixed; inset: 0"></div>
+<script type="module">
+  import { createQuickdraw } from 'https://esm.sh/@quickdrawjs/core'
+  createQuickdraw({ container: document.getElementById('board') })
+</script>`}</code></pre>
+    <p class="more-links">
+      More: <a href="/docs/">documentation</a> ·
+      <a href="/tldraw-alternative/">tldraw alternative</a> ·
+      <a href="/tldraw-vs-excalidraw/">tldraw vs Excalidraw</a> ·
+      <a href="/blog/">blog</a>
+    </p>
+  </section>
+</Landing>

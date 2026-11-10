@@ -1,0 +1,45 @@
+name: Bug report
+description: Something broke — a tool misbehaves, rendering is wrong, a crash
+labels: [bug]
+body:
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - "@quickdrawjs/core"
+        - "@quickdrawjs/react"
+        - "@quickdrawjs/react-native"
+        - The hosted app (app.tryquickdraw.com)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+      placeholder: Drawing with a stylus on iPad, the stroke tapers the wrong way when…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Steps, a code snippet, or a link to a minimal repro. For document bugs,
+        a snapshot JSON (⋮ menu → export, or `store.getSnapshot()`) is gold.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: "macOS 15 / Chrome 132, or iPad Pro / Expo 52 / react-native-webview 13"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Quickdraw version
+      placeholder: "0.1.0"

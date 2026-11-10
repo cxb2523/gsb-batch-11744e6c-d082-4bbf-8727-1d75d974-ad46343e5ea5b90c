@@ -1,0 +1,68 @@
+---
+title: Themes, colors & grids
+description: Light and dark boards, twelve named colors that re-resolve per theme, and ruled or dotted grid backdrops.
+---
+
+# Themes, colors & grids
+
+## Themes
+
+Boards are `'light'` or `'dark'`:
+
+```js
+editor.setTheme('dark')
+editor.theme.id            // current theme
+editor.on('theme', sync)   // the board menu can switch it too
+```
+
+In React, `theme` is a live prop and `onThemeChange` reports in-board
+switches back, so the board can follow your app's theme — or drive it:
+
+```jsx
+const [theme, setTheme] = useState('light')
+<Quickdraw theme={theme} onThemeChange={setTheme} />
+```
+
+The board's container also carries `data-qd-theme="light" | "dark"`, which
+is handy for styling chrome around the canvas.
+
+## Colors
+
+Shapes store a color *name*, not a hex value. The twelve names —
+`black`, `grey`, `light-violet`, `violet`, `blue`, `light-blue`, `yellow`,
+`orange`, `green`, `light-green`, `light-red`, `red` — resolve to different
+actual colors per theme, so a drawing made on paper still reads on a dark
+board.
+
+```js
+editor.setStyle('color', 'violet')
+```
+
+Highlighter colors get the same treatment with translucency on light boards
+and a glow on dark ones.
+
+## Grids
+
+Six backdrops: bare paper, grid lines, ruled notebook lines, dotted intersections, blueprint crosses, or an isometric weave.
+
+```js
+editor.setGrid('dots')     // 'none' | 'lines' | 'ruled' | 'dots' | 'crosses' | 'iso'
+editor.on('grid', sync)
+```
+
+Grid spacing adapts to the zoom — doubling and halving around a 40&nbsp;px
+page step, with majors every fifth line — and fades in rather than popping.
+Grids travel into PNG exports that keep the paper background.
+
+## The board menu switches
+
+The ⋮ menu includes theme and grid switches by default. If your app owns
+its own controls, drop them:
+
+```js
+createQuickdraw({ container, themeToggle: false, gridControl: false })
+```
+
+```jsx
+<Quickdraw themeToggle={false} gridControl={false} />
+```

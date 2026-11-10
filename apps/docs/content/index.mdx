@@ -1,0 +1,85 @@
+---
+title: Getting started
+description: Install Quickdraw and render your first infinite-canvas whiteboard in React, React Native, or plain JavaScript.
+---
+
+# Getting started
+
+Quickdraw is an MIT-licensed infinite-canvas whiteboard SDK. One engine,
+three packages:
+
+| Package | For |
+| --- | --- |
+| [`@quickdrawjs/react`](https://www.npmjs.com/package/@quickdrawjs/react) | React apps — a `<Quickdraw />` component |
+| [`@quickdrawjs/react-native`](https://www.npmjs.com/package/@quickdrawjs/react-native) | React Native / Expo — a WebView component with a typed bridge |
+| [`@quickdrawjs/core`](https://www.npmjs.com/package/@quickdrawjs/core) | Any web page — framework-free, zero dependencies |
+
+Every board comes complete: pressure ink, highlighter, shapes with editable
+labels, arrows, lines, text, sticky notes, images, laser pointer, selection,
+infinite pan/zoom, per-gesture undo, light and dark themes, grids, and PNG
+export.
+
+## Install
+
+```sh
+npm install @quickdrawjs/react
+```
+
+For plain JS use `@quickdrawjs/core`; for React Native use
+`@quickdrawjs/react-native react-native-webview`.
+
+## First board
+
+```jsx
+import { Quickdraw } from '@quickdrawjs/react'
+import '@quickdrawjs/core/quickdraw.css'
+
+export default function App() {
+  return (
+    <div style={{ position: 'fixed', inset: 0 }}>
+      <Quickdraw theme="light" grid="dots" />
+    </div>
+  )
+}
+```
+
+The component fills its container, so the container needs real dimensions —
+`position: fixed; inset: 0` for a full-page board, or any sized `div` for an
+inline one.
+
+That's a working whiteboard. Draw with the pen, add shapes and sticky notes,
+switch the theme from the board's ⋮ menu.
+
+## The 60-second tour
+
+Everything revolves around two objects:
+
+- **`editor`** — tools, camera, selection, theme:
+  `editor.setTool('draw')`, `editor.fitContent()`, `editor.setTheme('dark')`.
+- **`editor.store`** — the document: `store.getSnapshot()` returns plain
+  JSON, `store.listen((diff) => ...)` fires on every change, and
+  `store.undo()` / `store.redo()` walk history.
+
+In React you reach them through a ref (`ref.current.editor`); in plain JS,
+`createQuickdraw()` returns them directly.
+
+```jsx
+const ref = useRef(null)
+
+<Quickdraw
+  ref={ref}
+  snapshot={saved}                          // restore a saved board
+  autoFit                                   // fit content on mount/resize
+  onChange={(diff, source, editor) =>       // every document change
+    save(editor.store.getSnapshot())}
+/>
+```
+
+## Where next
+
+- [React](/docs/react/) — the full component API
+- [React Native](/docs/react-native/) — Apple Pencil, palm rejection, Expo
+- [Plain JavaScript](/docs/core/) — no framework, no build step
+- [Persistence](/docs/persistence/) — snapshots are plain JSON
+- [Real-time sync](/docs/sync/) — multiplayer over any transport
+- [The data model](/docs/data-model/) — diffs, transactions, undo

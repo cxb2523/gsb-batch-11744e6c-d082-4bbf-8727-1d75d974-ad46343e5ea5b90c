@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+coverage/
+packages/react-native/src/board-html.generated.js
+.vercel/
+.astro/
+.env.local

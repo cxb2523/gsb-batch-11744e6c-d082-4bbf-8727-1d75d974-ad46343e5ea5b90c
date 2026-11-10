@@ -1,0 +1,77 @@
+---
+title: Persistence
+description: Save and restore Quickdraw boards — snapshots are plain JSON that round-trip through localStorage, your database, or a file.
+---
+
+# Persistence
+
+The whole document round-trips as plain JSON. There's no serialization
+format to learn: `getSnapshot()` gives you an object, `JSON.stringify` it,
+store it anywhere.
+
+## Save on change, restore on load
+
+```js
+const { store } = board.editor
+
+// restore (source 'remote' keeps the load out of the user's undo history)
+const saved = localStorage.getItem('doc')
+if (saved) {
+  store.loadSnapshot(JSON.parse(saved), 'remote')
+  board.editor.fitContent()
+}
+
+// save, debounced — snapshots are cheap but not free
+let t
+store.listen(() => {
+  clearTimeout(t)
+  t = setTimeout(() => {
+    localStorage.setItem('doc', JSON.stringify(store.getSnapshot()))
+  }, 400)
+})
+```
+
+In React the same pattern is two props:
+
+```jsx
+<Quickdraw
+  snapshot={saved}
+  autoFit
+  onChange={(diff, source, editor) =>
+    debouncedSave(editor.store.getSnapshot())}
+/>
+```
+
+## To a database
+
+The snapshot is a JSON object — it drops into a `jsonb` column, a document
+store, or an object bucket unchanged. A typical API round trip:
+
+```js
+// save
+await fetch(`/api/boards/${id}`, {
+  method: 'PUT',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(store.getSnapshot()),
+})
+
+// load
+const snap = await fetch(`/api/boards/${id}`).then((r) => r.json())
+store.loadSnapshot(snap, 'remote')
+```
+
+## Incremental saves
+
+For very large boards you can persist the diff stream instead of full
+snapshots — every change is a small JSON diff, and replaying diffs over the
+last snapshot reconstructs the document. See
+[The data model](/docs/data-model/) for the diff shape and
+`applyDiff`/`composeDiff`.
+
+## Images
+
+Pasted and dropped images are stored *in the document* as downscaled data
+URLs, so a snapshot is always self-contained — no separate asset store to
+keep consistent. The trade-off is snapshot size; if your users paste large
+screenshots often, prefer database persistence over `localStorage` (which
+caps around 5 MB in most browsers).

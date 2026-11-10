@@ -1,0 +1,113 @@
+---
+import Landing from '../layouts/Landing.astro'
+import { GITHUB_URL, SITE_URL } from '../consts.js'
+
+const title = 'React Native whiteboard with Apple Pencil support | Quickdraw'
+const description =
+  'A drawing and whiteboard component for React Native and Expo: Apple Pencil pressure, palm rejection, offline support, JSON snapshots, and PNG export. MIT licensed, free for commercial use.'
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@graph': [
+    {
+      '@type': 'WebPage',
+      name: title,
+      url: `${SITE_URL}/react-native-whiteboard/`,
+      description,
+    },
+    {
+      '@type': 'FAQPage',
+      mainEntity: [
+        {
+          '@type': 'Question',
+          name: 'How do I add a whiteboard to a React Native app?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Install @quickdrawjs/react-native and react-native-webview, then render <Quickdraw style={{ flex: 1 }} />. The engine ships inside the package as a self-contained HTML page — no network needed, works offline.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does it support Apple Pencil?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes — stroke width follows Pencil pressure, and once a stylus is detected, palm touches pan the canvas instead of drawing.',
+          },
+        },
+        {
+          '@type': 'Question',
+          name: 'Does it work with Expo?',
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: 'Yes. The package uses react-native-webview, which is supported in Expo Go and dev builds. No native modules of its own.',
+          },
+        },
+      ],
+    },
+  ],
+}
+---
+<Landing title={title} description={description} jsonLd={jsonLd}>
+  <header class="page-head">
+    <h1>A whiteboard for React Native</h1>
+    <p class="lede">
+      Real drawing on iOS and Android: Apple Pencil pressure, palm rejection,
+      an infinite canvas, and the full Quickdraw toolset — wrapped in one
+      component with a typed bridge. Works in Expo, works offline.
+    </p>
+    <div class="actions">
+      <a class="btn primary" href="/docs/">Get started</a>
+      <a class="btn" href={GITHUB_URL} rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>The whole integration</h2>
+    <pre><code>{`npm install @quickdrawjs/react-native react-native-webview
+
+import { Quickdraw } from '@quickdrawjs/react-native'
+
+<Quickdraw
+  ref={board}
+  theme="dark"
+  onChange={(diff) => sync(diff)}
+  style={{ flex: 1 }}
+/>
+
+// snapshots and exports cross the bridge as promises
+const snapshot = await board.current.getSnapshot()
+const png = await board.current.exportPng({ scale: 2 })`}</code></pre>
+  </section>
+
+  <section class="prose">
+    <h2>How it works</h2>
+    <p>
+      The package embeds the Quickdraw engine as a single self-contained HTML
+      string rendered in a WebView — no server, no network fetch, nothing to
+      cache. A typed message bridge carries props in and events out, so from
+      your app's side it behaves like any other component: props, callbacks,
+      and a ref with async methods.
+    </p>
+    <p>
+      Pencil input arrives with pressure, and palm rejection kicks in the
+      moment a stylus is seen: fingers pan and pinch the camera while the pen
+      draws. Boards serialize to plain JSON snapshots you can store with the
+      rest of your app data, and <code>exportPng()</code> returns a data URL
+      ready for sharing sheets.
+    </p>
+    <h2>What's in the box</h2>
+    <ul>
+      <li>Pen with pressure, highlighter, eraser, laser pointer</li>
+      <li>Shapes, arrows with draggable bend, text, sticky notes, images</li>
+      <li>Infinite canvas with pinch zoom and zoom-to-fit</li>
+      <li>Per-gesture undo/redo, light and dark themes, ruled and dotted grids</li>
+      <li>JSON snapshots, live diffs for sync, PNG export</li>
+    </ul>
+    <p class="more-links">
+      More: <a href="/docs/">documentation</a> ·
+      <a href="/blog/react-native-whiteboard-drawing/">React Native tutorial</a> ·
+      <a href="/react-whiteboard/">React whiteboard</a> ·
+      <a href="/tldraw-alternative/">tldraw alternative</a>
+    </p>
+  </section>
+</Landing>

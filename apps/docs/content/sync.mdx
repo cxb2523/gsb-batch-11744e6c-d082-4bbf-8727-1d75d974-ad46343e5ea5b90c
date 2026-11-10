@@ -1,0 +1,75 @@
+---
+title: Real-time sync
+description: Build a collaborative whiteboard with Quickdraw's diff stream — any transport, correct multiplayer undo, and a relay that fits in 15 lines.
+---
+
+# Real-time sync
+
+Sync is built into the data model rather than sold as a service. Every
+change emits a JSON-safe diff; ship it to peers over any transport and
+apply theirs as they arrive.
+
+## The whole client
+
+```js
+const { store } = board.editor
+
+store.listen((diff) => socket.send(JSON.stringify(diff)), { source: 'user' })
+socket.onmessage = (e) => store.applyDiff(JSON.parse(e.data), 'remote')
+```
+
+The `source` tag is the load-bearing detail:
+
+- The listener filter `{ source: 'user' }` means you only broadcast what
+  *this* client did — no echo loops.
+- Applying with `'remote'` keeps peer changes **out of the local undo
+  stack**. When a user hits ⌘Z, their own last stroke vanishes — not a
+  collaborator's.
+
+Any transport works: WebSocket, WebRTC data channel, `BroadcastChannel`
+(try it across two tabs), or your own message bus.
+
+## The relay
+
+The server never interprets documents — it forwards bytes:
+
+```js
+import { WebSocketServer } from 'ws'
+
+const wss = new WebSocketServer({ port: 8080 })
+wss.on('connection', (ws) => {
+  ws.on('message', (data) => {
+    for (const peer of wss.clients) {
+      if (peer !== ws && peer.readyState === 1) peer.send(data.toString())
+    }
+  })
+})
+```
+
+New peers catch up with a snapshot: send them `store.getSnapshot()`, they
+call `store.loadSnapshot(snap, 'remote')`, then live diffs flow.
+
+## Conflicts
+
+Records update whole, so concurrency resolves at record granularity — last
+writer wins per shape. For a whiteboard this matches intuition: two people
+rarely edit the *same* shape at once, and when they do, one winning cleanly
+beats a merge artifact. Freehand strokes never conflict at all — each
+stroke is a new record.
+
+If you outgrow that (offline-first editing, heavy contention), you can
+layer a CRDT or server reconciliation on top of the same diff stream — the
+diff already captures intent, and nothing in the engine assumes an
+authority model.
+
+## React Native peers
+
+`@quickdrawjs/react-native` emits the same diffs, so a phone and a browser
+can share one relay:
+
+```jsx
+<Quickdraw
+  onChange={(diff, source) => source === 'user' && socket.send(JSON.stringify(diff))}
+/>
+// board.current.applyDiff(remoteDiff) on message
+```
