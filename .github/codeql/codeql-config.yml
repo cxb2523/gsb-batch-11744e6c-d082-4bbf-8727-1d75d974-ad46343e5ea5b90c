@@ -1,0 +1,9 @@
+name: ansible-security-scanner
+
+queries:
+  - uses: security-extended
+
+paths-ignore:
+  - tests/**
+  - .hugo/**
+  - src/ansible_security_scanner/patterns/**

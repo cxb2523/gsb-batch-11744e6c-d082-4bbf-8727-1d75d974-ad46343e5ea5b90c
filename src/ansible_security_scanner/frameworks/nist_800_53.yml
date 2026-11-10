@@ -1,0 +1,446 @@
+# NIST 800-53 Rev. 5 catalog - Security and Privacy Controls for Information
+# Systems and Organizations.
+#
+# Purpose
+# -------
+# Maps every NIST 800-53 control identifier referenced by the scanner's
+# patterns to its official control name. Consumed by `link_resolver` to
+# enrich findings and render compliance coverage in Markdown / HTML /
+# SARIF / JSON reports.
+#
+# Authoring rules
+# ---------------
+# 1. Add only controls actually referenced by a pattern YAML. The framework
+#    test fails the build if a pattern references an unknown control ID.
+# 2. IDs are stored in the canonical form used by NIST:
+#      Family-NN        e.g. "AC-3"           (base control)
+#      Family-NN(KK)    e.g. "AC-3(7)"        (control enhancement)
+#    The resolver normalizes on lookup so patterns can write `nist-AC-3`,
+#    `NIST-800-53-AC-3`, or bare `AC-3` and still match.
+# 3. `name` is NIST's official control name verbatim. Source:
+#    https://csrc.nist.gov/Projects/risk-management/sp800-53-controls
+# 4. URLs are NOT stored here. `link_resolver._build_nist_url` synthesizes
+#    the canonical CPRT deep-link from the catalog key. CPRT version is
+#    pinned in `_NIST_CPRT_VERSION` (currently SP 800-53 Rev 5.2.0). When
+#    NIST publishes a new revision, bump that one constant; do not edit
+#    URLs in this file.
+
+
+AC-2:
+  name: Account Management
+  family: Access Control
+
+AC-3:
+  name: Access Enforcement
+  family: Access Control
+
+AC-3(7):
+  name: Access Enforcement | Role-based Access Control
+  family: Access Control
+
+AC-4:
+  name: Information Flow Enforcement
+  family: Access Control
+
+AC-5:
+  name: Separation of Duties
+  family: Access Control
+
+AC-6:
+  name: Least Privilege
+  family: Access Control
+
+AC-6(1):
+  name: Least Privilege | Authorize Access to Security Functions
+  family: Access Control
+
+AC-6(9):
+  name: Least Privilege | Log Use of Privileged Functions
+  family: Access Control
+
+AC-6(10):
+  name: Least Privilege | Prohibit Non-privileged Users from Executing Privileged Functions
+  family: Access Control
+
+AC-11:
+  name: Device Lock
+  family: Access Control
+
+AC-17:
+  name: Remote Access
+  family: Access Control
+
+AC-17(2):
+  name: Remote Access | Protection of Confidentiality and Integrity Using Encryption
+  family: Access Control
+
+AC-18:
+  name: Wireless Access
+  family: Access Control
+
+AU-2:
+  name: Event Logging
+  family: Audit and Accountability
+
+AU-3:
+  name: Content of Audit Records
+  family: Audit and Accountability
+
+AU-6:
+  name: Audit Record Review, Analysis, and Reporting
+  family: Audit and Accountability
+
+AU-8:
+  name: Time Stamps
+  family: Audit and Accountability
+
+AU-9:
+  name: Protection of Audit Information
+  family: Audit and Accountability
+
+AU-9(3):
+  name: Protection of Audit Information | Cryptographic Protection
+  family: Audit and Accountability
+
+AU-10:
+  name: Non-repudiation
+  family: Audit and Accountability
+
+AU-12:
+  name: Audit Record Generation
+  family: Audit and Accountability
+
+CM-2:
+  name: Baseline Configuration
+  family: Configuration Management
+
+CM-3:
+  name: Configuration Change Control
+  family: Configuration Management
+
+CM-5:
+  name: Access Restrictions for Change
+  family: Configuration Management
+
+CM-6:
+  name: Configuration Settings
+  family: Configuration Management
+
+CM-7:
+  name: Least Functionality
+  family: Configuration Management
+
+CM-7(5):
+  name: Least Functionality | Authorized Software - Allow-by-exception
+  family: Configuration Management
+
+CM-8:
+  name: System Component Inventory
+  family: Configuration Management
+
+CM-11:
+  name: User-installed Software
+  family: Configuration Management
+
+IA-2:
+  name: Identification and Authentication (Organizational Users)
+  family: Identification and Authentication
+
+IA-2(1):
+  name: Identification and Authentication | Multi-factor Authentication to Privileged Accounts
+  family: Identification and Authentication
+
+IA-5:
+  name: Authenticator Management
+  family: Identification and Authentication
+
+IA-5(1):
+  name: Authenticator Management | Password-based Authentication
+  family: Identification and Authentication
+
+IA-5(7):
+  name: Authenticator Management | No Embedded Unencrypted Static Authenticators
+  family: Identification and Authentication
+
+SC-5:
+  name: Denial-of-service Protection
+  family: System and Communications Protection
+
+SC-7:
+  name: Boundary Protection
+  family: System and Communications Protection
+
+SC-8:
+  name: Transmission Confidentiality and Integrity
+  family: System and Communications Protection
+
+SC-8(1):
+  name: Transmission Confidentiality and Integrity | Cryptographic Protection
+  family: System and Communications Protection
+
+SC-12:
+  name: Cryptographic Key Establishment and Management
+  family: System and Communications Protection
+
+SC-13:
+  name: Cryptographic Protection
+  family: System and Communications Protection
+
+SC-28:
+  name: Protection of Information at Rest
+  family: System and Communications Protection
+
+SI-2:
+  name: Flaw Remediation
+  family: System and Information Integrity
+
+SI-3:
+  name: Malicious Code Protection
+  family: System and Information Integrity
+
+SI-4:
+  name: System Monitoring
+  family: System and Information Integrity
+
+SI-7:
+  name: Software, Firmware, and Information Integrity
+  family: System and Information Integrity
+
+SI-7(1):
+  name: Software, Firmware, and Information Integrity | Integrity Checks
+  family: System and Information Integrity
+
+SI-10:
+  name: Information Input Validation
+  family: System and Information Integrity
+
+SA-10:
+  name: Developer Configuration Management
+  family: System and Services Acquisition
+
+SA-11:
+  name: Developer Testing and Evaluation
+  family: System and Services Acquisition
+
+SA-15:
+  name: Development Process, Standards, and Tools
+  family: System and Services Acquisition
+
+RA-3:
+  name: Risk Assessment
+  family: Risk Assessment
+
+RA-5:
+  name: Vulnerability Monitoring and Scanning
+  family: Risk Assessment
+
+IR-4:
+  name: Incident Handling
+  family: Incident Response
+
+AC-6(7):
+  name: Least Privilege | Review of User Privileges
+  family: Access Control
+
+IA-2(2):
+  name: Identification and Authentication | Multi-factor Authentication to Non-privileged Accounts
+  family: Identification and Authentication
+
+IA-5(2):
+  name: Authenticator Management | Public Key-Based Authentication
+  family: Identification and Authentication
+
+SC-28(1):
+  name: Protection of Information at Rest | Cryptographic Protection
+  family: System and Communications Protection
+
+AC-2(5):
+  name: Account Management | Inactivity Logout
+  family: Access Control
+
+AC-2(7):
+  name: Account Management | Privileged User Accounts
+  family: Access Control
+
+AC-6(5):
+  name: Least Privilege | Privileged Accounts
+
+AC-7:
+  name: Unsuccessful Logon Attempts
+  family: Access Control
+
+AC-10:
+  name: Concurrent Session Control
+  family: Access Control
+
+AC-12:
+  name: Session Termination
+  family: Access Control
+
+AC-17(3):
+  name: Remote Access | Managed Access Control Points
+  family: Access Control
+
+AC-24:
+  name: Access Control Decisions
+  family: Access Control
+
+AU-4:
+  name: Audit Log Storage Capacity
+  family: Audit and Accountability
+
+AU-5:
+  name: Response to Audit Logging Process Failures
+  family: Audit and Accountability
+
+AU-8(1):
+  name: Time Stamps | Synchronization with Authoritative Time Source
+  family: Audit and Accountability
+
+AU-11:
+  name: Audit Record Retention
+  family: Audit and Accountability
+
+CA-7:
+  name: Continuous Monitoring
+  family: Assessment, Authorization, and Monitoring
+
+CM-5(3):
+  name: Access Restrictions For Change | Signed Components
+  family: Configuration Management
+
+CM-14:
+  name: Signed Components
+  family: Configuration Management
+
+CP-2:
+  name: Contingency Plan
+  family: Contingency Planning
+
+CP-9:
+  name: System Backup
+  family: Contingency Planning
+
+CP-9(5):
+  name: System Backup | Transfer to Alternate Storage Site
+  family: Contingency Planning
+
+CP-10:
+  name: System Recovery and Reconstitution
+  family: Contingency Planning
+
+IA-3:
+  name: Device Identification and Authentication
+
+IA-4:
+  name: Identifier Management
+  family: Identification and Authentication
+
+IA-5(13):
+  name: Authenticator Management | Expiration of Cached Authenticators
+  family: Identification and Authentication
+
+IA-7:
+  name: Cryptographic Module Authentication
+  family: Identification and Authentication
+
+IA-8:
+  name: Identification and Authentication (Non-Organizational Users)
+  family: Identification and Authentication
+
+IR-6:
+  name: Incident Reporting
+  family: Incident Response
+
+MP-4:
+  name: Media Storage
+  family: Media Protection
+
+MP-5:
+  name: Media Transport
+  family: Media Protection
+
+MP-6:
+  name: Media Sanitization
+  family: Media Protection
+
+SA-12:
+  name: Supply Chain Protection
+  family: System and Services Acquisition
+
+SA-22:
+  name: Unsupported System Components
+  family: System and Services Acquisition
+
+SC-7(3):
+  name: Boundary Protection | Access Points
+  family: System and Communications Protection
+
+SC-7(5):
+  name: Boundary Protection | Deny by Default - Allow by Exception
+  family: System and Communications Protection
+
+SC-7(21):
+  name: Boundary Protection | Isolation of System Components
+  family: System and Communications Protection
+
+SC-13(1):
+  name: Cryptographic Protection | FIPS-Validated Cryptography
+  family: System and Communications Protection
+
+SC-18:
+  name: Mobile Code
+  family: System and Communications Protection
+
+SC-20:
+  name: Secure Name/Address Resolution Service (Authoritative Source)
+
+SC-21:
+  name: Secure Name/Address Resolution Service (Recursive or Caching Resolver)
+
+SC-22:
+  name: Architecture and Provisioning for Name / Address Resolution Service
+  family: System and Communications Protection
+
+SC-23:
+  name: Session Authenticity
+  family: System and Communications Protection
+
+SC-39:
+  name: Process Isolation
+  family: System and Communications Protection
+
+SC-45:
+  name: System Time Synchronization
+  family: System and Communications Protection
+
+SI-2(2):
+  name: Flaw Remediation | Automated Flaw Remediation Status
+  family: System and Information Integrity
+
+SI-3(8):
+  name: Malicious Code Protection | Detect Unauthorized Commands
+  family: System and Information Integrity
+
+SI-8:
+  name: Spam Protection
+  family: System and Information Integrity
+
+SI-10(5):
+  name: Information Input Validation | Restrict Inputs to Trusted Sources and Approved Formats
+  family: System and Information Integrity
+
+SI-11:
+  name: Error Handling
+
+SI-13:
+  name: Predictable Failure Prevention
+  family: System and Information Integrity
+
+SI-17:
+  name: Fail-Safe Procedures
+  family: System and Information Integrity
+
+SR-11:
+  name: Component Authenticity
+  family: Supply Chain Risk Management

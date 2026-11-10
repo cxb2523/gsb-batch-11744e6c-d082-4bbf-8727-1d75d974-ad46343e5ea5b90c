@@ -1,0 +1,53 @@
+# pre-commit install && pre-commit run --all-files
+# Ruff config: pyproject.toml.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        exclude: ^src/ansible_security_scanner/patterns/.*\.yml$
+      - id: check-yaml
+        exclude: ^\.hugo/themes/
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml, --strict]
+        files: ^(src/|\.github/|tests/|\.security-scanner-allowlist\.yml$|\.pre-commit-config\.yaml$|\.yamllint\.yaml$)
+
+  - repo: local
+    hooks:
+      - id: readme-rule-counts
+        name: Regenerate README rule/category counts
+        language: system
+        entry: python .hugo/scripts/regen_readme_counts.py
+        files: ^(README\.md|src/ansible_security_scanner/patterns/.*\.yml)$
+        pass_filenames: false
+
+      - id: dashboard-counts
+        name: Regenerate dashboard rule/severity counts
+        language: system
+        entry: python .hugo/scripts/regen_dashboard_counts.py
+        files: ^(\.hugo/content/dashboard\.md|src/ansible_security_scanner/patterns/.*\.yml)$
+        pass_filenames: false
+
+      - id: pattern-blank-lines
+        name: Enforce blank line before each rule in pattern YAMLs
+        language: system
+        entry: python .hugo/scripts/regen_pattern_blank_lines.py
+        files: ^src/ansible_security_scanner/patterns/.*\.yml$
+        pass_filenames: false

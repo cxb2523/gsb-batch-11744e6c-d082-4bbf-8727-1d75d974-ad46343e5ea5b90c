@@ -1,0 +1,7 @@
+pip>=26.2
+pip-tools>=7.6.1
+pre-commit
+build
+twine>=7
+pyyaml
+cyclonedx-bom

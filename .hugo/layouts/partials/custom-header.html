@@ -1,0 +1,383 @@
+<meta name="google-site-verification" content="ZwtXu4I3Awbxnd1dDpGjRBlCxxOHHW5Eplsw6rG8ujs" />
+
+<link rel="canonical" href="{{ .Permalink }}" />
+
+{{- $authorId := printf "%sabout/#author" site.BaseURL }}
+{{- $orgId := printf "%s#organization" site.BaseURL }}
+{{- $siteId := printf "%s#website" site.BaseURL }}
+{{- $logoUrl := printf "%simages/logo.svg" site.BaseURL }}
+{{- $version := "0.0.0" }}
+{{- with site.Data.release }}{{ $version = .version }}{{ end }}
+{{- $releaseNotesUrl := printf "https://github.com/cpeoples/ansible-security-scanner/releases/tag/v%s" $version }}
+{{- with site.Data.release }}{{ with .release_notes_url }}{{ $releaseNotesUrl = . }}{{ end }}{{ end }}
+
+<meta property="og:image" content="{{ $logoUrl }}" />
+<meta property="og:image:type" content="image/svg+xml" />
+<meta property="og:image:width" content="256" />
+<meta property="og:image:height" content="256" />
+<meta property="og:image:alt" content="Ansible Security Scanner logo" />
+<meta name="twitter:image" content="{{ $logoUrl }}" />
+<meta name="twitter:image:alt" content="Ansible Security Scanner logo" />
+
+{{- if .IsHome }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "@id": "{{ $siteId }}",
+  "url": "{{ site.BaseURL }}",
+  "name": "Ansible Security Scanner",
+  "description": "Static SAST scanner for Ansible. Detects malicious code, RCE, command and template injection, hardcoded credentials, supply-chain risk, unauthorized cloud access, lateral movement, and reverse shells.",
+  "inLanguage": "en",
+  "publisher": { "@id": "{{ $orgId }}" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "@id": "{{ $orgId }}",
+  "name": "Ansible Security Scanner",
+  "url": "{{ site.BaseURL }}",
+  "logo": "{{ $logoUrl }}",
+  "founder": { "@id": "{{ $authorId }}" },
+  "sameAs": [
+    "https://github.com/cpeoples/ansible-security-scanner",
+    "https://pypi.org/project/ansible-security-scanner/"
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Ansible Security Scanner",
+  "description": "Static SAST scanner for Ansible playbooks, roles, collections, task files, vars, and inventories. Detects malicious code, RCE, command and template injection, hardcoded credentials, supply-chain risk, unauthorized cloud access, lateral movement, and reverse shells. Outputs SARIF, CycloneDX SBOM, GitLab SAST, JUnit, JSON, HTML, and Markdown reports with remediation guidance.",
+  "url": "https://cpeoples.github.io/ansible-security-scanner/",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "SecurityApplication",
+  "operatingSystem": "Linux, macOS, Windows",
+  "softwareVersion": "{{ $version }}",
+  "releaseNotes": "{{ $releaseNotesUrl }}",
+  "programmingLanguage": "Python",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "codeRepository": "https://github.com/cpeoples/ansible-security-scanner",
+  "downloadUrl": "https://pypi.org/project/ansible-security-scanner/",
+  "image": "{{ $logoUrl }}",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@id": "{{ $authorId }}"
+  },
+  "publisher": {
+    "@id": "{{ $orgId }}"
+  },
+  "keywords": "ansible, security, sast, static analysis, playbook, role, collection, devsecops, sarif, cyclonedx, sbom, supply chain, rce, injection, secrets, owasp, cwe, nist, cis, mitre att&ck"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Person",
+  "@id": "{{ $authorId }}",
+  "name": "Chris Peoples",
+  "url": "https://cpeoples.github.io",
+  "image": "https://avatars.githubusercontent.com/u/699389?v=4",
+  "jobTitle": "Software Engineer",
+  "knowsAbout": [
+    "Ansible",
+    "DevSecOps",
+    "Static Application Security Testing",
+    "Supply Chain Security",
+    "Software Composition Analysis",
+    "Mobile Forensics",
+    "Security Research",
+    "Full-Stack Development"
+  ],
+  "sameAs": [
+    "https://github.com/cpeoples",
+    "https://cpeoples.github.io",
+    "https://forum.ansible.com/u/cpeoples",
+    "https://www.linkedin.com/in/chrispeoples"
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What does Ansible Security Scanner scan?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Ansible playbooks, roles, collections, task files, vars, and inventories. It detects malicious code, RCE, command and template injection, hardcoded credentials, supply-chain risk, unauthorized cloud access, lateral movement, and reverse shells."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is this different from ansible-lint?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "ansible-lint focuses on style and best practices. Ansible Security Scanner is a SAST tool focused on security signals: dataflow taint tracking, supply-chain risk, secrets, and known attack patterns mapped to OWASP, CWE, NIST, CIS, and MITRE ATT&CK."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it run in CI/CD?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It outputs SARIF, CycloneDX SBOM, GitLab SAST, JUnit, JSON, HTML, and Markdown. GitHub Actions, GitLab CI, and Jenkins are all supported, and PR/MR comments can be posted automatically."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it free to use?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Ansible Security Scanner is Apache-2.0 licensed and free to use commercially."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is Ansible Security Scanner?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Ansible Security Scanner is an open-source static analysis (SAST) tool for Ansible playbooks, roles, collections, task files, vars, and inventories. It is licensed Apache-2.0 and distributed on PyPI."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is Ansible Security Scanner different from Checkov, KICS, or Trivy?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Checkov, KICS, and Trivy focus primarily on Terraform, CloudFormation, and Kubernetes manifests. Ansible Security Scanner is purpose-built for Ansible and ships with rules across security categories specific to Ansible idioms."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Ansible Security Scanner detect hardcoded credentials and secrets?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It detects hardcoded passwords, API keys, cloud credentials, and tokens in Ansible variables, vars files, and task arguments, and supports custom secret patterns."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I scan an Ansible project for security issues?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Install with `pip install ansible-security-scanner`, then run `ansible-security-scanner --directory ansible/` to scan a project. Add `--output results.sarif` to integrate with GitHub Code Scanning."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Ansible Security Scanner integrate with GitHub Actions and GitLab CI?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. It outputs SARIF for GitHub Code Scanning, GitLab SAST JSON for the GitLab Security Dashboard, and JUnit for any CI provider. It can also post findings as comments on pull requests and merge requests."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What Ansible content does Ansible Security Scanner support?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Playbooks, roles, collections, task files, handlers, vars files, group_vars, host_vars, inventory files, and Ansible Vault-encrypted files (when a vault password is provided)."
+      }
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "How to scan an Ansible project for security issues",
+  "description": "Install Ansible Security Scanner from PyPI and run it against your playbooks, roles, or collections.",
+  "totalTime": "PT2M",
+  "tool": [
+    { "@type": "HowToTool", "name": "Python 3.11 or later" },
+    { "@type": "HowToTool", "name": "pip" }
+  ],
+  "step": [
+    {
+      "@type": "HowToStep",
+      "position": 1,
+      "name": "Install from PyPI",
+      "text": "Run `pip install ansible-security-scanner` to install the scanner and its `ansible-security-scanner` CLI on your PATH."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 2,
+      "name": "Scan a project",
+      "text": "Run `ansible-security-scanner --directory ansible/` to scan a project. Findings are printed as a Markdown report by default."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 3,
+      "name": "Emit SARIF for GitHub Code Scanning",
+      "text": "Run `ansible-security-scanner --directory ansible/ --output results.sarif` to produce a SARIF report consumable by GitHub Advanced Security and other SARIF-aware tools."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 4,
+      "name": "Emit GitLab SAST JSON",
+      "text": "Run `ansible-security-scanner --directory ansible/ --output gl-sast-report.json` to produce a report that auto-populates the GitLab Security Dashboard."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 5,
+      "name": "Post findings on a pull request",
+      "text": "Inside a GitHub Actions `pull_request` workflow, run `ansible-security-scanner --gh-comment` to post a concise findings comment on the PR. The equivalent for GitLab CI is `--gl-comment`."
+    }
+  ]
+}
+</script>
+{{- end }}
+
+{{- if and .File (eq .File.BaseFileName "about") }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "ProfilePage",
+  "url": "{{ .Permalink }}",
+  "name": "About",
+  "dateModified": "{{ with .Lastmod }}{{ .Format "2006-01-02T15:04:05Z07:00" }}{{ else }}{{ now.Format "2006-01-02T15:04:05Z07:00" }}{{ end }}",
+  "mainEntity": {
+    "@type": "Person",
+    "@id": "{{ $authorId }}",
+    "name": "Chris Peoples",
+    "url": "https://cpeoples.github.io",
+    "image": "https://avatars.githubusercontent.com/u/699389?v=4",
+    "jobTitle": "Software Engineer",
+    "knowsAbout": [
+      "Ansible",
+      "DevSecOps",
+      "Static Application Security Testing",
+      "Supply Chain Security",
+      "Software Composition Analysis",
+      "Mobile Forensics",
+      "Security Research",
+      "Full-Stack Development"
+    ],
+    "sameAs": [
+      "https://github.com/cpeoples",
+      "https://cpeoples.github.io",
+      "https://forum.ansible.com/u/cpeoples",
+      "https://www.linkedin.com/in/chrispeoples"
+    ]
+  }
+}
+</script>
+{{- end }}
+
+{{- if not .IsHome }}
+{{- $crumbs := slice }}
+{{- $crumbs = $crumbs | append (dict "name" "Home" "url" site.BaseURL) }}
+{{- range $i, $a := .Ancestors.Reverse }}
+  {{- if not $a.IsHome }}
+    {{- $crumbs = $crumbs | append (dict "name" $a.Title "url" $a.Permalink) }}
+  {{- end }}
+{{- end }}
+{{- $crumbs = $crumbs | append (dict "name" .Title "url" .Permalink) }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {{- range $i, $c := $crumbs }}
+    {{- if $i }},{{ end }}
+    {
+      "@type": "ListItem",
+      "position": {{ add $i 1 }},
+      "name": "{{ $c.name }}",
+      "item": "{{ $c.url }}"
+    }
+    {{- end }}
+  ]
+}
+</script>
+{{- end }}
+
+<!-- compat way of adding custom scripts in old Hugo documentation -->
+{{- $assetBusting := partialCached "assetbusting.gotmpl" site.Home }}
+
+{{- $filePath := "css/custom.css" }}
+{{- with (resources.Get (printf "/%s" $filePath)) }}
+    <link href="{{ .RelPermalink }}{{ $assetBusting }}" rel="stylesheet">
+{{- else }}
+  {{- if (fileExists (printf "/static/%s" $filePath)) }}
+    <link href="{{ printf "%s" $filePath | relURL }}{{ $assetBusting }}" rel="stylesheet">
+  {{- end }}
+{{- end }}
+
+{{- $filePath := "js/custom.js" }}
+{{- with (resources.Get (printf "/%s" $filePath)) }}
+    <script src="{{ .RelPermalink }}{{ $assetBusting }}" defer></script>
+{{- else }}
+  {{- if (fileExists (printf "/static/%s" $filePath)) }}
+    <script src="{{ printf "%s" $filePath | relURL }}{{ $assetBusting }}" defer></script>
+  {{- end }}
+{{- end }}
+
+<script>
+  (function () {
+    var sidebarSelector = '#R-sidebar li.active a';
+    var done = false;
+
+    function center() {
+      if (done) return;
+      var el = document.querySelector(sidebarSelector);
+      if (!el || !el.scrollIntoView) return;
+      done = true;
+      try {
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch (e) {
+        el.scrollIntoView({ block: 'center' });
+      }
+      var orig = el.scrollIntoView;
+      el.scrollIntoView = function () {};
+      window.setTimeout(function () { el.scrollIntoView = orig; }, 500);
+    }
+
+    var mo = new MutationObserver(function () {
+      center();
+      if (done) mo.disconnect();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { center(); mo.disconnect(); }, { once: true });
+    } else {
+      center();
+      mo.disconnect();
+    }
+
+    function clearInlinePadding() {
+      var body = document.getElementById('R-body-inner');
+      if (body && body.style.paddingRight && body.style.paddingRight !== '0px') {
+        body.style.paddingRight = '0px';
+      }
+    }
+
+    function watchPadding() {
+      var body = document.getElementById('R-body-inner');
+      if (!body) return false;
+      clearInlinePadding();
+      new MutationObserver(clearInlinePadding).observe(body, { attributes: true, attributeFilter: ['style'] });
+      return true;
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', watchPadding, { once: true });
+    } else {
+      watchPadding();
+    }
+    window.addEventListener('load', watchPadding);
+  })();
+</script>
