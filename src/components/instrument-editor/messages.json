@@ -1,0 +1,16 @@
+{
+  "en-US": {
+    "title": "Instrument editor",
+    "connectMidi": "Connect MIDI",
+    "assignMidiControl": "Assign MIDI control",
+    "doneAssigning": "Done assigning",
+    "instrument": "Instrument {index}",
+    "oscillator": "Oscillator {index}",
+    "presets": "Presets",
+    "instrumentName": "instrument name",
+    "savePreset": "Save as preset",
+    "defaultPresetName": "--- new preset ---",
+    "errorNoName": "Please enter a name for the instrument preset",
+    "instrumentSaved": "Instrument '{name}' saved"
+  }
+}

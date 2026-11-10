@@ -1,0 +1,30 @@
+<html>
+<body>
+    <h1>oAuth result for Efflux</h1>
+    <p>
+        You should return to Efflux shortly. If not, an authentication
+        error has occurred with the external API.
+    </p>
+    <p>
+        <button onclick="window.close()">Close</button>
+    </p>
+</body>
+<script type="text/javascript">
+    (function() {
+        const params = window.location.hash.split( "&" );
+        let accessToken = null;
+        for ( let i = 0; i < params.length; i++ ) {
+            const param = params[ i ];
+            if ( param.indexOf( "access_token" ) > -1 ) {
+                accessToken = param.split( "access_token=" )[ 1 ];
+                break;
+            }
+        }
+        if ( accessToken ) {
+            const authChannel = new BroadcastChannel( "dropbox_auth" );
+            authChannel.postMessage({ accessToken });
+            window.close();
+        }
+    })();
+</script>
+</html>

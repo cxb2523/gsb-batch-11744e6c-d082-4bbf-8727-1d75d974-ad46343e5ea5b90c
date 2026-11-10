@@ -1,0 +1,280 @@
+/**
+ * The MIT License (MIT)
+ *
+ * Igor Zinken 2022-2026 - https://www.igorski.nl
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the 'Software'), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+<template>
+    <div class="chord-generator-window">
+        <div class="header">
+            <h2>{{ t( "title" ) }}</h2>
+            <button
+                type="button"
+                class="close-button"
+                @click="handleClose()"
+            >x</button>
+        </div>
+        <hr class="divider" />
+        <p>{{ t( "expl" ) }}</p>
+        <p class="cursive">{{ t( "shortcutsExpl" ) }}</p>
+        <div class="chord-select">
+            <select-box
+                v-model="note"
+                :options="pitches"
+                class="chord-select__input"
+            />
+            <select-box
+                v-model="octave"
+                :options="octaves"
+                class="chord-select__input"
+            />
+            <select-box
+                v-model="chord"
+                :options="chords"
+                class="chord-select__input chord-select__input--large"
+            />
+        </div>
+        <hr class="divider" />
+        <button
+            type="button"
+            class="confirm-button"
+            @click="handleConfirm()"
+        >{{ t( "insert" ) }}</button>
+    </div>
+</template>
+
+<script lang="ts">
+import { type ComposerTranslation, useI18n } from "vue-i18n";
+import { mapState, mapMutations } from "vuex";
+import Config from "@/config";
+import Chords from "@/definitions/chords";
+import EventFactory from "@/model/factories/event-factory";
+import addMultipleEvents from "@/model/actions/event-add-multiple";
+import { ACTION_NOTE_ON } from "@/model/types/audio-event";
+import KeyboardService from "@/services/keyboard-service";
+import Pitch from "@/services/audio/pitch";
+import SelectBox from "@/components/forms/select-box.vue";
+import messages from "./messages.json";
+
+export default {
+    emits: [ "close" ],
+    components: {
+        SelectBox,
+    },
+    data: () => ({
+        note: "C",
+        octave: "3",
+        chord: "major",
+    }),
+    setup(): { t: ComposerTranslation } {
+        const { t } = useI18n({ messages });
+        return { t };
+    },
+    computed: {
+        ...mapState({
+            selectedInstrument : state => state.editor.selectedInstrument,
+        }),
+        pitches(): { label: string, value: string }[] {
+            return Pitch.OCTAVE_SCALE.map( value => ({ label: value, value }));
+        },
+        octaves(): { label: number, value: string }[] {
+            const octaves = [];
+            for ( let i = 1; i <= Config.MAX_OCTAVE; ++i ) {
+                octaves.push( i.toString() );
+            }
+            return octaves.map( value => ({ label: value, value }));
+        },
+        chords(): { label: string, value: string }[] {
+            return Object.keys( Chords ).map( label => ({ label, value: label }));
+        },
+    },
+    created(): void {
+        KeyboardService.setListener( this.handleKeyboardInput.bind( this ));
+    },
+    beforeUnmount(): void {
+        KeyboardService.setListener( null );
+    },
+    methods: {
+        ...mapMutations([
+            "saveState",
+        ]),
+        handleKeyboardInput( type: string, keyCode: number ): boolean {
+            if ( type !== "down" ) {
+                return false;
+            }
+            switch ( keyCode ) {
+                default:
+                    return false;
+                case 27: // escape
+                    this.handleClose();
+                    break;
+                case 13: // enter
+                    this.handleConfirm();
+                    break;
+                case 49:
+                    this.octave = "1";
+                    break;
+                case 50:
+                    this.octave = "2";
+                    break;
+                case 51:
+                    this.octave = "3";
+                    break;
+                case 52:
+                    this.octave = "4";
+                    break;
+                case 53:
+                    this.octave = "5";
+                    break;
+                case 54:
+                    this.octave = "6";
+                    break;
+                case 55:
+                    this.octave = "7";
+                    break;
+                case 56:
+                    this.octave = "8";
+                    break;
+                case 90: // Z
+                    this.note = "C";
+                    break;
+                case 83: // S
+                    this.note = "C#";
+                    break;
+                case 88: // X
+                    this.note = "D";
+                    break;
+                case 68: // D
+                    this.note = "D#";
+                    break;
+                case 67: // C
+                    this.note = "E";
+                    break;
+                case 86: // V
+                    this.note = "F";
+                    break;
+                case 71: // G
+                    this.note = "F#";
+                    break;
+                case 66: // B
+                    this.note = "G";
+                    break;
+                case 72: // H
+                    this.note = "G#";
+                    break;
+                case 78: // N
+                    this.note = "A";
+                    break;
+                case 74: // J
+                    this.note = "A#";
+                    break;
+                case 77: // M
+                    this.note = "B";
+                    break;
+            }
+            return true;
+        },
+        handleClose(): void {
+            this.$emit( "close" );
+        },
+        handleConfirm(): void {
+            const rootNoteIndex = Pitch.OCTAVE_SCALE.indexOf( this.note );
+            const octave = parseFloat( this.octave );
+            const notes = Chords[ this.chord ].map( interval => {
+                return Pitch.OCTAVE_SCALE[( rootNoteIndex + interval ) % Pitch.OCTAVE_SCALE.length ];
+            });
+            this.saveState( addMultipleEvents(
+                this.$store,
+                notes.map( note => {
+                    return EventFactory.create( this.selectedInstrument, note, octave, ACTION_NOTE_ON )
+                })
+            ));
+            this.handleClose();
+        },
+    },
+};
+</script>
+
+<style lang="scss" scoped>
+@use "sass:math";
+
+@use "@/styles/_mixins";
+@use "@/styles/_variables";
+@use "@/styles/forms";
+
+$width: 450px;
+$height: 300px;
+
+.chord-generator-window {
+    @include mixins.editorComponent();
+    @include mixins.overlay();
+    @include mixins.noSelect();
+    padding: variables.$spacing-small variables.$spacing-large;
+    border-radius: variables.$spacing-small;
+    box-shadow: 0 0 25px rgba(0,0,0,.5);
+
+    .divider {
+        width: calc(100% + #{variables.$spacing-large * 2});
+        margin-left: -( variables.$spacing-large );
+        margin-bottom: variables.$spacing-medium
+    }
+
+    @include mixins.componentIdeal( $width, $height ) {
+        top: 50%;
+        left: 50%;
+        width: $width;
+        height: $height;
+        margin-left: math.div( -$width, 2 );
+        margin-top: math.div( -$height, 2);
+    }
+
+    @include mixins.componentFallback( $width, $height ) {
+        @include mixins.verticalScrollOnMobile();
+        border-radius: 0;
+        width: 100%;
+        height: 100%;
+        top: 0;
+        left: 0;
+        margin: 0;
+    }
+
+    .cursive {
+        font-style: italic;
+    }
+
+    .chord-select {
+        display: flex;
+        align-items: center;
+
+        .chord-select__input {
+            margin-right: variables.$spacing-small;
+            width: 60px;
+
+            &--large {
+                width: 125px;
+            }
+        }
+    }
+
+    .confirm-button {
+        width: 100%;
+        padding: variables.$spacing-medium variables.$spacing-large;
+    }
+}
+</style>

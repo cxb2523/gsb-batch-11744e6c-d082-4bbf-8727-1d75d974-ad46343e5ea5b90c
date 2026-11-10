@@ -1,0 +1,42 @@
+@use "_colors";
+@use "_mixins";
+@use "_variables";
+@use "typography";
+
+.tab-list {
+    @include mixins.list();
+    display: inline-block;
+    margin: variables.$spacing-medium 0 0;
+
+    li {
+        display: inline-block;
+        border: 1px solid #666;
+        border-bottom: 1px solid colors.$color-editor-background;
+        margin-bottom: -1px; /* makes it essentially appear "bottom-less" due to border-bottom colour over background */
+        padding: variables.$spacing-small variables.$spacing-medium;
+        cursor: pointer;
+        background-color: #666;
+        font-size: 90%;
+        border-right: 2px solid #444;
+        @include typography.toolFont();
+
+        &.active {
+            background-color: colors.$color-editor-background;
+            color: #FFF;
+            position: relative;
+        }
+
+        &:first-child {
+            border-top-left-radius: variables.$spacing-medium;
+        }
+    }
+}
+
+.tabbed-content {
+    display: none;
+    border-top: 1px solid #666;
+
+    &.active {
+        display: block;
+    }
+}

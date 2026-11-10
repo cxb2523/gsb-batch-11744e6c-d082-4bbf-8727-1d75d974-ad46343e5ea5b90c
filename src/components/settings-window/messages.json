@@ -1,0 +1,25 @@
+{
+  "en-US": {
+    "title": "Settings",
+    "generalSettings": "General settings",
+    "sequencerSettings": "Sequencer settings",
+    "parameterInputFormat": "Parameter input format",
+    "hex": "Hexadecimal (00 to FF)",
+    "pct": "Percentile (0 to 100)",
+    "followPlayback": "Follow playback",
+    "usePatternOrders": "Organise patterns using orders",
+    "showHelpPanel": "Show help panel",
+    "showWelcomeOnStartup": "Show welcome screen on startup",
+    "midiSetup": "MIDI setup",
+    "midiConnectToAPI": "Connect to MIDI API",
+    "deviceSelectLabel": "Select a MIDI input device:",
+    "connectDevice": "Connect a MIDI device.",
+    "manageMidiPresets": "Manage MIDI presets",
+    "midiDescription": "You can record incoming MIDI notes straight into the patterns by clicking the record button in the transport controls. You can also record quantized notes live during playback",
+    "midiConnected": "MIDI Connection established successfully",
+    "noMidiDevices": "There are no available MIDI devices. Attach a new/different device and try again.",
+    "error": "Error",
+    "midiFailure": "MIDI Unavailable, Efflux could not connect to MIDI device(s)",
+    "midiEnabled": "Listening to MIDI messages coming from {device}"
+  }
+}

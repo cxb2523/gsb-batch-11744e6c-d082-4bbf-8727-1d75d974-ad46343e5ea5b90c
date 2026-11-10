@@ -1,0 +1,85 @@
+@use "_mixins";
+@use "_variables";
+
+/* transporter button icons */
+
+[class^="icon-"]:before,
+[class*=" icon-"]:before
+{
+    font-family: "transporter";
+    font-style: normal;
+    font-weight: normal;
+    speak: none;
+
+    display: inline-block;
+    text-decoration: inherit;
+    width: variables.$spacing-large;
+    margin-right: variables.$spacing-xsmall;
+    text-align: center;
+    /* opacity: .8; */
+
+    /* For safety - reset parent styles, that can break glyph codes*/
+    font-variant: normal;
+    text-transform: none;
+
+    /* fix buttons height, for twitter bootstrap */
+    line-height: variables.$spacing-large;
+
+    /* Animation center compensation - margins should be symmetric */
+    /* remove if not needed */
+    margin-left: variables.$spacing-xsmall;
+
+    /* you can be more comfortable with increased icons size */
+    /* font-size: 120%; */
+
+    /* Uncomment for 3D effect */
+    /* text-shadow: 1px 1px 1px rgba(127, 127, 127, 0.3); */
+}
+
+.icon-loop:before { content: "\e800"; } /* "" */
+.icon-metronome:before { content: "\e801"; } /* "" */
+.icon-play:before { content: "\e802"; } /* "" */
+.icon-settings:before { content: "\e803"; } /* "" */
+.icon-stop:before { content: "\e804"; } /* "" */
+
+[class^="icon-"].active {
+    color: #FFF;
+}
+
+@mixin sequencerButtons() {
+    @include mixins.ghostButton();
+    margin: 0;
+    padding: 0;
+
+    &:hover {
+        color: #FFF;
+    }
+
+    &#playBTN:before {
+        margin-right: 0;
+        @include mixins.mobile() {
+            margin: 0;
+        }
+    }
+
+    &#recordBTN {
+        height: variables.$spacing-large;
+        
+        .record-icon {
+            display: block;
+            width: 18px;
+            height: 18px;
+            background-color: #d00e57;
+            border-radius: 50%;
+
+            &.active,
+            &:hover {
+                background-color: #FFF;
+            }
+
+            &.disabled {
+                display: none;
+            }
+        }
+    }
+}

@@ -1,0 +1,281 @@
+@use "_colors";
+@use "_variables";
+@use "typography";
+
+/* 1. responsive breakoff points */
+
+// phones
+@mixin mobile {
+    @media (max-width: #{variables.$mobile-width}) {
+        @content;
+    }
+}
+
+// anything above phone resolution (e.g. tablet/laptop/desktop)
+@mixin large {
+    @media (min-width: #{variables.$mobile-width}) {
+        @content;
+    }
+}
+
+// ideal size (shows all eight track lines in editor)
+@mixin ideal {
+    @media (min-width: #{variables.$ideal-width}) {
+        @content;
+    }
+}
+
+/* 2. layout mixins */
+
+@mixin portrait() {
+    @media screen and ( orientation: portrait ) {
+        @content;
+    }
+}
+
+@mixin landscape() {
+    @media screen and ( orientation: landscape ) {
+        @content;
+    }
+}
+
+/* 3. specific dimensions breakoff points */
+
+// components (such as modal windows) that have an ideal width x height size
+// can specify styles at the cutoff points using the following mixins:
+
+// everything matching the ideal width for the component
+@mixin minWidth( $width ) {
+    @media screen and ( min-width: $width ) {
+        @content;
+    }
+}
+
+// everything matching the ideal height for the component
+@mixin minHeight( $height ) {
+    @media screen and ( min-height: $height ) {
+        @content;
+    }
+}
+
+// everything below the ideal width for the component
+@mixin minWidthFallback( $width ) {
+    @media screen and ( max-width: $width ) {
+        @content;
+    }
+}
+
+// everything matching the ideal dimensions for the component
+@mixin componentIdeal( $width, $height ) {
+    @media screen and ( min-width: $width ) and ( min-height: $height ) {
+        @content;
+    }
+}
+// everything below the ideal dimensions for the component
+@mixin componentFallback( $width, $height ) {
+    @media screen and ( max-width: $width ), ( max-height: $height ) {
+        @content;
+    }
+}
+
+/* 2. UX utilities */
+
+@mixin noSelect {
+  -webkit-touch-callout: none;
+    -webkit-user-select: none;
+     -khtml-user-select: none;
+       -moz-user-select: none;
+        -ms-user-select: none;
+            user-select: none;
+}
+
+@mixin noEvents {
+    pointer-events: none;
+}
+
+@mixin boxSize {
+  -webkit-box-sizing: border-box; /* Safari/Chrome, other WebKit */
+     -moz-box-sizing: border-box; /* Firefox, other Gecko */
+          box-sizing: border-box;
+}
+
+@mixin truncate {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@mixin flex {
+    display: -webkit-flex;
+    display: flex;
+}
+
+@mixin inlineFlex {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+}
+
+@mixin animate( $property: all, $delay: .5s ) {
+    transition: $property $delay cubic-bezier(0.455, 0.030, 0.515, 0.955);
+}
+
+@mixin verticalScrollOnMobile() {
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden; /* we should never want this in modal windows */
+}
+
+/* 3. base UI components */
+
+@mixin list {
+    list-style-type: none;
+    margin: 0;
+    padding: 0;
+}
+
+@mixin button {
+    cursor: pointer;
+    display: inline-block;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-color: colors.$color-1;
+    color: #000;
+    font-size: 95%;
+    border: 2px solid #333;
+    border-radius: 7px;
+    border: none;
+    padding: variables.$spacing-small variables.$spacing-medium;
+    margin-right: variables.$spacing-small;
+    @include boxSize();
+    @include typography.toolFont();
+
+    &:hover {
+        background-color: #FFF;
+    }
+
+    &:disabled {
+        background-color: #333;
+        color: #666;
+        cursor: default;
+    }
+}
+
+@mixin menuButton {
+    @include typography.titleFont();
+    cursor: pointer;
+    background: none;
+    border: none;
+    color: #b6b6b6;
+    padding: 0;
+    font-size: 100%;
+
+    &:hover {
+        color: #FFF;
+
+        @include mobile() {
+            color: #000;
+        }
+    }
+}
+
+@mixin toolButton( $small: false ) {
+    @include button();
+    background-color: transparent;//colors.$color-5;
+    outline: 2px solid #666;
+    color: #b6b6b6;
+
+    &:hover {
+        color: #666;
+    }
+
+    @if $small {
+        border-radius: variables.$spacing-xsmall;
+        padding: variables.$spacing-xsmall variables.$spacing-medium;
+    }
+}
+
+
+.button {
+    @include button();
+}
+
+@mixin ghostButton {
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    vertical-align: middle;
+    @include typography.globalFont();
+
+    &:hover {
+        color: #000;
+    }
+}
+
+@mixin editorComponent {
+    padding: variables.$spacing-small;
+    background-color: colors.$color-editor-background;
+    border: 3px solid #28292d;
+    border-radius: variables.$spacing-small;
+    margin-bottom: variables.$spacing-small;
+    @include boxSize();
+
+    .divider {
+        @include divider();
+    }
+}
+
+@mixin divider() {
+    width: calc(100% + #{variables.$spacing-small * 2 });
+    margin: variables.$spacing-medium 0 variables.$spacing-xsmall -#{variables.$spacing-small};
+    border: none;
+    border-top: 1px dashed #666;
+
+    &--bottom {
+        margin-top: 0;
+    }
+}
+
+@mixin overlay {
+    // mobile first, override in custom inheriting classes
+    // what the desktop / tablet views should look like
+    position: fixed;
+    z-index: variables.$z-overlay;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+
+    .header {
+        width: 100%;
+
+        h2 {
+            display: block;
+            margin: variables.$spacing-xsmall 0 0;
+            padding: 0;
+            @include typography.toolFont();
+            font-size: 120%;
+        }
+
+        .help-button {
+            @include button();
+            position: absolute;
+            top: variables.$action-button-top;
+            right: (variables.$spacing-large * 2 + variables.$spacing-xsmall);
+        }
+
+        &__actions {
+            position: absolute;
+            top: variables.$action-button-top;
+            right: (variables.$spacing-large * 2 + variables.$spacing-xsmall);
+        }
+
+        .close-button {
+            @include button();
+            position: absolute;
+            top: variables.$action-button-top;
+            right: variables.$spacing-large - variables.$spacing-small;
+            background-color: colors.$color-1;
+        }
+    }
+}

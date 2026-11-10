@@ -1,0 +1,278 @@
+/**
+* The MIT License (MIT)
+*
+* Igor Zinken 2021 - https://www.igorski.nl
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy of
+* this software and associated documentation files (the 'Software'), to deal in
+* the Software without restriction, including without limitation the rights to
+* use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+* the Software, and to permit persons to whom the Software is furnished to do so,
+* subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+* FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+* COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+* IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+* CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+<template>
+    <div class="instrument-manager">
+        <div class="header">
+            <h2>{{ t( "instrumentManager" ) }}</h2>
+            <button
+                type="button"
+                class="close-button"
+                @click="$emit('close')"
+            >x</button>
+        </div>
+        <hr class="divider" />
+        <ul class="instrument-list">
+            <li
+                v-for="instrument in mappedInstruments"
+                :key="instrument.presetName"
+            >
+                <span class="title">{{ instrument.presetName }}</span>
+                <span class="size">{{ instrument.size }}</span>
+                <button
+                    type="button"
+                    class="action-button"
+                    :title="t('exportInstrument')"
+                    @click.stop="handleExportClick( instrument )"
+                ><img src="@/assets/icons/icon-download.svg" :alt="t('exportInstrument')" /></button>
+                <button
+                    type="button"
+                    class="action-button"
+                    :title="t('deleteInstrument')"
+                    @click.stop="requestDelete( instrument )"
+                ><img src="@/assets/icons/icon-trashcan.svg" :alt="t('deleteInstrument')" /></button>
+            </li>
+        </ul>
+        <hr class="divider divider--bottom" />
+        <div v-if="hasImportExport" class="footer">
+            <button
+                type="button"
+                class="button"
+                @click="handleInstrumentImport()"
+            >{{ t( "importInstruments" ) }}</button>
+            <button
+                type="button"
+                class="button"
+                @click="handleInstrumentExport()"
+            >{{ t( "exportInstruments" ) }}</button>
+        </div>
+    </div>
+</template>
+
+<script lang="ts">
+import { type ComposerTranslation, useI18n } from "vue-i18n";
+import { mapState, mapMutations, mapActions } from "vuex";
+import { type Instrument } from "@/model/types/instrument";
+import { INSTRUMENT_STORAGE_KEY, getStorageKeyForInstrument } from "@/store/modules/instrument-module";
+import StorageUtil from "@/utils/storage-util";
+import messages from "./messages.json";
+
+export default {
+    setup(): { t: ComposerTranslation } {
+        const { t } = useI18n({ messages });
+        return { t };
+    },
+    computed: {
+        ...mapState({
+            instruments : state => state.instrument.instruments,
+        }),
+        mappedInstruments(): Instrument[] {
+            const sizes = StorageUtil.getItemSizes( INSTRUMENT_STORAGE_KEY );
+            return this.instruments.map( instrument => ({
+                ...instrument,
+                size: sizes[ getStorageKeyForInstrument( instrument )]
+            })).sort(( a, b ) => a.presetName.toLowerCase().localeCompare( b.presetName.toLowerCase()));
+        }
+    },
+    created(): void {
+        this.hasImportExport = typeof window.btoa !== "undefined" && typeof window.FileReader !== "undefined";
+    },
+    methods: {
+        ...mapMutations([
+            "openDialog",
+            "showNotification",
+            "setLoading",
+            "unsetLoading",
+        ]),
+        ...mapActions([
+            "deleteInstrument",
+            "exportInstrument",
+            "exportInstruments",
+            "importInstruments",
+        ]),
+        async handleExportClick( instrument: Instrument ): Promise<void> {
+            this.setLoading( "exp" );
+            try {
+                await this.exportInstrument( instrument );
+                this.showNotification({ message: this.t( "instrumentExported", { instrument: instrument.presetName }) });
+            } catch {
+                this.showError( this.t( "errorInstrumentExport" ));
+            }
+            this.unsetLoading( "exp" );
+        },
+        requestDelete( instrument: Instrument ): Promise<void> {
+            this.openDialog({
+                type: "confirm",
+                message: this.t( "confirmInstrumentDelete", { instrument: instrument.presetName }),
+                confirm: () => {
+                    this.deleteInstrument({ instrument });
+                }
+            });
+        },
+        async handleInstrumentImport(): Promise<void> {
+            try {
+                const amountImported = await this.importInstruments();
+                this.showNotification({ message: this.t( "instrumentsImported", { amount: amountImported.toString() }) });
+            } catch ( error ) {
+                this.showError( error );
+            }
+        },
+        async handleInstrumentExport(): Promise<void> {
+            try {
+                this.setLoading( "exp" );
+                await this.exportInstruments();
+                this.showNotification({ message: this.t( "instrumentsExported" ) });
+            } catch ( error ) {
+                this.showError( error );
+            }
+            this.unsetLoading( "exp" );
+        },
+    },
+};
+</script>
+
+<style lang="scss" scoped>
+@use "sass:math";
+
+@use "@/styles/_colors";
+@use "@/styles/_mixins";
+@use "@/styles/_variables";
+@use "@/styles/typography";
+
+$width: 750px;
+$height: 500px;
+$headerFooterHeight: 104px;
+
+.instrument-manager {
+    @include mixins.editorComponent();
+    @include mixins.overlay();
+    @include mixins.noSelect();
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 0;
+
+    .header,
+    .footer {
+        padding: variables.$spacing-small variables.$spacing-large 0;
+    }
+
+    .divider {
+        width: calc(100% + #{variables.$spacing-large * 2});
+        margin-left: -( variables.$spacing-large );
+        margin-bottom: 0;
+    }
+
+    .file-loader {
+        margin-top: variables.$spacing-xsmall;
+    }
+
+    @include mixins.componentIdeal( $width, $height ) {
+        width: $width;
+        height: $height;
+        top: 50%;
+        left: 50%;
+        margin-left: math.div( -$width, 2 );
+        margin-top: math.div( -$height, 2 );
+
+        .instrument-list {
+            height: calc(#{$height - $headerFooterHeight});
+        }
+    }
+
+    @include mixins.componentFallback( $width, $height ) {
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        border-radius: 0;
+        z-index: variables.$z-window;
+
+        .instrument-list {
+            height: calc(100% - #{$headerFooterHeight});
+        }
+    }
+}
+
+.instrument-list {
+    @include mixins.list();
+    width: 100%;
+    overflow-y: auto;
+
+    li {
+        @include typography.titleFont();
+        @include mixins.boxSize();
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: variables.$spacing-small variables.$spacing-large;
+        background-color: colors.$color-pattern-even;
+
+        .title, .size, .action-button {
+            display: inline-block;
+        }
+
+        .title {
+            flex: 1;
+            @include mixins.noEvents();
+            @include mixins.truncate();
+            vertical-align: middle;
+        }
+
+        .size {
+            width: 15%;
+        }
+
+        .action-button {
+            width: #{variables.$spacing-large + variables.$spacing-xsmall};
+            @include mixins.ghostButton();
+
+            &:hover {
+                filter: brightness(0) invert(1) !important;
+            }
+        }
+
+        @include mixins.mobile() {
+            .title {
+                width: 95%;
+            }
+            .size {
+                display: none;
+            }
+        }
+
+        &:nth-child(even) {
+            background-color: colors.$color-pattern-odd;
+            /*color: #FFF;*/
+        }
+
+        &:hover {
+            background-color: colors.$color-5;
+            color: #000;
+
+            .action-button {
+                filter: brightness(0);
+            }
+        }
+    }
+}
+</style>

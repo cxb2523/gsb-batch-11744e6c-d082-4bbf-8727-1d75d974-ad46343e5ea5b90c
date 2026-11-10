@@ -1,0 +1,27 @@
+@use "_colors";
+@use "_variables";
+
+/* override the default scrollbars style to generalize appearance across browsers / OSes */
+
+@mixin styledScrollbars {
+    ::-webkit-scrollbar {
+        width: variables.$spacing-small;
+        height: variables.$spacing-small;
+    }
+
+    ::-webkit-scrollbar-corner {
+        background-color: #000;
+    }
+
+    ::-webkit-scrollbar-track {
+        -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.3);
+        border-radius: variables.$spacing-medium;
+        background-color: #000;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        border-radius: variables.$spacing-medium;
+        -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.5);
+        background-color: colors.$color-1;
+    }
+}

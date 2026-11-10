@@ -1,0 +1,247 @@
+/**
+* The MIT License (MIT)
+*
+* Igor Zinken 2023-2025 - https://www.igorski.nl
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy of
+* this software and associated documentation files (the "Software"), to deal in
+* the Software without restriction, including without limitation the rights to
+* use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+* the Software, and to permit persons to whom the Software is furnished to do so,
+* subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+* FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+* COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+* IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+* CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+*/
+<template>
+    <div class="pattern-order-list">
+        <label
+            class="pattern-order-list__label"
+        >{{ t( "patternOrder" ) }}</label>
+        <button
+            :title="t('previous')"
+            :disabled="!canNavBack"
+            type="button"
+            class="pattern-order-list__navigate-button pattern-order-list__navigate-button_left"
+            @click="handleBackClick()"
+        ><</button>
+        <pattern-order-entry
+            v-for="(entry) in visibleEntries"
+            :key="`e_${entry.name}_${entry.index}`"
+            :name="entry.name"
+            :index="entry.index"
+            :active="entry.active"
+            :editing="entry.editing"
+            @select="handleEntryClick( $event )"
+            @toggle-edit-mode="toggleEditMode( $event, entry )"
+        >
+            <template v-if="entry.editing">
+                <button
+                    type="button"
+                    class="pattern-order-entry__context-menu-button"
+                    @click="repeatPattern( entry )"
+                >{{ t( "repeat" ) }}</button>
+                <button
+                    type="button"
+                    :disabled="!canDelete"
+                    class="pattern-order-entry__context-menu-button"
+                    @click="deletePattern( entry )"
+                >{{ t( "delete" ) }}</button>
+            </template>
+        </pattern-order-entry>
+        <button
+            :title="t('next')"
+            :disabled="!canNavNext"
+            type="button"
+            class="pattern-order-list__navigate-button pattern-order-list__navigate-button_right"
+            @click="handleNextClick()"
+        >></button>
+        <button
+            :title="t('edit')"
+            type="button"
+            class="pattern-order-list__edit-button"
+            @click="handleEditClick()"
+        ><img src="@/assets/icons/icon-pencil.svg" :alt="t('edit')" /></button>
+    </div>
+</template>
+
+<script lang="ts">
+import { type ComposerTranslation, useI18n } from "vue-i18n";
+import { mapState, mapGetters, mapMutations } from "vuex";
+import ModalWindows from "@/definitions/modal-windows";
+import updatePatternOrder from "@/model/actions/pattern-update-order";
+import { enqueueState } from "@/model/factories/history-state-factory";
+import type { EffluxPatternOrder } from "@/model/types/pattern-order";
+import PatternOrderUtil from "@/utils/pattern-order-util";
+import PatternOrderEntry from "./components/pattern-order-entry.vue";
+import messages from "./messages.json";
+
+type WrappedPatternOrderEntry = {
+    pattern: number; // index of pattern in pattern list
+    name: string;
+    index: number;   // index of pattern within order list
+    active: boolean;
+    editing: boolean;
+};
+
+const TOTAL_PER_PAGE = 5;
+
+export default {
+    components: {
+        PatternOrderEntry,
+    },
+    data: () => ({
+        editableEntry: -1,
+        offset: 0,
+    }),
+    setup(): { t: ComposerTranslation } {
+        const { t } = useI18n({ messages });
+        return { t };
+    },
+    computed: {
+        ...mapState({
+            activeSong : state => state.song.activeSong,
+        }),
+        ...mapGetters([
+            "activeOrderIndex",
+        ]),
+        entries(): WrappedPatternOrderEntry[] {
+            return this.activeSong.order
+                .map(( pattern: number, index: number ) => ({
+                    pattern,
+                    index,
+                    name: this.activeSong.patterns[ pattern ].name,
+                    active: this.activeOrderIndex === index,
+                    editing: this.editableEntry === index,
+                }));
+        },
+        visibleEntries(): WrappedPatternOrderEntry[] {
+            const sliceOffset = this.visibleRangeStart;
+            return this.entries.slice( sliceOffset, sliceOffset + TOTAL_PER_PAGE );
+        },
+        canDelete(): boolean {
+            return this.entries.length > 1;
+        },
+        canNavBack(): boolean {
+            return this.offset > 0;
+        },
+        canNavNext(): boolean {
+            return ( this.visibleRangeStart + TOTAL_PER_PAGE ) < this.entries.length;
+        },
+        visibleRangeStart(): number {
+            return this.offset * TOTAL_PER_PAGE;
+        },
+    },
+    watch: {
+        activeOrderIndex( value: number ) {
+            if ( value < this.visibleRangeStart || value >= this.visibleRangeStart + TOTAL_PER_PAGE ) {
+                this.offset = Math.floor( value / TOTAL_PER_PAGE );
+            }
+        },
+    },
+    methods: {
+        ...mapMutations([
+            "gotoPattern",
+            "openModal",
+            "replacePatternOrder",
+            "setActiveOrderIndex",
+        ]),
+        repeatPattern( entry: WrappedPatternOrderEntry ): void {
+            const newOrder = [ ...this.activeSong.order ];
+            const tail = newOrder.splice( entry.index + 1 );
+            this.updateOrder([ ...newOrder, entry.pattern, ...tail ]);
+            this.stopEditing();
+        },
+        deletePattern( entry: WrappedPatternOrderEntry ): void {
+            this.updateOrder( PatternOrderUtil.removePatternAtIndex( this.activeSong.order, entry.index ) );
+            this.stopEditing();
+        },
+        toggleEditMode( isEditing: boolean, entry: WrappedPatternOrderEntry ): void {
+            if ( !isEditing ) {
+                return this.stopEditing();
+            }
+            this.editableEntry = entry.index;
+        },
+        stopEditing(): void {
+            this.editableEntry = -1;
+        },
+        updateOrder( order: EffluxPatternOrder ): void {
+            enqueueState( "songOrder", updatePatternOrder( this.$store, order ));
+            if ( this.activeOrderIndex >= order.length ) {
+                this.setActiveOrderIndex( order.length - 1 );
+            }
+        },
+        handleEditClick(): void {
+            this.openModal( ModalWindows.PATTERN_ORDER_WINDOW );
+        },
+        handleBackClick(): void {
+            this.offset = Math.max( 0, this.offset - 1 );
+        },
+        handleNextClick(): void {
+            this.offset += 1;
+        },
+        handleEntryClick( orderIndex: number ): void {
+            this.gotoPattern({ orderIndex, song: this.activeSong });
+        },
+    }
+};
+</script>
+
+<style lang="scss" scoped>
+@use "@/styles/_colors";
+@use "@/styles/_mixins";
+@use "@/styles/_variables";
+@use "@/styles/typography";
+
+.pattern-order-list {
+    display: flex;
+    align-items: center;
+
+    &__label {
+        margin-right: variables.$spacing-small;
+        @include typography.toolFont();
+    }
+
+    &__navigate-button {
+        @include typography.toolFont();
+        
+        &_left {
+            margin-right: variables.$spacing-xsmall;
+        }
+        &_right {
+            margin-left: variables.$spacing-xxsmall;
+        }
+    }
+
+    &__edit-button {
+        @include mixins.button();
+        padding: variables.$spacing-xsmall variables.$spacing-small;
+        margin: variables.$spacing-small;
+    }
+
+    .pattern-order-entry__context-menu-button {
+        @include typography.toolFont();
+        background: none;
+        border: 0;
+        color: colors.$color-editor-background;
+        width: 100%;
+        cursor: pointer;
+
+        &:hover {
+            color: #FFF;
+        }
+
+        &:disabled {
+            color: #666;
+            cursor: default;
+        }
+    }
+}
+</style>

@@ -1,0 +1,8 @@
+{
+    "extends": "./tsconfig.app.json",
+    "include": [ "./vite-env.d.ts", "src/**/*.ts", "src/**/*.vue", "tests/**/*.ts" ],
+    "compilerOptions": {
+        "skipLibCheck": true,
+        "module": "commonjs",
+    }
+}

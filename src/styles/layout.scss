@@ -1,0 +1,218 @@
+/* main application layout (scoped styling in root component) */
+
+@use "_mixins";
+@use "_scrollbars";
+@use "_variables";
+@use "typography";
+
+#efflux {
+    @include mixins.noSelect();
+    @include scrollbars.styledScrollbars();
+}
+
+.application-header {
+    box-shadow: 0 0 5px rgba(0,0,0,.5);
+    background-image: linear-gradient(to bottom,#282828 35%,#383838 90%);
+    background-repeat: repeat-x;
+    padding: variables.$spacing-small 0 0;
+    width: 100%;
+    position: fixed;
+    top: 0;
+    z-index: variables.$z-header;
+    border-bottom: 3px solid #53565d;
+    @include mixins.boxSize();
+}
+
+.container {
+    width: 100%;
+    margin: 0 auto;
+}
+
+.application-properties {
+    @include mixins.editorComponent();
+    padding: variables.$spacing-small 0;
+    margin: 88px auto 0; /* offset top margin by menu height */
+    border-radius: 0;
+    border: none;
+}
+
+.application-editor {
+    @include mixins.flex();
+    position: absolute;
+    top: 134px; /* menu + pattern editor */
+    bottom: variables.$footer-height;
+    overflow: hidden;
+
+    &.note-entry-mode {
+        bottom: variables.$note-entry-editor-height !important;
+    }
+}
+
+.container.jam-mode {
+    .application-editor {
+        top: 86px; /* no pattern editor */
+    }
+
+    @include mixins.large() {
+        .application-editor,
+        .note-entry-editor {
+            max-width: variables.$ideal-width-jam-mode;
+        }
+    }
+}
+
+#blind {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,.5);
+    z-index: variables.$z-blind;
+}
+
+.application-footer {
+    position: absolute;
+    bottom: 0;
+    background-image: linear-gradient(to bottom,#474747 0,#303030 100%);
+    width: 100%;
+    height: variables.$footer-height;
+    color: #EEE;
+    @include typography.titleFont();
+
+    span {
+        width: auto;
+        margin: 0 auto;
+        text-align: center;
+        display: block;
+        margin-top: variables.$spacing-medium;
+    }
+}
+
+/* ideal app width and up */
+
+@media screen and ( min-width: variables.$app-width ) {
+    .application-footer span {
+        width: variables.$app-width;
+    }
+}
+
+/* standard width: large TABLET/LAPTOP */
+
+@media screen and ( min-width: variables.$app-width ) {
+    .container {
+        width: inherit;
+        max-width: variables.$ideal-width;
+        padding: 0;
+    }
+
+    .application-editor {
+        left: 50%;
+        transform: translateX(-50%);
+    }
+}
+
+/* PHONE */
+
+@include mixins.mobile() {
+    $order-menu-height: 43px; // eventually this should always be present, for now its optional
+
+    .application-header {
+        height: variables.$transport-height;
+        &.expanded {
+            height: 100%;
+        }
+    }
+
+    .application-footer {
+        padding: 0 variables.$spacing-large;
+        z-index: variables.$z-footer;
+        @include mixins.boxSize;
+    }
+    /* when mobileMode is "settings" we show the tempo control and song editor by expanding these */
+    .application-properties {
+        margin: 116px auto 0;
+
+        &--expanded {
+            margin-top: (116px + $order-menu-height);
+        }
+    }
+
+    .application-editor {
+        width: inherit;
+        top: 85px !important;
+
+        &.settings-mode {
+            top: 210px !important;
+
+            &--expanded {
+                top: (210px + $order-menu-height) !important;
+            }
+        }
+    }
+
+    .container {
+        padding: 0;
+        margin: 0;
+    }
+}
+
+/* everything LARGER than a PHONE */
+
+@include mixins.large() {
+    .container {
+        padding: 0 variables.$spacing-large;
+        left: auto;
+        @include mixins.boxSize();
+
+        /* menu contains submenu */
+
+        &.padded {
+            padding-left: variables.$spacing-large;
+            padding-right: variables.$spacing-large;
+
+            &:before, &:after {
+                height: 1 variables.$spacing-large;
+            }
+        }
+    }
+}
+
+/* TABLET/DESKTOP portrait width (everything smaller than app width) */
+
+@media screen and (max-width: variables.$app-width) {
+    // allow scrolling as we can expect the overlays to have scrollable content
+    html {
+        overflow: auto;
+    }
+    .application-editor {
+        overflow-x: scroll;
+        overflow-y: hidden !important; // body scrolls instead
+    }
+    .jam-mode .application-editor {
+        overflow-x: hidden;
+    }
+}
+
+/* TABLET/DESKTOP medium to large */
+
+@media screen and (min-width: variables.$app-width) and (max-width: variables.$ideal-width) {
+    .application-editor {
+        &.has-help-panel {
+            .pattern-track-list,
+            .timeline-editor {
+                width: 72%;
+            }
+            .help-section {
+                width: 25%;
+            }
+        }
+    }
+    #editorActions {
+        width: 3%;
+    }
+    .pattern-track-list,
+    .timeline-editor {
+        width: 97%;
+    }
+}
