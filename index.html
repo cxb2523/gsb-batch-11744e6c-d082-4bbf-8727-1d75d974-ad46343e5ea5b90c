@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+    <head>
+        <title>Reall3dViewer</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+        <meta http-equiv="Pragma" content="no-cache" />
+        <meta http-equiv="Expires" content="0" />
+        <link rel="icon" href="/favicon.ico" />
+    </head>
+
+    <body style="background: black; height: 100vh; margin: 0px; overflow: hidden">
+        <div id="gsviewer">
+            <div
+                class="logo loading"
+                onclick="window.open('https://reall3d.com', '_blank');"
+                style="position: absolute; top: 30px; left: 20px; width: 40px; height: 40px; z-index: 9999; cursor: pointer"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 218.18 216.86">
+                    <defs>
+                        <style>
+                            .cls-1 {
+                                fill: url(#aa);
+                            }
+
+                            .cls-2 {
+                                fill: url(#bb);
+                            }
+
+                            .cls-3 {
+                                fill: url(#cc);
+                            }
+
+                            .cls-4 {
+                                fill: url(#dd);
+                            }
+                        </style>
+                        <linearGradient id="aa" x1="107.82" y1="104.86" x2="200.65" y2="52.13" gradientUnits="userSpaceOnUse">
+                            <stop offset="0.23" stop-color="#6128fc" />
+                            <stop offset="0.96" stop-color="#a244d3" />
+                        </linearGradient>
+                        <linearGradient id="bb" x1="145.83" y1="163.29" x2="111.03" y2="109.85" gradientUnits="userSpaceOnUse">
+                            <stop offset="0" stop-color="#5456ea" />
+                            <stop offset="1" stop-color="#15e2d5" />
+                        </linearGradient>
+                        <linearGradient id="cc" x1="81.28" y1="143.49" x2="-32.43" y2="143.49" gradientUnits="userSpaceOnUse">
+                            <stop offset="0.05" stop-color="#d431c2" />
+                            <stop offset="1" stop-color="#eaa474" />
+                        </linearGradient>
+                        <linearGradient id="dd" x1="108.21" y1="81.73" x2="26.64" y2="15.85" gradientUnits="userSpaceOnUse">
+                            <stop offset="0.15" stop-color="#ce41ab" />
+                            <stop offset="0.26" stop-color="#dc5b92" />
+                            <stop offset="0.39" stop-color="#e8727b" />
+                            <stop offset="0.52" stop-color="#f1836b" />
+                            <stop offset="0.67" stop-color="#f68d61" />
+                            <stop offset="0.86" stop-color="#f8905e" />
+                        </linearGradient>
+                    </defs>
+                    <g>
+                        <path
+                            class="cls-1"
+                            d="M214.14,82.33c-4-4.47-11.76-7.77-29-15.47-29-13-53-23-53-23s-19-9-19,5v32c0,3,0,24,23,24h72c4,0,10-5,10-12.5A13.18,13.18,0,0,0,214.14,82.33Z"
+                        />
+                        <path
+                            class="cls-2"
+                            d="M136.53,212.76c4.26-3.73,7.71-11.8,15.33-29,12.85-29.07,22.73-53.12,22.73-53.12s8.91-19-5.09-19l-32,.16c-3,0-24,.12-23.89,23.12l.35,69,0,3c0,6,5,10,12.55,9.94A13.08,13.08,0,0,0,136.53,212.76Z"
+                        />
+                        <path
+                            class="cls-3"
+                            d="M4.15,134.91c3.74,4.24,11.83,7.65,29.09,15.2,29.13,12.72,53.22,22.49,53.22,22.49s19.09,8.82,19-5.18l-.3-32c0-3-.23-24-23.23-23.78l-69,.66-3,0c-6,.06-10,5.09-9.88,12.59A13,13,0,0,0,4.15,134.91Z"
+                        />
+                        <path
+                            class="cls-4"
+                            d="M83,3.93c-4.32,3.65-7.91,11.66-15.83,28.76C53.78,61.52,43.49,85.4,43.49,85.4s-9.24,18.89,4.76,19.06l32,.39c3,0,24,.3,24.28-22.7l.85-69,0-3C105.49,4.15,100.54.09,93,0A13.07,13.07,0,0,0,83,3.93Z"
+                        />
+                    </g>
+                </svg>
+            </div>
+            <div
+                id="progressBarWrap"
+                class="prd-mode"
+                style="
+                    display: none;
+                    z-index: 9999;
+                    border: 1px solid rgba(255, 255, 255, 0.4);
+                    width: 38px;
+                    height: 5px;
+                    border-radius: 10px;
+                    position: absolute;
+                    top: 76px;
+                    left: 20px;
+                    overflow: hidden;
+                    padding: 1px;
+                "
+            >
+                <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #5b99f7 0%, #4960d6 100%); border-radius: 10px"></div>
+            </div>
+
+            <div class="debug dev-panel prd-mode" style="border-radius: 5px; display: none">
+                <table style="width: 330px; font-size: 13px">
+                    <tr class="tr-memory">
+                        <td>memory:</td>
+                        <td><span class="memory"></span></td>
+                    </tr>
+                    <tr>
+                        <td style="width: 80px">fps:</td>
+                        <td><span class="fps">-</span>　（<span class="realFps">-</span>）</td>
+                    </tr>
+                    <tr>
+                        <td>sort:</td>
+                        <td><span class="sort">-</span></td>
+                    </tr>
+                    <tr>
+                        <td>points:</td>
+                        <td>
+                            <span class="renderSplatCount">-</span> / <span class="visibleSplatCount">-</span> /
+                            <span class="modelSplatCount">-</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>scene:</td>
+                        <td><span class="scene"></span> <span class="cuts"></span></td>
+                    </tr>
+                    <tr class="tr-pc-only map-hidden">
+                        <td>SH (0~3):</td>
+                        <td class="shDegree">-</td>
+                    </tr>
+                    <tr class="tr-pc-only map-hidden">
+                        <td>scale:</td>
+                        <td class="scale"></td>
+                    </tr>
+                    <tr class="tr-pc-only">
+                        <td>fov:</td>
+                        <td class="fov"></td>
+                    </tr>
+                    <tr>
+                        <td>position:</td>
+                        <td class="position"></td>
+                    </tr>
+                    <tr>
+                        <td>lookAt:</td>
+                        <td class="lookAt"></td>
+                    </tr>
+                    <tr class="tr-pc-only">
+                        <td>lookUp:</td>
+                        <td class="lookUp"></td>
+                    </tr>
+                    <tr>
+                        <td>version:</td>
+                        <td class="viewer-version"></td>
+                    </tr>
+                </table>
+            </div>
+            <div class="operation dev-panel prd-mode" style="border-radius: 5px; display: none">
+                <table style="width: 135px; text-align: center; font-size: 13px">
+                    <tr>
+                        <td>
+                            <span class="switch-debug" style="background-color: darkorchid" title="Hide/Show the info panel">－</span>
+                            TEST PANEL
+                            <span class="op-show" style="background-color: darkorchid" title="Hide/Show the test panel">－</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>----------------</td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>
+                            <span class="switch-rotate" title="Start/Stop rotate">旋转</span>
+                            <span class="switch-pointcloudMode" title="Toggle pointcloud mode">点云</span>
+                            <span class="switch-deiplay-mode" title="Toggle pointcloud mode with transition effec">过渡</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="add-lightFactor" title="Increase the brightness by 10%">＋</span
+                            ><span class="default-lightFactor" style="width: 80px" title="use default brightness">默认亮度</span
+                            ><span class="sub-lightFactor" title="Decrease the brightness by 10%">－</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="add-sh" title="Increase SH degree">＋</span
+                            ><span class="default-sh" style="width: 80px" title="use default SH degree">Default SH</span
+                            ><span class="sub-sh" title="Decrease SH degree">－</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="add-quality" title="Increase quality level">＋</span
+                            ><span class="default-quality" style="width: 80px" title="use default quality level">Quality</span
+                            ><span class="sub-quality" title="Decrease quality level">－</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="add-sorttype" title="change to larger sort type">＋</span
+                            ><span class="default-sorttype" style="width: 80px" title="use default sort type">SortType</span
+                            ><span class="sub-sorttype" title="change to smaller sort type">－</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>----- demo -----</td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>
+                            <span class="demo1" style="width: 80px" title="Demo of mark and measurements">小圆桌</span>
+                            <span class="demo3" style="width: 80px" title="Demo of flying">大街景</span>
+                            <!-- <span class="demo2" style="width: 80px" title="Demo of embedded text watermarking">天际阁</span> -->
+                        </td>
+                    </tr>
+                    <!-- <tr class="tr-data">
+                        <td>
+                            <span class="demo3" style="width: 80px" title="Demo of flying">大街景</span>
+                            <span class="demo4" style="width: 80px" title="Demo of embedded splat as watermarking">宝章阁</span>
+                        </td>
+                    </tr> -->
+                    <!-- <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="show-watermark" title="show watermarks">＋</span>
+                            <input type="text" class="gstext" style="width: 50px" value="" placeholder="watermark" title="Enter text as watermarking" />
+                            <span class="hide-watermark" title="hide watermarks">－</span>
+                        </td>
+                    </tr> -->
+                    <tr class="tr-data">
+                        <td>
+                            <span class="lod" title="Preset LOD-based large-scene rendering">LOD</span>
+                            <span class="map" title="3DGS in map">地图场景</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>--- worldlabs ---</td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>
+                            <span class="lff-house" title="model from worldlabs">fantastical house</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>----- marks -----</td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="mark-hide" title="Hide marks">隐</span>　<span class="mark-show" title="Show marks">显</span>　<span
+                                class="mark-save"
+                                title="Save marks"
+                                >存</span
+                            >　<span class="mark-del" title="Delete marks">删</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>
+                            <span class="mark-distance" title="mark distance">长</span> <span class="mark-point" title="mark point">点</span>
+                            <span class="mark-lines" title="mark lines">线</span> <span class="mark-plans" title="mark plans">面</span>
+                            <span class="mark-circle" title="mark circle">圆</span>
+                        </td>
+                    </tr>
+                    <tr class="tr-data tr-pc-only">
+                        <td>----- flying -----</td>
+                    </tr>
+                    <tr class="tr-data">
+                        <td>
+                            <span class="add-pos tr-pc-only" title="Add the current camera position as one of the flight path points">加点</span>
+                            <span class="clear-pos tr-pc-only" title="Clear the flight path points">清空</span> <span class="fly" title="Start flying">飞</span>
+                            <span class="fly-save tr-pc-only" title="Save the flight path points">存</span>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        <script type="module" src="./src/index.ts"></script>
+    </body>
+</html>

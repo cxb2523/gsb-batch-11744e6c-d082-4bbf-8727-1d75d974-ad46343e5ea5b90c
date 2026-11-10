@@ -1,0 +1,30 @@
+{
+  "name": "Preset-LOD Rendering (Third-person view)",
+  "version": "1.0",
+  "autoRotate": false,
+  "debugMode": false,
+  "mobileLodTargets": [2, 3, 4],
+  "mobileLodDistances": [50, 100],
+  "mobileLodCacheCount": 5000000,
+  "mobileEnableJoystick": true,
+  "maxRenderCountOfMobile": 2200000,
+  "pcLodTargets": [0,1,2,3,4],
+  "pcLodDistances": [20,40,80,120],
+  "pcLodCacheCount": 50000000,
+  "pcEnableJoystick": true,
+  "maxRenderCountOfPc": 3200000,
+  "url": "https://reall3d.com/demo-models/lod-v1/hgd/hgd.lod.json",
+  "viewMode": 3,
+  "player": {
+    "url": "https://reall3d.com/demo-models/lod-v1/hgd/fenghuang.glb",
+    "trigerRunMp3": "https://reall3d.com/demo-models/lod-v1/hgd/fenghuang.mp3",
+    "position": [-9.3898506847053, -5.072628426003211, -37.09527597307442],
+    "rotation": [0, 90, 180],
+    "scale": 0.002,
+    "speed": 3
+  },
+  "cameraInfo": {
+    "position": [-10.983579348113565, -9.587101590580815, -44.31720189443017],
+    "lookUp": [0, -1, 0],
+    "lookAt": [-9.38985068470538, -6.7726284260032115, -37.09527597307442]
+  }}

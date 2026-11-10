@@ -1,0 +1,33 @@
+{
+    "name": "reall3dviewer",
+    "version": "3.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "build-pkg": "tsc && vite build --config vite-pkg.config.ts && node buildPkg.js --before && vite build --config vite-pkg.config.ts && node buildPkg.js --after",
+        "preview": "vite preview",
+        "resort-const": "node scripts/resortConst.js"
+    },
+    "dependencies": {
+        "@dimforge/rapier3d-compat": "^0.19.3",
+        "@gotoeasy/three-tile": "^0.8.8",
+        "@oneidentity/zstd-js": "^1.0.3",
+        "@tweenjs/tween.js": "^25.0.0",
+        "fflate": "^0.8.2",
+        "nipplejs": "^0.10.2",
+        "three": "^0.171.0",
+        "xz-decompress": "^0.2.3"
+    },
+    "devDependencies": {
+        "@types/node": "^22.13.5",
+        "@types/three": "^0.171.0",
+        "@vituum/vite-plugin-postcss": "^1.1.0",
+        "less": "^4.6.4",
+        "typescript": "^5.9.2",
+        "vite": "^6.4.2",
+        "vite-plugin-dts": "^4.5.4",
+        "vite-plugin-glsl": "^1.6.0",
+        "vite-plugin-svg-icons": "^2.0.1"
+    }
+}
