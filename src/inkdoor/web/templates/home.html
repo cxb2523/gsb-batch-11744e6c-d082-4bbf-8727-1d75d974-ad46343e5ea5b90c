@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block content %}
+{% if broken %}
+<div class="alert banner" role="alert">
+  <p><strong>{{ t("admin.config_broken") }}</strong>
+    {{ t("admin.config_broken_defaults") if using_defaults else t("admin.config_broken_kept") }}</p>
+  {% if problem %}<p>{{ t("admin.config_problem_detail", message=problem) }}</p>{% endif %}
+  {% if restore %}{{ m.restore_form(restore) }}{% endif %}
+</div>
+{% elif first_setup %}
+<div class="notice banner">
+  <p>{{ t("admin.first_setup") }}</p>
+  <a class="button" href="/calendars/new">{{ t("admin.add_calendar") }}</a>
+</div>
+{% endif %}
+<div class="columns">
+  <div class="stack-cards">
+    <section class="card status" aria-live="polite">
+      <h1>{{ t("admin.home_title") }}</h1>
+      {% if last %}
+      <p class="status-word" data-status="word">{{ last.word }}</p>
+      <p class="status-headline" data-status="headline">{{ last.headline }}</p>
+      <p class="muted" data-status="updated">{{ updated }}</p>
+      <div class="alert" data-status="errors"{% if not last.errors %} hidden{% endif %}>
+        <p>{{ t("admin.failing_sources") }}</p>
+        <ul>
+          {% for source in last.errors %}<li>{{ source }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% else %}
+      <p class="muted">{{ t("admin.not_rendered") }}</p>
+      {% endif %}
+      <form method="post" action="/render" class="update">
+        {{ csrf_field() }}
+        <button type="submit">{{ t("admin.update_now") }}</button>
+      </form>
+    </section>
+    <section class="card">
+      <h2>{{ t("admin.kindle_title") }}</h2>
+      {% if kindle_url %}
+      {% if kindle_zip %}
+      <div class="kindle-download">
+        <a class="button" href="/kindle-files.zip" download>{{ t("admin.kindle_download") }}</a>
+        <p class="help">{{ t("admin.kindle_download_help") }}</p>
+      </div>
+      {% call m.howto(t("admin.howto_kindle_title")) %}
+      {{ m.steps("admin.howto_kindle") }}
+      <p class="help">{{ t("admin.howto_kindle_note") }}
+        <a href="{{ docs_url('kindle.md') }}" target="_blank" rel="noopener noreferrer">{{ t("admin.howto_kindle_more") }}</a></p>
+      {% endcall %}
+      {% call m.howto(t("admin.howto_kpm_title")) %}
+      <p>{{ t("admin.howto_kpm_intro") | emphasis }}</p>
+      <p class="help">{{ t("admin.howto_kpm_upgrade") }}</p>
+      <pre class="commands">;kpm update
+;kpm upgrade</pre>
+      <p class="help">{{ t("admin.howto_kpm_note") }}</p>
+      {% endcall %}
+      {% endif %}
+      {{ m.copy_field("kindle-url", t("admin.kindle_url_label"), kindle_url,
+                      help=t("admin.kindle_url_help")) }}
+      {% else %}
+      <p class="muted">{{ t("admin.kindle_url_unknown", port=port) }}</p>
+      {% endif %}
+    </section>
+  </div>
+  <section class="card preview">
+    <h2>{{ t("admin.preview_title") }}</h2>
+    <div class="preview-frame" data-preview data-at="{{ at }}"{% if poll %} data-poll{% endif %}>
+      {% if preview %}
+      <img src="/kindle.png?t={{ preview }}" alt="{{ t('admin.preview_alt') }}" width="{{ screen[0] }}" height="{{ screen[1] }}">
+      {% else %}
+      <p class="muted">{{ t("admin.not_rendered") }}</p>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}

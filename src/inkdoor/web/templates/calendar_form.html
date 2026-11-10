@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set active = "calendars" %}
+{% set heading = t("admin.new_calendar_title") if index is none else t("admin.edit_calendar_title") %}
+{% block title %}{{ heading }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<p class="back"><a href="/calendars">{{ t("admin.back_calendars") }}</a></p>
+<section class="card form-card">
+  <h1>{{ heading }}</h1>
+  {% if form_error %}<p class="alert" role="alert">{{ form_error }}</p>{% endif %}
+  <form method="post" action="{{ '/calendars/new' if index is none else '/calendars/%d' % index }}"
+        class="form">
+    {{ m.form_fields(digest) }}
+    {{ m.text_field("name", t("admin.field_name"), values.name, errors,
+                    help=t("admin.field_name_help"), maxlength=60, required=True) }}
+    <fieldset class="field">
+      <legend>{{ t("admin.field_style") }}</legend>
+      <div class="choices">
+        {% for style in styles %}
+        <label class="choice">
+          <input type="radio" name="style" value="{{ style }}"{% if values.style == style %} checked{% endif %}>
+          <span class="marker marker-{{ style }}" aria-hidden="true"></span>
+          {{ t("admin.style_" ~ style) }}
+        </label>
+        {% endfor %}
+      </div>
+      {{ m.field_error("style", errors) }}
+    </fieldset>
+    <div class="field">
+      <label class="check">
+        <input type="checkbox" name="busy" value="1"{% if values.busy %} checked{% endif %}
+               aria-describedby="busy-help">
+        {{ t("admin.field_busy") }}
+      </label>
+      <p class="help" id="busy-help">{{ t("admin.field_busy_help") }}</p>
+    </div>
+    {{ m.text_field("status_label", t("admin.field_status_label"), values.status_label, errors,
+                    help=t("admin.field_status_label_help", default=default_label), maxlength=30,
+                    placeholder=default_label) }}
+    {{ m.link_field(errors, link, index is none,
+                    t("admin.field_link_help_new") if index is none else t("admin.field_link_help_edit"),
+                    repaste) }}
+    {% call m.howto(t("admin.howto_link_title"), open=index is none) %}
+    <h3>{{ t("admin.howto_outlook_title") }}</h3>
+    {{ m.steps("admin.howto_outlook") }}
+    <p class="help">{{ t("admin.howto_outlook_note") | emphasis }}</p>
+    <h3>{{ t("admin.howto_google_title") }}</h3>
+    {{ m.steps("admin.howto_google") }}
+    <h3>{{ t("admin.howto_other_title") }}</h3>
+    <p>{{ t("admin.howto_other") | emphasis }}</p>
+    <p class="help">{{ t("admin.howto_secret") }}
+      <a href="{{ docs_url('calendar-sources.md') }}" target="_blank" rel="noopener noreferrer">{{ t("admin.howto_more") }}</a></p>
+    {% endcall %}
+    <div class="form-actions">
+      <button type="submit">{{ t("admin.save") }}</button>
+      <a class="button button-quiet" href="/calendars">{{ t("admin.cancel") }}</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

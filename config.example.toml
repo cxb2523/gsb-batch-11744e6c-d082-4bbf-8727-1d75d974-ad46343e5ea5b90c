@@ -1,0 +1,55 @@
+# ============================================================
+#  inkdoor configuration
+#  Copy this file to config.toml and paste your calendar links.
+#  config.toml is git-ignored: anyone with these links can read your calendars.
+# ============================================================
+
+[display]
+# screen = "1072x1448"      # your Kindle's screen: see "Which Kindle do I have?" in docs/kindle.md
+language = "en-US"          # "en-US" or "pt-BR"
+timezone = "America/New_York"
+# clock = "24h"             # "12h" or "24h"; defaults to the language's convention
+workday_start = 8           # before this hour the door shows "after hours"
+workday_end = 19            # after this hour the list switches to tomorrow (0-24)
+workdays = [0, 1, 2, 3, 4]  # 0 = Monday ... 6 = Sunday
+min_gap_minutes = 30        # only show "free · 45 min" for gaps at least this long
+
+[server]
+port = 3667
+refresh_minutes = 5         # re-read the calendars on the clock (10:00, 10:05...); the door
+                            # also redraws right when a meeting starts or ends
+
+# ---------- Calendars ----------
+# Add one [[calendar]] block per calendar.
+#   name          shown on the screen and in the legend
+#   style         marker on the screen (e-ink has no color): "solid", "striped" or "outline"
+#   busy          true: makes the door say "In a meeting"; false: listed only (e.g. reminders)
+#   status_label  big word on the door during this calendar's events, e.g. "Busy". Shown as
+#                 written whatever the language; leave it out for "In a meeting", translated
+#   url           ICS link (see docs/calendar-sources.md)
+
+[[calendar]]
+name = "Work"
+style = "solid"
+busy = true
+url = "PASTE_YOUR_WORK_ICS_LINK"
+
+[[calendar]]
+name = "Company"
+style = "striped"
+busy = true
+url = "PASTE_YOUR_SECOND_ICS_LINK"
+
+[[calendar]]
+name = "Personal"
+style = "outline"
+busy = true
+url = "PASTE_YOUR_GOOGLE_SECRET_ICAL_ADDRESS"
+
+# ---------- Tasks ----------
+# TickTick task link: Settings > Integrations & Import > Subscribe to TickTick.
+# Shows tasks due today plus overdue ones.
+[tasks]
+name = "TickTick"
+url = "PASTE_YOUR_TICKTICK_SUBSCRIPTION_LINK"
+overdue_days = 7            # show overdue tasks up to N days old

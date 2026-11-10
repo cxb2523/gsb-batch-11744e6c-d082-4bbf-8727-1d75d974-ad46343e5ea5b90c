@@ -1,0 +1,37 @@
+
+■ Placeholder
+  ✖ link ainda não foi colado no config.toml
+
+■ Unreachable
+  ✖ não consegui acessar o endereço. Confira o link e a conexão com a internet.
+
+■ Empty
+  ✔ agenda acessível (1 KB)
+  ⚠ nenhum compromisso nos próximos 14 dias. Se a agenda não está vazia,
+     confira se publicou o calendário certo.
+
+■ Busy only
+  ✔ agenda acessível (1 KB)
+  ✔ 2 compromissos nos próximos 14 dias
+  ⚠ o link só mostra 'Ocupado', sem os títulos das reuniões.
+     Publique de novo com a permissão 'Pode ver todos os detalhes'.
+     Se essa opção não existir, a empresa limita a publicação: o status da
+     porta funciona, mas a lista vai mostrar só 'Ocupado'.
+     14/10    10:00  Busy
+     15/10    10:00  Tentative
+
+■ Night
+  ✔ agenda acessível (1 KB)
+  ✔ 3 compromissos nos próximos 14 dias
+     15/10    14:00  Planning
+  ⚠ muitos compromissos de madrugada: talvez o fuso esteja errado.
+     Confira se os horários acima batem com o seu aplicativo de agenda.
+
+■ Holidays
+  ✔ agenda acessível (1 KB)
+  ✔ 2 compromissos de dia inteiro nos próximos 14 dias
+
+■ TickTick
+  ✖ não consegui acessar o endereço. Confira o link e a conexão com a internet.
+
+Corrija os itens marcados com ✖ e rode o teste de novo.

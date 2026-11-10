@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set active = "account" %}
+{% block title %}{{ t("admin.account_title") }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ t("admin.account_title") }}</h1>
+</div>
+{% if generated %}
+<section class="card form-card generated" role="status">
+  <h2>{{ t("admin.generated_title") }}</h2>
+  {{ m.copy_field("generated-password", t("admin.generated_label"), generated,
+                  help=t("admin.generated_help")) }}
+</section>
+{% endif %}
+<section class="card form-card">
+  <h2>{{ t("admin.password_title") }}</h2>
+  {% if form_error %}<p class="alert" role="alert">{{ form_error }}</p>{% endif %}
+  <form method="post" action="/account/password" class="form">
+    {{ csrf_field() }}
+    <input type="text" name="username" value="inkdoor" autocomplete="username" hidden>
+    <div class="field">
+      <label for="current">{{ t("admin.field_current_password") }}</label>
+      <input id="current" name="current" type="password" autocomplete="current-password" required
+             maxlength="1024"
+             {%- if errors.get("current") %} aria-invalid="true" aria-describedby="current-error"{% endif %}>
+      {{ m.field_error("current", errors) }}
+    </div>
+    <div class="field">
+      <label for="new">{{ t("admin.field_new_password") }}</label>
+      <input id="new" name="new" type="password" autocomplete="new-password" maxlength="1024"
+             {%- if errors.get("new") %} aria-invalid="true" aria-describedby="new-help new-error"
+             {%- else %} aria-describedby="new-help"{% endif %}>
+      <p class="help" id="new-help">{{ t("admin.field_new_password_help", n=min_length) }}</p>
+      {{ m.field_error("new", errors) }}
+    </div>
+    <div class="form-actions">
+      <button type="submit">{{ t("admin.change_password") }}</button>
+      <button type="submit" name="generate" value="1" class="button-quiet">{{ t("admin.generate_password") }}</button>
+    </div>
+  </form>
+  <p class="help account-hint">{{ t("admin.forgot_password") }}</p>
+</section>
+<section class="card form-card">
+  <h2>{{ t("admin.session_title") }}</h2>
+  <p class="muted">{{ t("admin.session_help") }}</p>
+  <form method="post" action="/logout">
+    {{ csrf_field() }}
+    <button type="submit" class="button-quiet">{{ t("admin.logout") }}</button>
+  </form>
+</section>
+{% endblock %}

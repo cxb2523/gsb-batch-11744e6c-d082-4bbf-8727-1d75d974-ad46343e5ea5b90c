@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="{{ t.language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="same-origin">
+  <title>{% block title %}{{ t("admin.title") }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
+  <script src="{{ url_for('static', filename='admin.js') }}" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">inkdoor</a>
+      {% if logged_in %}
+      <nav class="menu" aria-label="{{ t('admin.nav.label') }}">
+        {% for key, href in [("home", "/"), ("calendars", "/calendars"), ("tasks", "/tasks"),
+                             ("screen", "/screen"), ("account", "/account")] %}
+        <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ t("admin.nav." ~ key) }}</a>
+        {% endfor %}
+      </nav>
+      <form class="logout" method="post" action="/logout">
+        {{ csrf_field() }}
+        <button type="submit" class="button-quiet">{{ t("admin.logout") }}</button>
+      </form>
+      {% endif %}
+    </div>
+  </header>
+  <main class="page">
+    {% for message in notices() %}
+    <p class="notice" role="status">{{ message }}</p>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

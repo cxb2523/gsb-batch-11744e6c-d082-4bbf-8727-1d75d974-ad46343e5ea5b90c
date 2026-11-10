@@ -1,0 +1,26 @@
+
+■ Work
+  ✔ calendar reachable (1 KB)
+  ✔ 12 events in the next 14 days
+     Oct 14  9:00 AM  Daily
+     Oct 14  1:30 PM  Roadmap review
+     Oct 14  1:30 PM  Roadmap Review
+
+■ Company
+  ✔ calendar reachable (1 KB)
+  ✔ 1 event in the next 14 days
+     Oct 14  1:30 PM  Roadmap review
+
+■ Personal
+  ✔ calendar reachable (1 KB)
+  ✔ 1 event in the next 14 days
+  ✔ 1 all-day event in the next 14 days
+     Oct 14  6:00 PM  Gym
+
+■ TickTick
+  ✔ calendar reachable (1 KB)
+  ✔ 2 tasks due today or overdue
+     [overdue] Overdue task
+     Call the bank
+
+All good! Run: inkdoor serve

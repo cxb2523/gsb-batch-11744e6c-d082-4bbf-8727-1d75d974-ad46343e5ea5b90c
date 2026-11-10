@@ -1,0 +1,54 @@
+name: Bug report
+description: Something on the door, the Kindle, the admin or the installer does not work as it should.
+labels: ["type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. **This repository is public**: never paste
+        calendar links, `config.toml`, passwords, names, email addresses or meeting titles. Replace
+        them with fictional ones. `inkdoor check` and the service log never print links, so their
+        output is safe to paste.
+
+        Before filing, the [troubleshooting guide](https://github.com/frkey/inkdoor/blob/master/docs/troubleshooting.md)
+        may already have the answer.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      multiple: true
+      options:
+        - The door screen
+        - The Kindle scripts
+        - The web admin
+        - inkdoor check / Test link
+        - The installer (Proxmox or Debian/Ubuntu)
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: How you run the server and which Kindle you use.
+      placeholder: "Proxmox container (Debian 13), Kindle Paperwhite 10th gen, firmware 5.18.1"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `inkdoor check` and the service log
+      description: "On a server: `inkdoor check` and `journalctl -u inkdoor -n 50 --no-pager`. On the Kindle: `inkdoor/log.txt`."
+      render: text

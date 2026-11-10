@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/frkey/inkdoor/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.
+  - name: Troubleshooting guide
+    url: https://github.com/frkey/inkdoor/blob/master/docs/troubleshooting.md
+    about: What each door screen, Kindle message and Test link result means.

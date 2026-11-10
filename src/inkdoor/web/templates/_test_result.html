@@ -1,0 +1,15 @@
+<div class="test-result">
+  {% if result.message %}
+  <p class="result-line result-{{ result.level }}">{{ result.message }}</p>
+  {% else %}
+  <ul class="result-lines">
+    {% for row in result.rows %}
+    {% if row.kind == "event" %}
+    <li class="result-event">{% if row.when %}<span class="when">{{ row.when }}</span> {% endif %}<span>{{ row.text }}</span></li>
+    {% else %}
+    <li class="result-line result-{{ row.level }}">{{ row.text }}</li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

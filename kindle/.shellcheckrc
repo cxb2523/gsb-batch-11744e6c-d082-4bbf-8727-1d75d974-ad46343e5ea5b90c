@@ -1,0 +1,3 @@
+# The Kindle scripts source each other with "."
+disable=SC1090,SC1091,SC2034
+shell=sh

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set active = "calendars" %}
+{% block title %}{{ t("admin.calendars_title") }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ t("admin.calendars_title") }}</h1>
+  {% if not problem %}
+  <a class="button" href="/calendars/new">{{ t("admin.add_calendar") }}</a>
+  {% endif %}
+</div>
+{{ m.config_banners(problem, warning, restore) }}
+{% if not problem %}
+<p class="muted intro">{{ t("admin.calendars_intro") }}</p>
+{% if not cards %}
+<section class="card">
+  <p class="muted">{{ t("admin.no_calendars") }}</p>
+</section>
+{% endif %}
+<ol class="sources">
+  {% for card in cards %}
+  <li class="card source">
+    <div class="source-head">
+      <div class="source-title">
+        <span class="marker marker-{{ card.style }}" role="img"
+              aria-label="{{ t('admin.style_' ~ card.style) }}"></span>
+        <h2>{{ card.name }}</h2>
+      </div>
+      <span class="badge{% if not card.busy %} badge-quiet{% endif %}">
+        {{ t("admin.busy_yes") if card.busy else t("admin.busy_no") }}
+      </span>
+    </div>
+    <dl class="facts">
+      {% if card.busy %}
+      <dt>{{ t("admin.field_status_label") }}</dt>
+      <dd>{{ card.status_label or default_label }}</dd>
+      {% endif %}
+      <dt>{{ t("admin.field_link") }}</dt>
+      {% if card.link %}<dd class="mask">{{ card.link }}</dd>{% else %}<dd class="muted">{{ t("admin.link_not_set") }}</dd>{% endif %}
+    </dl>
+    <div class="actions">
+      {% if card.link %}
+      {{ m.test_form("/calendars/%d/test" % card.index, digest, "test-%d" % card.index) }}
+      {% endif %}
+      <a class="button button-quiet" href="/calendars/{{ card.index }}">{{ t("admin.edit") }}</a>
+      {% if not loop.first %}
+      {{ m.action("/calendars/%d/move" % card.index, digest, t("admin.move_up"), "button-quiet",
+                  name="direction", value="up") }}
+      {% endif %}
+      {% if not loop.last %}
+      {{ m.action("/calendars/%d/move" % card.index, digest, t("admin.move_down"), "button-quiet",
+                  name="direction", value="down") }}
+      {% endif %}
+      {{ m.action("/calendars/%d/delete" % card.index, digest, t("admin.remove"), "button-danger",
+                  confirm=t("admin.confirm_remove_calendar", name=card.name)) }}
+    </div>
+    <div class="test-slot" id="test-{{ card.index }}" aria-live="polite">
+      {% if result and result.index == card.index %}{% include "_test_result.html" %}{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+{% endblock %}

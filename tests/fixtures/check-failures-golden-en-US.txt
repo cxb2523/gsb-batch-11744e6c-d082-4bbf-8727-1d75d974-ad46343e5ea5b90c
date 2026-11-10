@@ -1,0 +1,37 @@
+
+■ Placeholder
+  ✖ link not pasted into config.toml yet
+
+■ Unreachable
+  ✖ could not reach the address. Check the link and the internet connection.
+
+■ Empty
+  ✔ calendar reachable (1 KB)
+  ⚠ no events in the next 14 days. If the calendar is not empty,
+     make sure you published the right one.
+
+■ Busy only
+  ✔ calendar reachable (1 KB)
+  ✔ 2 events in the next 14 days
+  ⚠ the link only shows 'Busy', without meeting titles.
+     Publish it again with 'Can view all details'.
+     If that option is missing, your organization limits publishing: the door status
+     still works, but the list will only say 'Busy'.
+     Oct 14 10:00 AM  Busy
+     Oct 15 10:00 AM  Tentative
+
+■ Night
+  ✔ calendar reachable (1 KB)
+  ✔ 3 events in the next 14 days
+     Oct 15  2:00 PM  Planning
+  ⚠ many events in the middle of the night: the time zone may be wrong.
+     Check that the times above match your calendar app.
+
+■ Holidays
+  ✔ calendar reachable (1 KB)
+  ✔ 2 all-day events in the next 14 days
+
+■ TickTick
+  ✖ could not reach the address. Check the link and the internet connection.
+
+Fix the items marked with ✖ and run the check again.

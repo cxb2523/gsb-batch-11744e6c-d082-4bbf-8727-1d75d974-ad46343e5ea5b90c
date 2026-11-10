@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% set active = "tasks" %}
+{% block title %}{{ t("admin.tasks_title") }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ t("admin.tasks_title") }}</h1>
+</div>
+{{ m.config_banners(problem, warning, restore) }}
+{% if not problem %}
+<p class="muted intro">{{ t("admin.tasks_intro") }}</p>
+{% if exists %}
+<section class="card source">
+  <div class="source-head">
+    <h2>{{ name }}</h2>
+  </div>
+  <dl class="facts">
+    <dt>{{ t("admin.field_link") }}</dt>
+    {% if link %}<dd class="mask">{{ link }}</dd>{% else %}<dd class="muted">{{ t("admin.link_not_set") }}</dd>{% endif %}
+  </dl>
+  <div class="actions">
+    {% if link %}{{ m.test_form("/tasks/test", digest, "test-tasks") }}{% endif %}
+    {{ m.action("/tasks/delete", digest, t("admin.remove_tasks"), "button-danger",
+                confirm=t("admin.confirm_remove_tasks")) }}
+  </div>
+  <div class="test-slot" id="test-tasks" aria-live="polite">
+    {% if result %}{% include "_test_result.html" %}{% endif %}
+  </div>
+</section>
+{% else %}
+<section class="card">
+  <p class="muted">{{ t("admin.tasks_none") }}</p>
+</section>
+{% endif %}
+<section class="card form-card">
+  <h2>{{ t("admin.tasks_settings") }}</h2>
+  {% if form_error %}<p class="alert" role="alert">{{ form_error }}</p>{% endif %}
+  <form method="post" action="/tasks" class="form">
+    {{ m.form_fields(digest) }}
+    {{ m.link_field(errors, link, not exists,
+                    t("admin.field_link_help_edit") if exists else t("admin.field_tasks_link_help_new"),
+                    repaste) }}
+    {% call m.howto(t("admin.howto_ticktick_title"), open=not exists) %}
+    {{ m.steps("admin.howto_ticktick") }}
+    <p class="help">{{ t("admin.howto_ticktick_note") }}
+      <a href="{{ docs_url('calendar-sources.md#ticktick') }}" target="_blank" rel="noopener noreferrer">{{ t("admin.howto_more") }}</a></p>
+    {% endcall %}
+    {{ m.text_field("name", t("admin.field_name"), values.name, errors, maxlength=60) }}
+    {{ m.text_field("overdue_days", t("admin.field_overdue_days"), values.overdue_days, errors,
+                    help=t("admin.field_overdue_days_help"), type="number", inputmode="numeric",
+                    min=0, max=365, required=True) }}
+    <div class="form-actions">
+      <button type="submit">{{ t("admin.save") }}</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

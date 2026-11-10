@@ -1,0 +1,5 @@
+* text=auto
+# Kindle scripts need LF line endings, even when edited on Windows
+*.sh text eol=lf
+*.otf binary
+*.png binary

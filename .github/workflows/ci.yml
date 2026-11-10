@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays: the audit also catches advisories published since the last push
+
+# Read-only token: no job writes to the repository
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: Render previews (both languages)
+        run: |
+          inkdoor -o output --lang en-US demo 10:20 15:20 16:50 21:10
+          inkdoor -o output --lang pt-BR demo 10:20 15:20 16:50 21:10
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: matrix.python == '3.12'
+        with:
+          name: previews
+          path: output/*.png
+
+  kindle-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: ShellCheck
+        working-directory: kindle
+        run: shellcheck inkdoor/*.sh documents/*.sh kpm/*.sh
+      - name: ShellCheck (deploy)
+        run: shellcheck deploy/*.sh deploy/proxmox/*.sh
+
+  # The pinned versions that deploy/install.sh installs: they install the way it installs them,
+  # pass the tests and have no known vulnerabilities
+  deploy-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.11"  # Debian 12's
+      - name: Install as deploy/install.sh does
+        # inside the checkout, like /opt/inkdoor/.venv: the admin finds kindle/ next to it
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --require-hashes -r deploy/requirements.txt
+          .venv/bin/pip install --no-deps --no-build-isolation .
+          .venv/bin/pip check
+      - run: .venv/bin/pip install pytest && .venv/bin/pytest -q
+      - run: pip install pip-audit==2.10.1
+      - run: pip-audit --disable-pip --require-hashes -r deploy/requirements.txt

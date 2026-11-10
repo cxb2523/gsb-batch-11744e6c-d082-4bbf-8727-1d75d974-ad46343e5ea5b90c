@@ -1,0 +1,813 @@
+/* inkdoor admin. No inline styles anywhere: the Content-Security-Policy forbids them. */
+
+@font-face {
+  font-family: "Inter";
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/Inter-Medium.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/Inter-SemiBold.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("fonts/Inter-Bold.otf") format("opentype");
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #f4f3f0;
+  --surface: #ffffff;
+  --text: #1d1d1b;
+  --muted: #6b6a66;
+  --border: #dcdad4;
+  --accent: #1f4f8a;
+  --accent-text: #ffffff;
+  --alert-bg: #fbeceb;
+  --alert-text: #8a1f17;
+  --notice-bg: #e9f2ea;
+  --notice-text: #1e5b2a;
+  --focus: #3b7bd4;
+  --ok: #1e7a34;
+  --warn: #9a6400;
+  --fail: #b3261e;
+  --danger: #b3261e;
+  --radius: 10px;
+  --space: 16px;
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161616;
+    --surface: #212120;
+    --text: #ecebe7;
+    --muted: #a3a29d;
+    --border: #3a3936;
+    --accent: #8db8f0;
+    --accent-text: #10213a;
+    --alert-bg: #3b1d1a;
+    --alert-text: #f3b7b0;
+    --notice-bg: #1b3220;
+    --notice-text: #b5e0bd;
+    --focus: #8db8f0;
+    --ok: #7fd18f;
+    --warn: #f0c060;
+    --fail: #f3a59d;
+    --danger: #f3a59d;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-weight: 500;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+}
+
+h1,
+h2 {
+  margin: 0 0 12px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+h2 {
+  font-size: 1.125rem;
+}
+
+p {
+  margin: 0 0 12px;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* --- top bar --- */
+
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 10px var(--space);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+}
+
+.brand {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.125rem;
+  text-decoration: none;
+}
+
+.menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+
+.menu a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+
+.menu a:hover {
+  color: var(--text);
+}
+
+.menu a[aria-current="page"] {
+  color: var(--text);
+  background: var(--bg);
+  font-weight: 600;
+}
+
+.logout {
+  margin: 0 0 0 auto;
+}
+
+/* --- layout --- */
+
+.page {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 24px var(--space) 48px;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+  gap: 20px;
+  align-items: start;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card.narrow {
+  max-width: 420px;
+  margin: 8vh auto 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* --- status and preview --- */
+
+.status-word {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.status-headline {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+/* --- messages --- */
+
+.alert,
+.notice {
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.alert {
+  background: var(--alert-bg);
+  color: var(--alert-text);
+}
+
+.alert ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.alert p:last-child {
+  margin-bottom: 0;
+}
+
+.notice {
+  background: var(--notice-bg);
+  color: var(--notice-text);
+  margin-bottom: 20px;
+}
+
+/* --- forms --- */
+
+label {
+  font-weight: 600;
+}
+
+input[type="password"],
+input[type="text"],
+input[type="url"],
+input[type="number"],
+input[type="time"],
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.stack button {
+  margin-top: 8px;
+}
+
+/* a link that looks like a button */
+.button {
+  display: inline-block;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  line-height: 1.5;
+}
+
+button.button-quiet,
+.button.button-quiet {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border);
+  padding: 6px 12px;
+}
+
+button.button-quiet:hover,
+.button.button-quiet:hover {
+  color: var(--text);
+}
+
+button.button-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--border);
+  padding: 6px 12px;
+}
+
+button.button-danger:hover {
+  border-color: var(--danger);
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 20px;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.field legend {
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.help {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.field-error {
+  color: var(--alert-text);
+  background: var(--alert-bg);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.choice,
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.choice {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.choice input,
+.check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- calendars and tasks --- */
+
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+.page-head h1 {
+  margin: 0;
+}
+
+.intro {
+  max-width: 60ch;
+}
+
+.back {
+  margin-bottom: 12px;
+}
+
+.form-card {
+  max-width: 640px;
+}
+
+.sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card + .form-card {
+  margin-top: 16px;
+}
+
+.source-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+/* marker and name stay together; the badge drops below a long name */
+.source-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.source-head h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.badge {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 10px;
+  color: var(--text);
+}
+
+.badge-quiet {
+  color: var(--muted);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 16px;
+  margin: 0 0 14px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.mask {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.actions form {
+  margin: 0;
+}
+
+.actions button,
+.actions .button {
+  padding: 6px 12px;
+}
+
+/* the door's markers (e-ink has no color): solid, striped, outline */
+.marker {
+  display: inline-block;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 3px solid var(--text);
+}
+
+.marker-solid {
+  background: var(--text);
+}
+
+.marker-striped {
+  background: repeating-linear-gradient(135deg, var(--text) 0 3px, transparent 3px 6px);
+}
+
+.marker-outline {
+  background: transparent;
+}
+
+/* link test results */
+.test-result {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.result-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.result-line {
+  position: relative;
+  padding-left: 20px;
+  margin: 0;
+}
+
+.result-line::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0.45em;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.result-ok::before {
+  background: var(--ok);
+}
+
+.result-warn::before {
+  background: var(--warn);
+}
+
+.result-fail::before {
+  background: var(--fail);
+}
+
+.result-event {
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
+.result-event .when {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  margin-right: 6px;
+}
+
+/* --- home --- */
+
+.banner {
+  margin-bottom: 20px;
+}
+
+.banner p:last-child {
+  margin-bottom: 0;
+}
+
+.banner .button {
+  margin-top: 4px;
+}
+
+.restore {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.restore .help {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.stack-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.status .alert {
+  margin-bottom: 12px;
+}
+
+.update {
+  margin: 0;
+}
+
+.copy-field {
+  margin-bottom: 0;
+}
+
+.copy-field .label {
+  font-weight: 600;
+}
+
+.copy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.copy-value {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+.copy-row button {
+  flex: none;
+}
+
+.preview-frame {
+  min-height: 1px;
+}
+
+/* --- screen and account --- */
+
+select {
+  appearance: auto;
+}
+
+input[readonly] {
+  color: var(--muted);
+}
+
+.field-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 16px;
+}
+
+.field-pair .field {
+  margin-bottom: 6px;
+}
+
+.field-pair-help {
+  margin: 0 0 20px;
+}
+
+.generated {
+  border-color: var(--accent);
+}
+
+.account-hint {
+  margin-top: 16px;
+}
+
+/* --- small screens: one column --- */
+
+@media (max-width: 640px) {
+  .menu {
+    order: 3;
+    flex-basis: 100%;
+    margin: 0 -10px;
+  }
+
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page {
+    padding-top: 16px;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .card.narrow {
+    margin-top: 16px;
+  }
+
+  .status-word {
+    font-size: 1.75rem;
+  }
+
+  .facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .facts dd {
+    margin-bottom: 6px;
+  }
+}
+
+/* Home: the Kindle files download, above the address to copy by hand */
+.kindle-download {
+  margin: 0 0 24px;
+}
+
+.kindle-download .help {
+  margin: 8px 0 0;
+}
+
+/* Step-by-step help (a <details> block): quiet when closed, readable when open */
+.howto {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 0 0 20px;
+  padding: 0 16px;
+}
+
+.howto summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 12px 0;
+}
+
+.howto[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.howto-body {
+  padding: 4px 0 14px;
+}
+
+.howto h3 {
+  font-size: 0.95rem;
+  margin: 14px 0 6px;
+}
+
+.howto p {
+  margin: 8px 0 0;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.steps li {
+  margin: 6px 0;
+}
+
+/* Commands to type on the Kindle (KPM), one per line */
+.commands {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0 0;
+  overflow-x: auto;
+  white-space: pre;
+}

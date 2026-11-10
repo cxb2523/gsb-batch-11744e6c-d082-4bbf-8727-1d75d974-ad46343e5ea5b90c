@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ t("admin.error_title", code=code) }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <p class="muted">{{ t("admin.error_title", code=code) }}</p>
+  <h1>{{ message }}</h1>
+  {% if code == 401 %}
+  <p><a href="/login">{{ t("admin.login_link") }}</a></p>
+  {% else %}
+  <p><a href="/">{{ t("admin.back_home") }}</a></p>
+  {% endif %}
+</section>
+{% endblock %}

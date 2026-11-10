@@ -1,0 +1,3 @@
+# Besides the dependencies in pyproject.toml, which deploy/requirements.txt is compiled from:
+# the build backend, since install.sh builds inkdoor without fetching anything unpinned
+setuptools>=68

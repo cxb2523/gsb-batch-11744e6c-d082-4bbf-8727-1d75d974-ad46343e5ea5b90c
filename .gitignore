@@ -1,0 +1,24 @@
+# Personal config: contains the secret calendar links
+config.toml
+config.toml.*
+admin-password
+
+# Rendered images
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log written on the Kindle
+kindle/inkdoor/log.txt

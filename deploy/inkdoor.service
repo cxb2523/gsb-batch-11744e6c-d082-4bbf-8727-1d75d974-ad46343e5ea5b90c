@@ -1,0 +1,48 @@
+# systemd unit for "inkdoor serve". deploy/install.sh copies it to /etc/systemd/system/.
+[Unit]
+Description=inkdoor door sign server
+Documentation=https://github.com/frkey/inkdoor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=inkdoor
+Group=inkdoor
+ExecStart=/opt/inkdoor/.venv/bin/inkdoor --config /etc/inkdoor/config.toml --output /var/lib/inkdoor serve
+StateDirectory=inkdoor
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=30
+
+# The server fetches calendars, writes the PNG to /var/lib/inkdoor and, from the web admin,
+# writes its config and password to /etc/inkdoor. Every file it creates is private (UMask).
+# In a Proxmox LXC container this sandbox needs the "nesting" feature (on by default).
+NoNewPrivileges=true
+# The one privilege kept: listening on a port below 1024, e.g. port = 80
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+UMask=0077
+ProtectSystem=strict
+ReadWritePaths=/etc/inkdoor
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

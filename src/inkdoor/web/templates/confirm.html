@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{{ question }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ question }}</h1>
+  <div class="actions">
+    <form method="post" action="{{ action }}">
+      {{ m.form_fields(digest) }}
+      <input type="hidden" name="confirmed" value="1">
+      <button type="submit" class="button-danger">{{ label }}</button>
+    </form>
+    <a class="button button-quiet" href="{{ back }}">{{ t("admin.cancel") }}</a>
+  </div>
+</section>
+{% endblock %}

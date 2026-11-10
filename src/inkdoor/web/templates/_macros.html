@@ -1,0 +1,117 @@
+{# Shared pieces of the admin forms. Import with: {% import "_macros.html" as m with context %} #}
+
+{% macro form_fields(digest) -%}
+{{ csrf_field() }}
+<input type="hidden" name="digest" value="{{ digest }}">
+{%- endmacro %}
+
+{% macro field_error(name, errors) -%}
+{% if errors.get(name) %}<p class="field-error" id="{{ name }}-error">{{ errors[name] }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro text_field(name, label, value, errors, help=None, maxlength=None, required=False,
+                    placeholder=None, type="text", inputmode=None, min=None, max=None) -%}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ value }}"
+         {%- if maxlength %} maxlength="{{ maxlength }}"{% endif %}
+         {%- if required %} required{% endif %}
+         {%- if placeholder %} placeholder="{{ placeholder }}"{% endif %}
+         {%- if inputmode %} inputmode="{{ inputmode }}"{% endif %}
+         {%- if min is not none %} min="{{ min }}"{% endif %}
+         {%- if max is not none %} max="{{ max }}"{% endif %}
+         {%- if errors.get(name) %} aria-invalid="true"{% endif %}
+         {%- if help or errors.get(name) %} aria-describedby="
+         {%- if help %}{{ name }}-help{% endif %}{% if help and errors.get(name) %} {% endif %}
+         {%- if errors.get(name) %}{{ name }}-error{% endif %}"{% endif %}>
+  {% if help %}<p class="help" id="{{ name }}-help">{{ help }}</p>{% endif %}
+  {{ field_error(name, errors) }}
+</div>
+{%- endmacro %}
+
+{% macro link_field(errors, link, required, help, repaste) -%}
+<div class="field">
+  <label for="url">{{ t("admin.field_link") }}</label>
+  <input id="url" name="url" type="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+         inputmode="url"
+         {%- if link %} placeholder="{{ link }}"{% endif %}
+         {%- if required %} required{% endif %}
+         {%- if errors.get("url") %} aria-invalid="true" aria-describedby="url-help url-error"
+         {%- else %} aria-describedby="url-help"{% endif %}>
+  <p class="help" id="url-help">{{ help }}</p>
+  {{ field_error("url", errors) }}
+  {% if repaste %}<p class="field-error">{{ t("admin.error_link_repaste") }}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro action(path, digest, label, class=None, confirm=None, name=None, value=None) -%}
+<form method="post" action="{{ path }}"{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>
+  {{ form_fields(digest) }}
+  {% if name %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}
+  {# set to 1 by admin.js once the browser asked; without JavaScript the server asks instead #}
+  {% if confirm %}<input type="hidden" name="confirmed" value="">{% endif %}
+  <button type="submit"{% if class %} class="{{ class }}"{% endif %}>{{ label }}</button>
+</form>
+{%- endmacro %}
+
+{% macro test_form(path, digest, target) -%}
+<form method="post" action="{{ path }}" data-test-target="{{ target }}"
+      data-error="{{ t('admin.test_failed') }}">
+  {{ form_fields(digest) }}
+  <button type="submit" data-busy-label="{{ t('admin.testing') }}">{{ t("admin.test") }}</button>
+</form>
+{%- endmacro %}
+
+{% macro restore_form(digest) -%}
+<form method="post" action="/restore" class="restore"
+      data-confirm="{{ t('admin.confirm_restore') }}">
+  {{ form_fields(digest) }}
+  <button type="submit">{{ t("admin.restore") }}</button>
+  <p class="help">{{ t("admin.restore_help") }}</p>
+</form>
+{%- endmacro %}
+
+{% macro config_banners(problem, warning, restore=None) -%}
+{% if problem or warning %}
+<div class="alert" role="alert">
+  {% if problem %}
+  <p>{{ t("admin.config_unreadable", message=problem) }}</p>
+  {% else %}
+  <p>{{ t("admin.config_invalid", message=warning) }}</p>
+  {% endif %}
+  {% if restore %}{{ restore_form(restore) }}{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro copy_field(id, label, value, help=None) -%}
+{# a code block, not an input: it wraps, so a long address stays readable on a phone #}
+<div class="field copy-field">
+  <span class="label" id="{{ id }}-label">{{ label }}</span>
+  <div class="copy-row">
+    <code id="{{ id }}" class="copy-value" aria-labelledby="{{ id }}-label"
+          {%- if help %} aria-describedby="{{ id }}-help"{% endif %}>{{ value }}</code>
+    <button type="button" class="button-quiet" data-copy="{{ id }}"
+            data-copied-label="{{ t('admin.copied') }}" hidden>{{ t("admin.copy") }}</button>
+  </div>
+  {% if help %}<p class="help" id="{{ id }}-help">{{ help }}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{# Step-by-step help that stays out of the way: a <details> block, open when it is most needed #}
+{% macro howto(title, open=False) -%}
+<details class="howto"{% if open %} open{% endif %}>
+  <summary>{{ title }}</summary>
+  <div class="howto-body">
+    {{ caller() }}
+  </div>
+</details>
+{%- endmacro %}
+
+{# Numbered steps from a catalog list; **menu names** come out in bold, everything else escaped #}
+{% macro steps(key) -%}
+<ol class="steps">
+  {% for step in t.get(key) %}<li>{{ step | emphasis }}</li>{% endfor %}
+</ol>
+{%- endmacro %}
+
