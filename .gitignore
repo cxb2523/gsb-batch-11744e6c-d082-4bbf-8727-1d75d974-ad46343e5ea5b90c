@@ -1,0 +1,10 @@
+node_modules
+dist
+public
+.DS_Store
+.npmrc
+.claude
+docs/bench
+docs/pick-depth.md
+docs/stochastic-renderer.md
+/build

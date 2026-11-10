@@ -1,0 +1,88 @@
+/* eslint-disable no-unused-vars */
+interface Window {
+    // Handoff from the document's inline bootstrap to the module: createViewer's options minus
+    // the container and the settings. `settings` is a plain object when the embedder inlined
+    // one into the #sse-bootstrap block, and a promise of the fetched json otherwise.
+    sse: {
+        options: Omit<import('./src/options').CreateViewerOptions, 'container' | 'settings'>,
+        settings: object | Promise<object>
+    }
+
+    firstFrame?: () => void;
+
+    app?: import('playcanvas').AppBase;
+
+    scrubTo?: (time: number) => Promise<void>;
+
+    captureFrame?: (options?: { time?: number; width?: number; height?: number; supersample?: number }) => Promise<{ width: number; height: number; data: string }>;
+
+    animationDuration?: number;
+
+    getCameraState?: () => {
+        position: [number, number, number];
+        angles: [number, number, number];
+        distance: number;
+        fov: number;
+        mode: 'orbit' | 'anim' | 'fly' | 'walk';
+    };
+
+    setCameraState?: (snapshot: {
+        position: [number, number, number];
+        angles: [number, number, number];
+        distance: number;
+        fov: number;
+        mode: 'orbit' | 'anim' | 'fly' | 'walk';
+    }) => void;
+}
+
+declare module 'playcanvas/scripts/esm/xr/xr-controllers.mjs' {
+    const XrControllers: typeof pc.Script;
+    export { XrControllers };
+}
+
+declare module 'playcanvas/scripts/esm/xr/xr-navigation.mjs' {
+    const XrNavigation: typeof pc.Script;
+    export { XrNavigation };
+}
+
+declare module 'playcanvas/scripts/esm/parsers/spz-parser.mjs' {
+    class SpzParser {
+        constructor(app: pc.AppBase);
+        canParse(context: { ext: string }): boolean;
+        load(
+            url: string | { load: string; original: string },
+            callback: (err: string | null, resource?: unknown) => void,
+            asset?: pc.Asset
+        ): void;
+    }
+    export { SpzParser };
+}
+
+declare module 'playcanvas/scripts/esm/xr/xr-manipulation.mjs' {
+    class XrManipulation extends pc.Script {
+        target: pc.Entity | null;
+        scalePivot: 'feet' | 'hands';
+        reset(): void;
+    }
+    export { XrManipulation };
+}
+
+declare module '*.html' {
+    const content: string;
+    export default content;
+}
+
+declare module '*.css' {
+    const content: string;
+    export default content;
+}
+
+declare module '*.js' {
+    const content: string;
+    export default content;
+}
+
+declare module '*.wasm' {
+    const content: string;
+    export default content;
+}

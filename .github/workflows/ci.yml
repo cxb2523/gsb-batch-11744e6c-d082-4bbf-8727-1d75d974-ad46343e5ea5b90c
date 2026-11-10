@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Type Check
+        run: npm run type:check
+
+      - name: Build SuperSplat Viewer
+        run: npm run build
+
+      # `test:unit` rather than `test`: the build above already produced the dist/ and
+      # public/ artifacts the tests import, so skip rebuilding
+      - name: Run Tests
+        run: npm run test:unit
+
+      - name: Validate Package
+        run: npm run publint
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Check Formatting
+        run: npm run fmt
+
+      - name: Run ESLint
+        run: npm run lint

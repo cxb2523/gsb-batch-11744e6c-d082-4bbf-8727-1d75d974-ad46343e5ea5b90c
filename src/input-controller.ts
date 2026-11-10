@@ -1,0 +1,177 @@
+import { InputFrame } from 'playcanvas';
+
+import type { Collision } from './collision';
+import { InputModeTracker } from './input/app/input-mode-tracker';
+import { ModeShortcuts } from './input/app/mode-shortcuts';
+import { NavInteraction } from './input/app/nav-interaction';
+import { PointerLockManager } from './input/app/pointer-lock';
+import { GamepadDevice } from './input/devices/gamepad';
+import { KeyboardMouseDevice } from './input/devices/keyboard-mouse';
+import { TouchDevice } from './input/devices/touch';
+import { TrackpadDevice } from './input/devices/trackpad';
+import type { UpdateContext } from './input/shared';
+import type { ScenePicker } from './picker';
+import type { Global } from './types';
+
+/**
+ * Coordinator that wires together input devices (keyboard-mouse, touch,
+ * trackpad, gamepad) and app-level UX helpers (mode shortcuts, nav
+ * interaction, pointer lock, input-mode tracker), and exposes the
+ * resulting per-frame `InputFrame` for the camera manager to consume.
+ */
+class InputController {
+    moveSpeed = 4;
+
+    frame = new InputFrame({
+        move: [0, 0, 0],
+        rotate: [0, 0, 0]
+    });
+
+    private _global: Global;
+
+    private _trackpad = new TrackpadDevice();
+
+    private _keyboardMouse = new KeyboardMouseDevice();
+
+    private _touch = new TouchDevice();
+
+    private _gamepad = new GamepadDevice();
+
+    private _navInteraction: NavInteraction;
+
+    private _pointerLock = new PointerLockManager();
+
+    private _modeShortcuts = new ModeShortcuts();
+
+    private _inputModeTracker = new InputModeTracker();
+
+    private _canvas: HTMLCanvasElement;
+
+    private _canvasListeners: [string, EventListener][] = [];
+
+    private _moveInput = [0, 0];
+
+    private _clearMoveInput = () => this._moveInput.fill(0);
+
+    setMoveInput(x: number, z: number) {
+        const { state } = this._global;
+        if ((state.cameraMode === 'fly' || state.cameraMode === 'walk') && state.xrMode === null) {
+            this._moveInput[0] = x;
+            this._moveInput[1] = z;
+        }
+    }
+
+    set collision(value: Collision | null) {
+        this._navInteraction.collision = value;
+    }
+
+    get collision(): Collision | null {
+        return this._navInteraction.collision;
+    }
+
+    constructor(global: Global, picker: ScenePicker) {
+        this._global = global;
+        this._navInteraction = new NavInteraction(picker);
+
+        const { app, events } = global;
+        const canvas = app.graphicsDevice.canvas as HTMLCanvasElement;
+        this._canvas = canvas;
+
+        // Trackpad MUST attach before KeyboardMouseDevice so its wheel
+        // handler runs first; otherwise stopImmediatePropagation can't
+        // block KeyboardMouseSource from also accumulating the wheel delta.
+        this._trackpad.attach(canvas, global);
+        this._keyboardMouse.attach(canvas, global);
+        this._touch.attach(canvas, global);
+        this._gamepad.attach(canvas, global);
+
+        this._navInteraction.attach(canvas, global);
+        this._pointerLock.attach(canvas, global, this._keyboardMouse);
+        this._modeShortcuts.attach(global, this._pointerLock);
+        this._inputModeTracker.attach(global);
+
+        events.on('cameraMode:changed', this._clearMoveInput);
+        events.on('xrMode:changed', this._clearMoveInput);
+        window.addEventListener('blur', this._clearMoveInput);
+        document.addEventListener('visibilitychange', this._clearMoveInput);
+
+        // canvas-level signals: anything that interrupts an animation /
+        // closes the settings panel
+        const listen = (eventName: string, handler: EventListener) => {
+            canvas.addEventListener(eventName, handler);
+            this._canvasListeners.push([eventName, handler]);
+        };
+        ['wheel', 'pointerdown', 'contextmenu', 'keydown'].forEach((eventName) => {
+            listen(eventName, (event) => {
+                events.fire('inputEvent', 'interrupt', event);
+            });
+        });
+        listen('pointermove', (event) => {
+            events.fire('inputEvent', 'interact', event);
+        });
+    }
+
+    /** Detach every device and helper, and remove the canvas listeners added above. */
+    destroy() {
+        this._clearMoveInput();
+        this._global.events.off('cameraMode:changed', this._clearMoveInput);
+        this._global.events.off('xrMode:changed', this._clearMoveInput);
+        window.removeEventListener('blur', this._clearMoveInput);
+        document.removeEventListener('visibilitychange', this._clearMoveInput);
+        for (const [eventName, handler] of this._canvasListeners) {
+            this._canvas.removeEventListener(eventName, handler);
+        }
+        this._canvasListeners.length = 0;
+
+        this._inputModeTracker.detach();
+        this._modeShortcuts.detach();
+        this._pointerLock.detach();
+        this._navInteraction.detach();
+
+        this._gamepad.detach();
+        this._touch.detach();
+        this._keyboardMouse.detach();
+        this._trackpad.detach();
+    }
+
+    update(dt: number, distance: number) {
+        const { state } = this._global;
+        const cameraComponent = this._global.camera.camera!;
+
+        const isOrbit = state.cameraMode === 'orbit';
+        const isFly = state.cameraMode === 'fly';
+        const isWalk = state.cameraMode === 'walk';
+        const isFirstPerson = isFly || isWalk;
+
+        const ctx: UpdateContext = {
+            dt,
+            distance,
+            cameraComponent,
+            mode: state.cameraMode,
+            isOrbit,
+            isFly,
+            isWalk,
+            isFirstPerson,
+            gamingControls: state.gamingControls,
+            // Touch must update first so the count is current; the running
+            // count is also used by the keyboard-mouse pan flag.
+            touchCount: this._touch.touchCount
+        };
+
+        // order: touch first (so touchCount in ctx reflects this frame's
+        // count delta), then everyone else.
+        this._touch.update(ctx, this.frame);
+        ctx.touchCount = this._touch.touchCount;
+        this._keyboardMouse.update(ctx, this.frame);
+        this._trackpad.update(ctx, this.frame);
+        this._gamepad.update(ctx, this.frame);
+
+        if (isFirstPerson && (this._moveInput[0] !== 0 || this._moveInput[1] !== 0)) {
+            this._global.events.fire('navigateCancel');
+            const speed = this.moveSpeed * dt;
+            this.frame.deltas.move.append([this._moveInput[0] * speed, 0, this._moveInput[1] * speed]);
+        }
+    }
+}
+
+export { InputController };
