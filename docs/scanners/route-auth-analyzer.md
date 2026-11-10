@@ -1,0 +1,161 @@
+# Route Auth Analyzer
+
+**Type:** SAST | **Severity:** Medium–Critical | **Category:** Auth Weakness
+
+## What It Does
+
+Analyzes every API route and Server Action in your codebase for:
+
+1. **Missing Authentication** (High) — Checks if the route calls any authentication function (`getUser`, `getSession`, `auth()`, `verifyToken`, `requireAuth`, etc.). Routes without these calls are flagged as unprotected. Server Actions (`"use server"` files) with no auth call are flagged per exported function (High).
+
+2. **IDOR risk and missing ownership** (Critical / High) — For single-route files (Next.js `route.ts`, `pages/api`) that do check auth: a user-supplied id (`params.x`, `searchParams.get(`, `req.query.`) used with no ownership filter is Critical; Supabase operations with no ownership filter are High.
+
+3. **Missing Input Validation** (Medium) — Once per file: flagged when the file has a mutating method (POST/PUT/PATCH/DELETE), uses a user-supplied id or Supabase operations, and shows no zod/yup/joi-style validation.
+
+4. **Service role usage** (Medium) — Once per file: use of the Supabase `service_role` key, which bypasses Row Level Security.
+
+The analyzer is **framework-aware**:
+- **Next.js App Router**: Scans `app/api/**/route.ts` files, understands `GET`, `POST`, `PUT`, `PATCH`, `DELETE` exports
+- **Express**: Scans `app.get()`, `router.post()` patterns
+- **tRPC**: Checks if procedures use `protectedProcedure` vs `publicProcedure`
+
+### Routes it deliberately stays quiet about
+
+Some routes are meant to be open, and flagging them is noise. The exemption
+list is deliberately short and is about what a route **is**, not about what we
+found on it:
+
+- health and liveness probes (`/health`, `/ping`, `/status`, `/ready`,
+  `/livez`, `/readyz`)
+- API documentation (`/docs`, `/swagger`, `/openapi`) and the root path
+
+Every one is a name standardised outside your project, and matching is
+**exact** — `/health` is a liveness probe, `/api/health-records` is patient
+data, and a fragment match cannot tell them apart. App-specific names are kept
+out on purpose: a scanned app that happens to reuse one would have a real
+finding silently suppressed. For a route of your own that is public by design,
+suppress the finding by fingerprint (`--suppress`), which is visible and
+reversible where this list is neither.
+
+**Webhook receivers are not on it.** They do authenticate — by verifying the
+sender's signature, the sender having no session to present — so exempting
+them by path was the right idea checked the wrong way. A path is not evidence:
+an endpoint with "webhook" in its name may equally be one that *sends* them,
+which is an SSRF sink, and the test app's `/api/webhooks/test` is exactly that.
+Signature verification is now detected directly — `constructEvent`,
+`timingSafeEqual`, a `stripe-signature` / `x-hub-signature` / `svix-signature`
+header read — so a receiver that checks its signature counts as authenticated
+wherever it lives, and one that does not is reported.
+
+Not finding a guard is never itself grounds for staying quiet. A rule that
+exempted any GET route the mapper reported no auth on read that backwards —
+it is the exact condition a missing-auth finding exists to report — and
+because the Express mapper always answers true or false and never "unknown",
+no Express GET route could produce a missing-auth finding at all.
+
+### How a guard is recognised before the language server runs
+
+The Express mapper answers `has_auth_check` from the mount line, and a `True`
+suppresses the route's missing-auth finding outright — so it is matched
+narrowly: known guard names, on **word boundaries**, against the route's
+**arguments** only, with comments stripped.
+
+Each of those bounds exists because it was once missing. `checkAuth` matched
+inside `checkAuthorEmail`, and `authenticate` inside `authenticatedUsers` —
+the handler that *returns* Juice Shop's user list — so both routes were
+cleared. Scanning the whole line also meant `app.get('/api/authenticate',
+handler)` was guarded by its own URL.
+
+The list cannot name a project's own vocabulary (`isLoggedIn`, `ensureMember`)
+and is not meant to: it is the cheap answer for scans with no language server.
+What a guard actually *does* is decided by the auth-flow tracer, which
+resolves it and reads its body. A `False` here is only an absence of evidence
+— the route is still examined either way.
+
+### Auth checked inside the route's own handler
+
+A route often has no named guard on its mount line and checks auth in its
+body instead:
+
+```js
+router.get('/orders', (req, res) => {
+  const session = getServerSession(req)
+  if (!session) return res.status(401).end()
+  ...
+```
+
+The Express mapper answers "no guard" for that, since an anonymous function
+has no name to recognise — but "no known name applied here" is not "no auth",
+so the route's **own handler** is examined before the finding is raised.
+
+Its own, and not the file's: one `server.ts` shares its content with a hundred
+routes, and searching that would let a single guarded neighbour clear all of
+them.
+
+Two things must both be present. Looking up an identity is not authentication
+on its own — it is most of what an IDOR looks like:
+
+```js
+const user = getUser(req.params.id)   // an id from the caller
+res.json(user)                        // and nobody refused
+```
+
+Accepting that would suppress the finding for a route whose whole problem is
+that it never checks who is asking. A handler that authenticates also turns
+someone away, so a refusal — a 401, a 403, an auth error — is required
+alongside.
+
+## Why It Matters
+
+A single API route without authentication is often enough for a full data breach:
+
+- **Data theft** — unauthenticated read endpoints expose all data to anyone
+- **Data manipulation** — unauthenticated write endpoints let attackers create, modify, or delete records
+- **Privilege escalation** — admin endpoints without auth let any user perform admin actions
+
+This is especially common in "vibe coded" apps where developers add routes quickly and forget to add auth, or add auth to pages but not API routes.
+
+## Real-World Breaches
+
+**Optus Australia (2022)** — An unauthenticated API endpoint exposed personal records of 9.8 million customers including passport numbers and driver's licenses. No API key or auth token was required.
+
+**Peloton (2021)** — API endpoints lacked authentication, allowing anyone to query user account data (age, gender, city, weight) for any Peloton user without logging in.
+
+## What Vulnerable Code Looks Like
+
+```typescript
+// BAD: No auth check — anyone can list all users
+export async function GET() {
+  const users = await db.select().from(profiles)
+  return NextResponse.json(users)
+}
+
+// BAD: Auth on the page but not the API route
+// src/app/dashboard/page.tsx → has auth check
+// src/app/api/tasks/route.ts → no auth check (accessible directly)
+```
+
+## How to Fix
+
+```typescript
+// GOOD: Check authentication on every API route
+export async function GET(request: Request) {
+  const user = await getAuthUser(request)
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  // Only return this user's data
+  const tasks = await db.select().from(tasks).where(eq(tasks.userId, user.id))
+  return NextResponse.json(tasks)
+}
+
+// GOOD: Use middleware to protect all /api routes
+// middleware.ts
+export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith("/api")) {
+    const token = request.headers.get("Authorization")
+    if (!token) return new Response("Unauthorized", { status: 401 })
+  }
+}
+```

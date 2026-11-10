@@ -1,0 +1,1684 @@
+"""IDOR (Insecure Direct Object Reference) scanner.
+
+Tests discovered API endpoints for broken access control by probing with
+altered ID parameters. Detects cases where swapping an object ID in the
+URL or query string returns data belonging to a different user/resource
+without proper authorization checks.
+
+Also supports cross-user IDOR testing: given two authenticated sessions,
+verifies that User B cannot access User A's resources.
+"""
+
+import asyncio
+import json
+import logging
+import re
+from uuid import uuid4
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+import httpx
+
+from isitsecure.engine.auth.protocols import AuthSession
+from isitsecure.engine.constants import (
+    CrossUserIDORConfig,
+    DeepScanConfig,
+    IDORConfig,
+)
+from isitsecure.engine.enums import (
+    EndpointCategory,
+    IDORRiskLevel,
+    IDORTestType,
+)
+from isitsecure.engine.models import (
+    CrossUserIDORResult,
+    DeepFinding,
+    DiscoveredEndpoint,
+    FindingSource,
+    IDORProbeResult,
+    IDORTestResult,
+)
+from isitsecure.engine.shared.endpoint_prioritizer import PriorityDimension, rank
+from isitsecure.engine.shared.progress import emit
+from isitsecure.engine.shared.time_budget import TimeBudget
+from isitsecure.engine.shared.rate_limited_client import RateLimitedClient
+from isitsecure.engine.enums import FindingCategory, SeverityLevel
+from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
+
+
+def clear_cookie_jar(client: object) -> None:
+    """Drop cookies the shared client's jar accumulated from earlier responses.
+
+    The RateLimitedClient keeps ONE persistent httpx jar. When a scanner mixes
+    identities (owner / anonymous / attacker) on it, a Set-Cookie from the
+    owner's response would be replayed on the "anonymous" and attacker
+    requests, so call this before every request that must carry only its own
+    explicit credentials.
+    """
+    inner = getattr(client, "_client", None)
+    if isinstance(inner, httpx.AsyncClient):
+        inner.cookies.clear()
+
+
+def postgrest_rows_affected(status: int | None, body: str) -> bool:
+    """True when a PostgREST write (Prefer: return=representation) hit a row.
+
+    204 (what ``return=minimal`` yields for both "updated" and "RLS filtered
+    the row out") and an empty array prove nothing. A non-empty array/object
+    body proves the write reached a row.
+    """
+    if status not in (200, 201):
+        return False
+    text = re.sub(r"\s+", "", body or "")
+    return text.startswith("{") or (text.startswith("[") and text != "[]")
+
+
+class IDORScanner:
+    """Tests API endpoints for IDOR vulnerabilities.
+
+    Strategy:
+    1. Filter endpoints to those with ID-like parameters
+    2. For each endpoint, make a baseline request with the original ID
+    3. Swap the ID with test values and probe again
+    4. Compare responses: if different data is returned for a different ID,
+       the endpoint may lack proper authorization checks
+    5. Also test unauthenticated access to endpoints that should require auth
+    """
+
+    def __init__(self, probe_writes: bool = False) -> None:
+        # Set by the orchestrator in authenticated mode (AuthAware-style duck
+        # typing: the agent calls setattr on any scanner exposing this). Used
+        # ONLY for the mutation probes -- the read/swap probes stay anonymous
+        # on purpose (an unauthenticated read cannot confirm IDOR; #214).
+        self._auth_headers: dict[str, str] = {}
+        # The mutation probes (PUT/PATCH/DELETE with swapped ids) WRITE to and
+        # DELETE from the target, so they run only when the operator opts into
+        # writes with --probe-writes -- never as a side effect of an ordinary
+        # authenticated read scan against a live app.
+        self._probe_writes = probe_writes
+
+    async def scan(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> tuple[list[IDORTestResult], list[DeepFinding]]:
+        """Run IDOR tests on all endpoints with ID parameters.
+
+        Args:
+            endpoints: Discovered endpoints from EndpointDiscoveryScanner.
+
+        Returns:
+            Tuple of (IDOR test results, mutation IDOR DeepFindings).
+        """
+        testable = self._filter_testable_endpoints(endpoints)
+        logger.info(
+            "IDORScanner: %d of %d endpoints have ID params, testing up to %d",
+            len(testable),
+            len(endpoints),
+            IDORConfig.MAX_ENDPOINTS_TO_TEST,
+        )
+
+        testable = testable[: IDORConfig.MAX_ENDPOINTS_TO_TEST]
+        budget = TimeBudget()
+        results: list[IDORTestResult] = []
+        mutation_findings: list[DeepFinding] = []
+
+        # Read/swap probes run ANONYMOUS on purpose: an unauthenticated read
+        # cannot confirm IDOR (#214), so authing them would change what they
+        # test. Mutation probes are different -- the vulnerable write/delete is
+        # usually auth-gated (Juice Shop's feedback BOLA delete is 401 anon), so
+        # they run with the session when one is available.
+        async with RateLimitedClient(
+            max_concurrent=IDORConfig.MAX_CONCURRENT_PROBES,
+            delay_seconds=IDORConfig.PROBE_DELAY_SECONDS,
+            timeout_seconds=IDORConfig.HTTP_TIMEOUT_SECONDS,
+            user_agent=DeepScanConfig.USER_AGENT,
+        ) as client:
+            for endpoint in testable:
+                if budget.expired():
+                    emit("IDOR: out of time, returning what was found")
+                    break
+                emit(f"IDOR: testing {endpoint.url}")
+                result = await self._test_endpoint(client, endpoint)
+                results.append(result)
+
+        # Mutation IDOR: test PUT/PATCH/DELETE with swapped IDs, authenticated
+        # when a session is available (falls back to anonymous otherwise).
+        mutation_testable = self._filter_mutation_endpoints(endpoints)
+        if self._probe_writes and mutation_testable and not budget.expired():
+            async with RateLimitedClient(
+                max_concurrent=IDORConfig.MAX_CONCURRENT_PROBES,
+                delay_seconds=IDORConfig.PROBE_DELAY_SECONDS,
+                timeout_seconds=IDORConfig.HTTP_TIMEOUT_SECONDS,
+                user_agent=DeepScanConfig.USER_AGENT,
+                extra_headers=self._auth_headers or None,
+            ) as mclient:
+                for endpoint in mutation_testable[: IDORConfig.MAX_ENDPOINTS_TO_TEST]:
+                    if budget.expired():
+                        emit("IDOR: out of time during mutation tests")
+                        break
+                    emit(f"IDOR: mutation test {endpoint.method.value} {endpoint.url}")
+                    findings = await self._test_mutation_idor(
+                        mclient, endpoint
+                    )
+                    mutation_findings.extend(findings)
+
+        confirmed = sum(1 for r in results if r.risk_level == IDORRiskLevel.CONFIRMED)
+        likely = sum(1 for r in results if r.risk_level == IDORRiskLevel.LIKELY)
+        logger.info(
+            "IDORScanner complete: %d confirmed, %d likely, %d total tested, "
+            "%d mutation findings",
+            confirmed,
+            likely,
+            len(results),
+            len(mutation_findings),
+        )
+        return results, mutation_findings
+
+    def _filter_testable_endpoints(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DiscoveredEndpoint]:
+        """Filter to endpoints worth IDOR testing.
+
+        Prioritizes user-data and resource-CRUD endpoints.
+        Skips auth and public endpoints.
+        """
+        skip_categories = {EndpointCategory.AUTH, EndpointCategory.PUBLIC}
+        testable = [
+            ep for ep in endpoints
+            if ep.has_id_params and ep.category not in skip_categories
+        ]
+
+        # Also include endpoints without detected IDs but in high-value categories
+        high_value_categories = {
+            EndpointCategory.USER_DATA,
+            EndpointCategory.ADMIN,
+            EndpointCategory.PAYMENT,
+            EndpointCategory.FILE_ACCESS,
+        }
+        for ep in endpoints:
+            if (
+                ep.category in high_value_categories
+                and not ep.has_id_params
+                and ep not in testable
+            ):
+                testable.append(ep)
+
+        # Rank by IDOR likelihood (id params + sensitive category + auth'd)
+        # via the shared prioritizer.
+        return rank(testable, PriorityDimension.IDOR)
+
+    async def _test_endpoint(
+        self, client: RateLimitedClient, endpoint: DiscoveredEndpoint
+    ) -> IDORTestResult:
+        """Run all applicable IDOR tests on a single endpoint."""
+        probes: list[IDORProbeResult] = []
+
+        # Test 1: Unauthenticated access. Its response to the endpoint's own
+        # URL is the baseline every swap is compared against -- a swapped id
+        # only tells us anything if it returns data that DIFFERS from this.
+        unauthed_probe = await self._test_unauthed_access(client, endpoint)
+        original_body = ""
+        if unauthed_probe:
+            probes.append(unauthed_probe)
+            original_body = unauthed_probe.probed_body_preview
+
+        # Test 2: Path parameter swapping
+        if endpoint.has_path_params:
+            path_probes = await self._test_path_param_swap(
+                client, endpoint, original_body
+            )
+            probes.extend(path_probes)
+
+        # Test 3: Query parameter swapping
+        if endpoint.query_param_names:
+            query_probes = await self._test_query_param_swap(
+                client, endpoint, original_body
+            )
+            probes.extend(query_probes)
+
+        # Test 4: Sequential ID enumeration
+        seq_probes = await self._test_sequential_ids(
+            client, endpoint, original_body
+        )
+        probes.extend(seq_probes)
+
+        risk_level, confidence = self._assess_risk(probes)
+
+        return IDORTestResult(
+            endpoint=endpoint,
+            risk_level=risk_level,
+            probes=probes,
+            confidence=confidence,
+            summary=self._build_summary(endpoint, risk_level, probes),
+        )
+
+    async def _test_unauthed_access(
+        self, client: RateLimitedClient, endpoint: DiscoveredEndpoint
+    ) -> IDORProbeResult | None:
+        """Test if the endpoint returns data without any authentication."""
+        try:
+            response = await client.request(
+                endpoint.method.value, endpoint.url
+            )
+        except httpx.HTTPError as e:
+            return IDORProbeResult(
+                original_url=endpoint.url,
+                probed_url=endpoint.url,
+                test_type=IDORTestType.UNAUTHED_ACCESS,
+                error=str(e),
+            )
+
+        data_returned = self._response_has_data(response)
+
+        return IDORProbeResult(
+            original_url=endpoint.url,
+            probed_url=endpoint.url,
+            test_type=IDORTestType.UNAUTHED_ACCESS,
+            probed_status=response.status_code,
+            probed_body_preview=response.text[: IDORConfig.MAX_RESPONSE_BODY_LOG],
+            data_returned=data_returned,
+        )
+
+    async def _test_path_param_swap(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        original_body: str = "",
+    ) -> list[IDORProbeResult]:
+        """Swap path parameter IDs with test values."""
+        probes: list[IDORProbeResult] = []
+        parsed = urlparse(endpoint.url)
+        segments = parsed.path.split("/")
+
+        for i, segment in enumerate(segments):
+            if not segment:
+                continue
+
+            test_ids = self._get_test_ids_for_value(segment)
+            if not test_ids:
+                continue
+
+            for test_id in test_ids[: IDORConfig.MAX_IDOR_PROBES_PER_ENDPOINT]:
+                modified_segments = list(segments)
+                modified_segments[i] = test_id
+                modified_path = "/".join(modified_segments)
+                modified_url = urlunparse(
+                    parsed._replace(path=modified_path)
+                )
+
+                probe = await self._probe_and_compare(
+                    client,
+                    endpoint,
+                    modified_url,
+                    IDORTestType.PATH_PARAM_SWAP,
+                    original_body,
+                )
+                if probe:
+                    probes.append(probe)
+
+
+        return probes
+
+    async def _test_query_param_swap(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        original_body: str = "",
+    ) -> list[IDORProbeResult]:
+        """Swap query parameter IDs with test values."""
+        probes: list[IDORProbeResult] = []
+        parsed = urlparse(endpoint.url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+        for param_name in endpoint.query_param_names:
+            original_values = query_params.get(param_name, [""])
+            if not original_values:
+                continue
+
+            original_value = original_values[0]
+            test_ids = self._get_test_ids_for_value(original_value)
+
+            for test_id in test_ids[: IDORConfig.MAX_IDOR_PROBES_PER_ENDPOINT]:
+                modified_params = dict(query_params)
+                modified_params[param_name] = [test_id]
+                modified_query = urlencode(modified_params, doseq=True)
+                modified_url = urlunparse(
+                    parsed._replace(query=modified_query)
+                )
+
+                probe = await self._probe_and_compare(
+                    client,
+                    endpoint,
+                    modified_url,
+                    IDORTestType.QUERY_PARAM_SWAP,
+                    original_body,
+                )
+                if probe:
+                    probes.append(probe)
+
+
+        return probes
+
+    async def _test_sequential_ids(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        original_body: str = "",
+    ) -> list[IDORProbeResult]:
+        """Try sequential numeric IDs on endpoints with numeric path segments."""
+        probes: list[IDORProbeResult] = []
+        parsed = urlparse(endpoint.url)
+        segments = parsed.path.split("/")
+
+        for i, segment in enumerate(segments):
+            if not segment:
+                continue
+
+            if not re.fullmatch(IDORConfig.NUMERIC_ID_PATTERN, segment):
+                continue
+
+            original_id = int(segment)
+            test_ids = [
+                str(original_id + 1),
+                str(original_id - 1),
+                str(original_id + 100),
+            ]
+
+            for test_id in test_ids:
+                modified_segments = list(segments)
+                modified_segments[i] = test_id
+                modified_path = "/".join(modified_segments)
+                modified_url = urlunparse(
+                    parsed._replace(path=modified_path)
+                )
+
+                probe = await self._probe_and_compare(
+                    client,
+                    endpoint,
+                    modified_url,
+                    IDORTestType.SEQUENTIAL_ID_ENUM,
+                    original_body,
+                )
+                if probe:
+                    probes.append(probe)
+
+
+        return probes
+
+    async def _probe_and_compare(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        modified_url: str,
+        test_type: IDORTestType,
+        original_body: str = "",
+    ) -> IDORProbeResult | None:
+        """Request the swapped-id URL and compare it to the original response.
+
+        ``response_differs`` used to be set to ``data_returned`` -- the method
+        never actually compared anything, so an endpoint that ignores the id
+        and returns the same payload for every value counted as a swap that
+        "differs". It now means what it says: the swapped id returned data AND
+        that data is genuinely different from the original id's response. An
+        identical response means the id is not a real object reference.
+        """
+        try:
+            response = await client.request(
+                endpoint.method.value, modified_url
+            )
+        except httpx.HTTPError as e:
+            return IDORProbeResult(
+                original_url=endpoint.url,
+                probed_url=modified_url,
+                test_type=test_type,
+                error=str(e),
+            )
+
+        data_returned = self._response_has_data(response)
+        swapped_body = response.text[: IDORConfig.MAX_RESPONSE_BODY_LOG]
+        differs = data_returned and _bodies_differ(original_body, swapped_body)
+
+        return IDORProbeResult(
+            original_url=endpoint.url,
+            probed_url=modified_url,
+            test_type=test_type,
+            probed_status=response.status_code,
+            original_body_preview=original_body,
+            probed_body_preview=swapped_body,
+            data_returned=data_returned,
+            response_differs=differs,
+        )
+
+    # --- Helpers ---
+
+    def _get_test_ids_for_value(self, value: str) -> list[str]:
+        """Determine appropriate test IDs based on the format of the value."""
+        if re.fullmatch(IDORConfig.UUID_PATTERN, value):
+            return [IDORConfig.UUID_TEST_ID]
+
+        if re.fullmatch(IDORConfig.NUMERIC_ID_PATTERN, value):
+            return IDORConfig.NUMERIC_TEST_IDS
+
+        if re.fullmatch(IDORConfig.SHORT_HASH_PATTERN, value):
+            return [IDORConfig.HASH_TEST_ID]
+
+        return []
+
+    def _response_has_data(self, response: httpx.Response) -> bool:
+        """Check if a response contains actual data (not an error page)."""
+        if response.status_code >= 400:
+            return False
+
+        body = response.text.strip()
+        if len(body) < IDORConfig.MIN_RESPONSE_SIZE_BYTES:
+            return False
+
+        content_type = response.headers.get("content-type", "").lower()
+
+        looks_json = "application/json" in content_type or body.startswith(
+            ("{", "[")
+        )
+        if looks_json:
+            # A 200 with a JSON body is not proof of leaked data. An endpoint
+            # can answer an unauthenticated request with an empty envelope --
+            # Juice Shop's /rest/user/whoami returns {"user":{}} -- which
+            # clears the byte-length gate but carries nothing, and was scored
+            # as an IDOR. Require the decoded body to hold at least one
+            # substantive value, judged by structure alone (any scalar counts;
+            # empty containers, null and blank strings do not) so no envelope
+            # key name has to be guessed.
+            return _json_has_substantive_content(body)
+
+        # HTML responses are likely error/redirect pages, not data
+        if "text/html" in content_type:
+            return False
+
+        return False
+
+    def _assess_risk(
+        self, probes: list[IDORProbeResult]
+    ) -> tuple[IDORRiskLevel, float]:
+        """Assess overall IDOR risk from probe results."""
+        if not probes:
+            return IDORRiskLevel.SAFE, 0.0
+
+        data_probes = [p for p in probes if p.data_returned and not p.error]
+
+        if not data_probes:
+            return IDORRiskLevel.SAFE, 0.0
+
+        # An UNAUTHENTICATED probe cannot tell a genuine IDOR from data that is
+        # public by design. Juice Shop's /api/Products/{id} (public catalogue)
+        # and /api/Recycles/{id} (a user's private orders) both return a
+        # different record per id with no auth, and only ownership intent --
+        # invisible from here -- separates them. So no unauthenticated read is
+        # CONFIRMED or LIKELY: that verdict belongs to the cross-user path
+        # (scan_cross_user*), which proves user B can read user A's object.
+        #
+        # The strongest thing this path can say is that the endpoint serves
+        # enumerable, id-keyed data (swapping the id returns *different* real
+        # data, so the id is a genuine object reference) -- a lead worth a
+        # manual look, POSSIBLE, not an emitted finding. Everything else,
+        # including an id that is ignored (swaps do not differ) or a plain
+        # public read, is SAFE for IDOR purposes.
+        enumerable = [
+            p for p in data_probes
+            if p.response_differs and p.test_type in (
+                IDORTestType.PATH_PARAM_SWAP,
+                IDORTestType.QUERY_PARAM_SWAP,
+                IDORTestType.SEQUENTIAL_ID_ENUM,
+            )
+        ]
+
+        if enumerable:
+            return (
+                IDORRiskLevel.POSSIBLE,
+                IDORConfig.CONFIDENCE_POSSIBLE_IDOR,
+            )
+
+        return IDORRiskLevel.SAFE, 0.0
+
+    def _build_summary(
+        self,
+        endpoint: DiscoveredEndpoint,
+        risk_level: IDORRiskLevel,
+        probes: list[IDORProbeResult],
+    ) -> str:
+        """Build a human-readable summary of the IDOR test result."""
+        data_probes = [p for p in probes if p.data_returned]
+        error_probes = [p for p in probes if p.error]
+
+        parts = [
+            f"{endpoint.method.value} {endpoint.url}",
+            f"Risk: {risk_level.value}",
+            f"Probes: {len(probes)} total, {len(data_probes)} returned data, "
+            f"{len(error_probes)} errors",
+        ]
+
+        if data_probes:
+            test_types = {p.test_type.value for p in data_probes}
+            parts.append(f"Vulnerable test types: {', '.join(test_types)}")
+
+        return " | ".join(parts)
+
+    # ------------------------------------------------------------------
+    # Mutation IDOR testing (PUT/PATCH/DELETE with swapped IDs)
+    # ------------------------------------------------------------------
+
+    def _filter_mutation_endpoints(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DiscoveredEndpoint]:
+        """Filter to endpoints with mutation HTTP methods and ID parameters.
+
+        Only endpoints whose method is POST, PUT, PATCH, or DELETE and that
+        have ID-like parameters are worth testing for mutation IDOR.
+        """
+        skip_categories = {EndpointCategory.AUTH, EndpointCategory.PUBLIC}
+        return [
+            ep for ep in endpoints
+            if (
+                ep.method.value in IDORConfig.MUTATION_METHODS
+                and ep.has_id_params
+                and ep.category not in skip_categories
+            )
+        ]
+
+    async def _test_mutation_idor(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+    ) -> list[DeepFinding]:
+        """Test whether swapping IDs on mutation endpoints allows unauthorized changes.
+
+        For PUT/PATCH: sends a minimal safe body with a swapped resource ID.
+        For DELETE: sends OPTIONS first to verify DELETE is allowed, then
+        attempts DELETE with a swapped resource ID.
+
+        Returns:
+            List of DeepFinding for any confirmed mutation IDOR vulnerabilities.
+        """
+        findings: list[DeepFinding] = []
+        parsed = urlparse(endpoint.url)
+        segments = parsed.path.split("/")
+
+        for i, segment in enumerate(segments):
+            if not segment:
+                continue
+
+            test_ids = self._get_test_ids_for_value(segment)
+            if not test_ids:
+                continue
+
+            for test_id in test_ids[: IDORConfig.MAX_MUTATION_PROBES_PER_ENDPOINT]:
+                # Swapping the id to its own value is not a cross-object test --
+                # it writes back to the same resource and would report a
+                # "swapped ID" finding where no swap happened. Skip it.
+                if test_id == segment:
+                    continue
+
+                modified_segments = list(segments)
+                modified_segments[i] = test_id
+                modified_path = "/".join(modified_segments)
+                modified_url = urlunparse(
+                    parsed._replace(path=modified_path)
+                )
+
+                # One finding per (endpoint, kind) is enough: once a swapped id
+                # is accepted, testing more ids just re-proves it and multiplies
+                # the destructive read-back writes against the target.
+                write_finding = None
+                for method in IDORConfig.MUTATION_WRITE_METHODS:
+                    write_finding = await self._probe_mutation_write(
+                        client, endpoint, modified_url, method
+                    )
+                    if write_finding:
+                        findings.append(write_finding)
+                        break
+
+                delete_finding = await self._probe_mutation_delete(
+                    client, endpoint, modified_url
+                )
+                if delete_finding:
+                    findings.append(delete_finding)
+
+                if write_finding or delete_finding:
+                    break  # endpoint demonstrated; stop cycling test ids
+
+        return findings
+
+    async def _probe_mutation_write(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        modified_url: str,
+        method: str,
+    ) -> DeepFinding | None:
+        """Send a PUT/PATCH with safe body to a swapped-ID URL.
+
+        Returns a DeepFinding if the server accepts the write (2xx status).
+        """
+        headers = {
+            "Content-Type": IDORConfig.MUTATION_CONTENT_TYPE,
+            "Prefer": IDORConfig.MUTATION_PREFER_HEADER,
+        }
+        try:
+            response = await client.request(
+                method,
+                modified_url,
+                content=IDORConfig.MUTATION_SAFE_BODY,
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            return None
+
+        if response.status_code not in (200, 201, 204):
+            return None
+        if _is_spa_shell(response):
+            # A code-split front end serves index.html (200 text/html) for
+            # every unmatched path, so a PUT/PATCH to a route that does not
+            # exist reads as a successful write. That is not a mutation.
+            return None
+
+        # A 2xx proves the write was ACCEPTED, not that the resource changed
+        # (the safe probe body is an unknown field the ORM drops). Read back:
+        # write a canary into an existing field and confirm it sticks, then
+        # restore. Confirmed => CRITICAL; merely accepted => a downgraded lead.
+        verdict, detail = await self._verify_mutation_persists(
+            client, modified_url, method, response.text
+        )
+
+        if verdict == "persisted":
+            severity = SeverityLevel.CRITICAL
+            confidence = IDORConfig.CONFIDENCE_MUTATION_WRITE_VERIFIED
+            title = IDORConfig.TITLE_MUTATION_WRITE_VERIFIED
+            description = IDORConfig.DESC_MUTATION_WRITE_VERIFIED.format(
+                method=method, url=modified_url, field=detail,
+            )
+        else:
+            severity = SeverityLevel.HIGH
+            confidence = IDORConfig.CONFIDENCE_MUTATION_WRITE_UNVERIFIED
+            title = IDORConfig.TITLE_MUTATION_WRITE_UNVERIFIED
+            description = IDORConfig.DESC_MUTATION_WRITE_UNVERIFIED.format(
+                method=method, url=modified_url,
+                status=response.status_code, reason=detail,
+            )
+
+        return DeepFinding(
+            source=FindingSource.DAST_URL,
+            category=FindingCategory.IDOR,
+            severity=severity,
+            title=title,
+            description=description,
+            technical_detail=(
+                f"Original endpoint: {endpoint.url} | "
+                f"Swapped URL: {modified_url} | "
+                f"Method: {method} | "
+                f"Status: {response.status_code} | "
+                f"Read-back: {verdict} ({detail})"
+            ),
+            evidence=response.text[: IDORConfig.MAX_EVIDENCE_LENGTH],
+            confidence=confidence,
+            scanner_name="idor_scanner",
+            endpoint_url=endpoint.url,
+            http_method=method,
+            request_payload=IDORConfig.MUTATION_SAFE_BODY,
+            response_preview=response.text[: IDORConfig.MAX_RESPONSE_BODY_LOG],
+        )
+
+    async def _verify_mutation_persists(
+        self,
+        client: RateLimitedClient,
+        url: str,
+        method: str,
+        initial_body: str = "",
+    ) -> tuple[str, str]:
+        """Confirm whether an accepted write actually changed the resource.
+
+        Returns (verdict, detail) where verdict is:
+          "persisted" — a canary written into an existing field was echoed back
+                        (by the write response or a re-read), then restored.
+          "no_effect" — a write demonstrably left the resource unchanged.
+          "unknown"   — could not verify (no JSON, no safe field, request error).
+
+        The object's fields come from a GET when it is readable, and otherwise
+        from the initial write's own response body -- so an endpoint whose READ
+        is auth-gated but whose WRITE is open (the resource is returned by the
+        PUT itself) is still verified, rather than downgraded for lack of a GET.
+        Persistence is confirmed by the canary being echoed in the write
+        response OR a follow-up read; the original value is always restored.
+        """
+        headers = {
+            "Content-Type": IDORConfig.MUTATION_CONTENT_TYPE,
+            "Prefer": IDORConfig.MUTATION_PREFER_HEADER,
+        }
+        # Learn the object from a GET if we can read it, else from the write
+        # response we already have (a write-open, read-gated endpoint).
+        obj = None
+        try:
+            base = await client.request("GET", url)
+            if base.status_code < 400 and not _is_spa_shell(base):
+                obj = _mutation_data_object(base.text)
+        except httpx.HTTPError:
+            obj = None
+        readable = obj is not None
+        if obj is None:
+            obj = _mutation_data_object(initial_body)
+        if obj is None:
+            return "unknown", "no readable resource object to verify against"
+
+        field, original = _pick_writable_field(obj)
+        if field is None:
+            if readable:
+                return await self._verify_by_noop(
+                    client, url, method, json.dumps({"data": obj}), headers
+                )
+            return "unknown", "no safe field to canary, read auth-gated"
+
+        canary = IDORConfig.MUTATION_CANARY_PREFIX + uuid4().hex[:8]
+        persisted = False
+        try:
+            write = await client.request(
+                method, url, content=json.dumps({field: canary}), headers=headers
+            )
+            # The write's own response echoing the canary is proof enough; only
+            # re-read when it does not (some servers return minimal responses).
+            write_obj = _mutation_data_object(write.text)
+            persisted = write_obj is not None and str(write_obj.get(field)) == canary
+            if not persisted and readable:
+                after = await client.request("GET", url)
+                after_obj = _mutation_data_object(after.text)
+                persisted = (
+                    after_obj is not None and str(after_obj.get(field)) == canary
+                )
+        except httpx.HTTPError as e:
+            return "unknown", f"canary write failed: {e}"
+        finally:
+            try:
+                await client.request(
+                    method, url,
+                    content=json.dumps({field: original}), headers=headers,
+                )
+            except httpx.HTTPError:
+                logger.warning(
+                    "IDOR read-back: could not restore '%s' at %s", field, url
+                )
+
+        if persisted:
+            return "persisted", field
+        return "no_effect", f"canary write to '{field}' did not persist"
+
+    async def _verify_by_noop(
+        self,
+        client: RateLimitedClient,
+        url: str,
+        method: str,
+        before_text: str,
+        headers: dict[str, str],
+    ) -> tuple[str, str]:
+        """Non-destructive fallback: no writable field, so only re-send the
+        no-op body and see whether the resource changed at all."""
+        try:
+            await client.request(
+                method, url,
+                content=IDORConfig.MUTATION_SAFE_BODY, headers=headers,
+            )
+            after = await client.request("GET", url)
+        except httpx.HTTPError as e:
+            return "unknown", f"no-op verify failed: {e}"
+        if _mutation_bodies_differ(before_text, after.text):
+            return "unknown", "response changed but no safe field to confirm"
+        return "no_effect", "no-op write produced no observable change"
+
+    async def _probe_mutation_delete(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        modified_url: str,
+    ) -> DeepFinding | None:
+        """Check if DELETE is allowed via OPTIONS, then attempt DELETE with swapped ID.
+
+        Returns a DeepFinding if the server accepts the deletion (2xx status).
+        """
+        # Pre-flight: check if DELETE is allowed
+        try:
+            options_response = await client.request("OPTIONS", modified_url)
+            allow_header = options_response.headers.get("allow", "").upper()
+            access_control = options_response.headers.get(
+                "access-control-allow-methods", ""
+            ).upper()
+            allowed_methods = allow_header + "," + access_control
+            if IDORConfig.MUTATION_DELETE_METHOD not in allowed_methods:
+                return None
+        except httpx.HTTPError:
+            # If OPTIONS fails, still try DELETE — some servers don't support OPTIONS
+            pass
+
+        headers = {
+            "Prefer": IDORConfig.MUTATION_PREFER_HEADER,
+        }
+        try:
+            response = await client.request(
+                IDORConfig.MUTATION_DELETE_METHOD,
+                modified_url,
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            return None
+
+        if response.status_code not in (200, 202, 204):
+            return None
+        if _is_spa_shell(response):
+            # Same SPA-catch-all trap as the write probe: an index.html 200
+            # for a route with no DELETE handler is not a deletion.
+            return None
+
+        return DeepFinding(
+            source=FindingSource.DAST_URL,
+            category=FindingCategory.IDOR,
+            severity=SeverityLevel.CRITICAL,
+            title=IDORConfig.TITLE_MUTATION_DELETE_IDOR,
+            description=IDORConfig.DESC_MUTATION_DELETE_IDOR.format(
+                url=modified_url,
+                status=response.status_code,
+            ),
+            technical_detail=(
+                f"Original endpoint: {endpoint.url} | "
+                f"Swapped URL: {modified_url} | "
+                f"Method: DELETE | "
+                f"Status: {response.status_code}"
+            ),
+            evidence=response.text[: IDORConfig.MAX_EVIDENCE_LENGTH],
+            confidence=IDORConfig.CONFIDENCE_MUTATION_DELETE_IDOR,
+            scanner_name="idor_scanner",
+            endpoint_url=endpoint.url,
+            http_method=IDORConfig.MUTATION_DELETE_METHOD,
+            response_preview=response.text[: IDORConfig.MAX_RESPONSE_BODY_LOG],
+        )
+
+    # ------------------------------------------------------------------
+    # Cross-user IDOR testing (Phase A2)
+    # ------------------------------------------------------------------
+
+    async def scan_cross_user(
+        self,
+        user_a_session: AuthSession,
+        user_b_session: AuthSession,
+        user_a_resources: dict[str, list[str]],
+        supabase_url: str | None = None,
+        anon_key: str | None = None,
+        tables: list[str] | None = None,
+    ) -> list[CrossUserIDORResult]:
+        """Test cross-user access control.
+
+        For each resource User A owns:
+        1. Verify User A can access it (baseline)
+        2. Try accessing with User B's token -> IDOR if data returned
+        3. Try PATCH with User B's token (empty body) -> write IDOR
+        4. For Supabase tables: try SELECT * with User B -> RLS check
+
+        Args:
+            user_a_session: Authenticated session for the resource owner.
+            user_b_session: Authenticated session for the attacker.
+            user_a_resources: Resources owned by User A (table/path -> [ids]).
+            supabase_url: Optional Supabase project URL for direct REST testing.
+            anon_key: Optional Supabase anon key.
+            tables: Optional list of Supabase table names to test RLS.
+
+        Returns:
+            List of CrossUserIDORResult for each tested resource.
+        """
+        results: list[CrossUserIDORResult] = []
+        resources_tested = 0
+
+        async with RateLimitedClient(
+            max_concurrent=DeepScanConfig.MAX_CONCURRENT_PROBES,
+            delay_seconds=CrossUserIDORConfig.PROBE_DELAY_SECONDS,
+            timeout_seconds=CrossUserIDORConfig.HTTP_TIMEOUT_SECONDS,
+            user_agent=DeepScanConfig.USER_AGENT,
+        ) as client:
+            # Test each owned resource
+            for table_or_path, resource_ids in user_a_resources.items():
+                if resources_tested >= CrossUserIDORConfig.MAX_RESOURCES_TO_TEST:
+                    break
+
+                for resource_id in resource_ids:
+                    if resources_tested >= CrossUserIDORConfig.MAX_RESOURCES_TO_TEST:
+                        break
+
+                    result = await self._test_cross_user_resource(
+                        client=client,
+                        table_or_path=table_or_path,
+                        resource_id=resource_id,
+                        owner_session=user_a_session,
+                        attacker_session=user_b_session,
+                        supabase_url=supabase_url,
+                        anon_key=anon_key,
+                    )
+                    results.append(result)
+                    resources_tested += 1
+
+            # Test full-table SELECT for RLS bypass
+            if supabase_url and anon_key and tables:
+                table_results = await self._test_full_table_access(
+                    client=client,
+                    tables=tables,
+                    owner_session=user_a_session,
+                    attacker_session=user_b_session,
+                    supabase_url=supabase_url,
+                    anon_key=anon_key,
+                    user_a_resources=user_a_resources,
+                )
+                results.extend(table_results)
+
+        confirmed = sum(
+            1 for r in results if r.risk_level == IDORRiskLevel.CONFIRMED
+        )
+        logger.info(
+            "Cross-user IDOR scan: %d resources tested, %d confirmed vulnerabilities",
+            resources_tested,
+            confirmed,
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Cross-user IDOR on a plain REST API (no Supabase / crawler needed)
+    # ------------------------------------------------------------------
+
+    async def scan_cross_user_api(
+        self,
+        session_a: AuthSession,
+        session_b: AuthSession,
+        endpoints: list[DiscoveredEndpoint],
+    ) -> list[CrossUserIDORResult]:
+        """Cross-user IDOR against a REST API using two logged-in users.
+
+        For each id-bearing endpoint, substitute user A's OWN identifier into
+        the path and check whether user B (a *different* authenticated user)
+        can reach A's resource that an anonymous request cannot.
+
+        The anonymous probe is the false-positive guard: an intentionally
+        public endpoint (reachable with no auth) is NOT reported as IDOR — only
+        a resource that requires auth yet accepts the *wrong* user's token is.
+
+        Resource ids are often NOT the user's identity (e.g. an opaque numeric
+        basket id). For those, user A's real ids are harvested by reading the
+        parent collection as A, then tested for cross-user access.
+        """
+        identity_ids = [v for v in (session_a.user_id, session_a.user_email) if v]
+
+        results: list[CrossUserIDORResult] = []
+        seen: set[str] = set()
+        harvest_cache: dict[tuple[str, str], list[str]] = {}
+        async with RateLimitedClient(
+            max_concurrent=IDORConfig.MAX_CONCURRENT_PROBES,
+            delay_seconds=CrossUserIDORConfig.PROBE_DELAY_SECONDS,
+            timeout_seconds=CrossUserIDORConfig.HTTP_TIMEOUT_SECONDS,
+            user_agent=DeepScanConfig.USER_AGENT,
+        ) as client:
+            for ep in endpoints:
+                method = ep.method.value
+                # GET = read IDOR; PUT/PATCH = write IDOR. DELETE is destructive
+                # and POST is creation, so neither is probed cross-user.
+                if method not in ("GET", "PUT", "PATCH") or not ep.has_path_params:
+                    continue
+                # Locate the id slot and its parent collection. Two shapes:
+                #  - a {templated} segment (OpenAPI discovery), or
+                #  - the concrete last segment of an id-variant URL like
+                #    /collection/1 (JS-bundle discovery emits these).
+                templated = re.search(r"\{([^}]+)\}", ep.url)
+                if templated:
+                    placeholder: str | None = templated.group(0)
+                    pname = templated.group(1)
+                    collection = ep.url.split(placeholder)[0].rstrip("/")
+                else:
+                    base, sep, last = ep.url.rpartition("/")
+                    if not sep or not last:
+                        continue
+                    placeholder = None
+                    pname = (ep.path_param_names or ["id"])[0]
+                    collection = base
+
+                # Harvest A's REAL ids from the parent collection. These are the
+                # ground truth for the slot's id shape (numeric, UUID, slug, ...)
+                # — unlike the synthetic "/1" a discovery id-variant carries, so
+                # UUID/alphanumeric ids are no longer dropped.
+                cache_key = (collection, pname)
+                if cache_key not in harvest_cache:
+                    harvest_cache[cache_key] = await self._harvest_ids(
+                        client, session_a, collection, pname)
+                harvested = harvest_cache[cache_key]
+
+                # Candidates: the harvested real ids always; A's string identity
+                # (email/user_id) only for an identity-named slot, so it's never
+                # injected into an opaque object-id slot. If the real ids are all
+                # numeric, keep only numeric candidates.
+                candidate_ids = list(harvested)
+                if self._param_is_identity(pname):
+                    candidate_ids = identity_ids + candidate_ids
+                if harvested and all(str(h).isdigit() for h in harvested):
+                    candidate_ids = [c for c in candidate_ids if str(c).isdigit()]
+                candidate_ids = list(dict.fromkeys(candidate_ids))[
+                    : CrossUserIDORConfig.MAX_IDS_PER_ENDPOINT]
+                for owner_id in candidate_ids:
+                    enc = quote(str(owner_id), safe="")
+                    url = (ep.url.replace(placeholder, enc) if placeholder
+                           else f"{collection}/{enc}")
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    res = await self._probe_cross_user_api(
+                        client, ep, url, owner_id, session_a, session_b)
+                    if res is not None:
+                        results.append(res)
+                    if len(results) >= CrossUserIDORConfig.MAX_RESOURCES_TO_TEST:
+                        return results
+        return results
+
+    # Path-param names that denote a *user identity* (so A's email/user_id is a
+    # sensible value) rather than an opaque object id.
+    _IDENTITY_PARAM_HINTS = (
+        "user", "username", "email", "owner", "account", "login",
+        "member", "profile", "handle",
+    )
+
+    @classmethod
+    def _param_is_identity(cls, param_name: str) -> bool:
+        p = (param_name or "").lower()
+        return any(hint in p for hint in cls._IDENTITY_PARAM_HINTS)
+
+    async def _harvest_ids(
+        self,
+        client: RateLimitedClient,
+        session_a: AuthSession,
+        collection_url: str,
+        param_name: str,
+    ) -> list[str]:
+        """Read A's parent collection to learn real resource ids for a param."""
+        if not collection_url:
+            return []
+        resp = await self._authed_request(
+            client, "GET", collection_url, session_a, None)
+        if resp is None or not (200 <= resp.status_code < 300):
+            return []
+        return self._extract_field_values(resp.text, param_name)
+
+    @staticmethod
+    def _extract_field_values(body: str, field: str) -> list[str]:
+        """Pull candidate id values from a JSON body.
+
+        Prefers values whose key matches the path parameter name (e.g. `id`,
+        `username`), falling back to generic id keys. Bounded and sanitized so a
+        huge or hostile response can't blow up the probe budget.
+        """
+        try:
+            data = json.loads(body)
+        except (ValueError, json.JSONDecodeError):
+            return []
+        f = field.lower()
+        target_keys = {f, "id", "_id", f + "id", f + "_id"}
+        values: list[str] = []
+
+        def walk(obj: object) -> None:
+            if len(values) >= CrossUserIDORConfig.MAX_HARVEST_VALUES:
+                return
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if (isinstance(k, str) and k.lower() in target_keys
+                            and isinstance(v, (str, int)) and not isinstance(v, bool)):
+                        s = str(v).strip()
+                        if s and len(s) <= 64:
+                            values.append(s)
+                    walk(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
+        walk(data)
+        return list(dict.fromkeys(values))[: CrossUserIDORConfig.MAX_HARVEST_VALUES]
+
+    async def _probe_cross_user_api(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        url: str,
+        owner_id: str,
+        session_a: AuthSession,
+        session_b: AuthSession,
+    ) -> CrossUserIDORResult | None:
+        """Run the owner / anonymous / attacker probes for one resource."""
+        method = endpoint.method.value
+        is_write = method in ("PUT", "PATCH", "POST", "DELETE")
+        body = CrossUserIDORConfig.SAFE_PATCH_BODY if is_write else None
+
+        # 1. Baseline: the owner must be able to reach their own resource. A
+        # read must actually return data (2xx); a write need only get PAST
+        # access control (a 400 for a bad body still proves auth was accepted).
+        owner = await self._authed_request(client, method, url, session_a, body)
+        if owner is None:
+            return None
+        if is_write:
+            if owner.status_code in (401, 403, 404):
+                return None
+        elif not (200 <= owner.status_code < 300):
+            return None
+
+        # 2. Anonymous guard: if no-auth reaches it, it's public — not IDOR.
+        anon = await self._authed_request(client, method, url, None, body)
+        if anon is not None and anon.status_code not in (401, 403):
+            return None
+
+        # 3. Attacker: a DIFFERENT user's token reaching A's resource = IDOR.
+        # Reads must succeed (2xx = real data); writes need only pass auth.
+        attacker = await self._authed_request(client, method, url, session_b, body)
+        if attacker is None:
+            return None
+        control_status: int | None = None
+        if is_write:
+            if not (200 <= attacker.status_code < 300):
+                # Only a validation-type 4xx shows B got PAST access control;
+                # 401/403/404/405/410/5xx are ordinary secure/broken answers.
+                if (attacker.status_code
+                        not in CrossUserIDORConfig.WRITE_PASSED_AUTH_STATUSES):
+                    return None
+                # Control: same write on an id that cannot exist. If the
+                # status is identical, validation simply runs before any
+                # ownership check and the evidence is weak.
+                control_url = self._control_url(url, owner_id)
+                if control_url:
+                    control = await self._authed_request(
+                        client, method, control_url, session_b, body)
+                    control_status = control.status_code if control else None
+        else:
+            if not (200 <= attacker.status_code < 300):
+                return None
+            # The attacker must see the SAME resource the owner sees. If the
+            # bodies differ, the id was ignored/coerced to the attacker's own
+            # data (endpoint is caller-scoped) — not cross-user access.
+            if not self._same_resource(owner.text, attacker.text):
+                return None
+
+        probe = IDORProbeResult(
+            original_url=url,
+            probed_url=url,
+            test_type=(IDORTestType.CROSS_USER_WRITE if is_write
+                       else IDORTestType.CROSS_USER_READ),
+            probed_status=attacker.status_code,
+            probed_body_preview=attacker.text[:IDORConfig.MAX_RESPONSE_BODY_LOG],
+            data_returned=200 <= attacker.status_code < 300,
+            error=None,
+        )
+        result = CrossUserIDORResult(
+            table_or_endpoint=endpoint.url,
+            resource_id=str(owner_id),
+            owner_user_id=session_a.user_id,
+            attacker_user_id=session_b.user_id,
+            evidence=[probe],
+        )
+        succeeded = 200 <= attacker.status_code < 300
+        if is_write:
+            result.write_accessible = True
+            # 2xx = the write went through; a non-auth 4xx (e.g. 400 invalid
+            # body) still proves B got PAST access control to A's resource.
+            result.risk_level = (IDORRiskLevel.CONFIRMED if succeeded
+                                 else IDORRiskLevel.LIKELY)
+            if succeeded:
+                result.confidence = CrossUserIDORConfig.CONFIDENCE_CONFIRMED_WRITE
+            elif control_status == attacker.status_code:
+                result.confidence = (
+                    CrossUserIDORConfig.CONFIDENCE_LIKELY_WRITE_AMBIGUOUS)
+            else:
+                result.confidence = CrossUserIDORConfig.CONFIDENCE_LIKELY_WRITE
+        else:
+            result.read_accessible = True
+            result.risk_level = IDORRiskLevel.CONFIRMED
+            result.confidence = CrossUserIDORConfig.CONFIDENCE_CONFIRMED_READ
+        return result
+
+    @staticmethod
+    def _stable_leaves(data: object) -> set[tuple[str, str]]:
+        """(key, value) scalar leaves of a JSON body, minus per-request fields."""
+        leaves: set[tuple[str, str]] = set()
+        volatile = re.compile(CrossUserIDORConfig.VOLATILE_KEY_PATTERN)
+        suffix = re.compile(CrossUserIDORConfig.VOLATILE_KEY_SUFFIX_PATTERN)
+
+        def walk(obj: object, key: str) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    k = str(k)
+                    if volatile.search(k) or suffix.search(k):
+                        continue
+                    walk(v, k)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item, key)
+            elif obj is not None:
+                leaves.add((key, json.dumps(obj, sort_keys=True)))
+
+        walk(data, "")
+        return leaves
+
+    @classmethod
+    def _same_resource(cls, owner_text: str, attacker_text: str) -> bool:
+        """Did the attacker see the owner's resource, ignoring per-request noise?
+
+        Identical bodies match. Otherwise (both JSON) every stable field the
+        owner saw must also be in the attacker's body: timestamps, request
+        ids and viewer flags may differ, but a caller-scoped endpoint that
+        returned the attacker's OWN data will differ in identifying fields.
+        """
+        if owner_text == attacker_text:
+            return True
+        try:
+            owner = json.loads(owner_text)
+            attacker = json.loads(attacker_text)
+        except ValueError:
+            return False
+        owner_leaves = cls._stable_leaves(owner)
+        return bool(owner_leaves) and owner_leaves <= cls._stable_leaves(attacker)
+
+    @staticmethod
+    def _control_url(url: str, owner_id: str) -> str | None:
+        """`url` with the resource id swapped for one that cannot exist."""
+        enc = quote(str(owner_id), safe="")
+        idx = url.rfind(enc)
+        if idx < 0:
+            return None
+        control = (CrossUserIDORConfig.CONTROL_ID_NUMERIC
+                   if str(owner_id).isdigit()
+                   else CrossUserIDORConfig.CONTROL_ID_OPAQUE)
+        return url[:idx] + control + url[idx + len(enc):]
+
+    @staticmethod
+    async def _authed_request(client, method, url, session, body):
+        """HTTP request applying a session's auth headers (or none for anon)."""
+        headers = dict(session.headers) if session else {}
+        clear_cookie_jar(client)
+        try:
+            if body is not None:
+                headers.setdefault("Content-Type", "application/json")
+                return await client.request(method, url, headers=headers, content=body)
+            return await client.request(method, url, headers=headers)
+        except Exception:
+            return None
+
+    async def _test_cross_user_resource(
+        self,
+        client: RateLimitedClient,
+        table_or_path: str,
+        resource_id: str,
+        owner_session: AuthSession,
+        attacker_session: AuthSession,
+        supabase_url: str | None = None,
+        anon_key: str | None = None,
+    ) -> CrossUserIDORResult:
+        """Test a single resource for cross-user access."""
+        probes: list[IDORProbeResult] = []
+        read_accessible = False
+        write_accessible = False
+        delete_accessible = False
+
+        url = self._build_resource_url(
+            table_or_path, resource_id, supabase_url, anon_key
+        )
+
+        try:
+            # Step 1: Baseline — verify owner can access
+            baseline_probe = await self._probe_with_session(
+                client, url, "GET", owner_session, anon_key,
+                test_type=IDORTestType.CROSS_USER_READ,
+                original_url=url,
+            )
+            probes.append(baseline_probe)
+
+            if not baseline_probe.data_returned:
+                # Owner can't access their own resource — skip
+                return CrossUserIDORResult(
+                    table_or_endpoint=table_or_path,
+                    resource_id=resource_id,
+                    owner_user_id=owner_session.user_id,
+                    attacker_user_id=attacker_session.user_id,
+                    evidence=probes,
+                    risk_level=IDORRiskLevel.SAFE,
+                )
+
+            # Step 2: Attacker READ
+            read_probe = await self._probe_with_session(
+                client, url, "GET", attacker_session, anon_key,
+                test_type=IDORTestType.CROSS_USER_READ,
+                original_url=url,
+            )
+            probes.append(read_probe)
+            read_accessible = read_probe.data_returned
+
+            # Step 3: Attacker WRITE (safe PATCH with empty body)
+            write_probe = await self._probe_with_session(
+                client, url, "PATCH", attacker_session, anon_key,
+                test_type=IDORTestType.CROSS_USER_WRITE,
+                original_url=url,
+                body=CrossUserIDORConfig.SAFE_PATCH_BODY,
+                extra_headers={
+                    "Prefer": CrossUserIDORConfig.SAFE_PATCH_PREFER_HEADER,
+                    "Content-Type": "application/json",
+                },
+            )
+            probes.append(write_probe)
+            write_accessible = self._is_write_success(write_probe)
+
+        except Exception as exc:
+            error_msg = CrossUserIDORConfig.ERROR_CROSS_USER_FAILED.format(
+                error=str(exc)
+            )
+            logger.warning(error_msg)
+            probes.append(
+                IDORProbeResult(
+                    original_url=url,
+                    probed_url=url,
+                    test_type=IDORTestType.CROSS_USER_READ,
+                    error=error_msg,
+                )
+            )
+
+        risk_level, confidence = self._assess_cross_user_risk(
+            read_accessible=read_accessible,
+            write_accessible=write_accessible,
+            delete_accessible=delete_accessible,
+        )
+
+        return CrossUserIDORResult(
+            table_or_endpoint=table_or_path,
+            resource_id=resource_id,
+            owner_user_id=owner_session.user_id,
+            attacker_user_id=attacker_session.user_id,
+            read_accessible=read_accessible,
+            write_accessible=write_accessible,
+            delete_accessible=delete_accessible,
+            evidence=probes,
+            risk_level=risk_level,
+            confidence=confidence,
+        )
+
+    async def _test_full_table_access(
+        self,
+        client: RateLimitedClient,
+        tables: list[str],
+        owner_session: AuthSession,
+        attacker_session: AuthSession,
+        supabase_url: str,
+        anon_key: str,
+        user_a_resources: dict[str, list[str]],
+    ) -> list[CrossUserIDORResult]:
+        """Test Supabase tables for full SELECT access (RLS bypass)."""
+        results: list[CrossUserIDORResult] = []
+        tables_tested = 0
+
+        for table in tables:
+            if tables_tested >= CrossUserIDORConfig.MAX_TABLES_TO_TEST:
+                break
+
+            url = (
+                f"{supabase_url}/rest/v1/{table}"
+                f"?{CrossUserIDORConfig.SUPABASE_SELECT_ID_ONLY}"
+            )
+
+            probes: list[IDORProbeResult] = []
+
+            try:
+                # Attacker tries full SELECT
+                select_probe = await self._probe_with_session(
+                    client, url, "GET", attacker_session, anon_key,
+                    test_type=IDORTestType.FULL_TABLE_SELECT,
+                    original_url=url,
+                )
+                probes.append(select_probe)
+
+                # Check if attacker sees owner's IDs
+                full_table_readable = False
+                if select_probe.data_returned:
+                    owner_ids = set(user_a_resources.get(table, []))
+                    if owner_ids:
+                        full_table_readable = self._response_contains_ids(
+                            select_probe.probed_body_preview, owner_ids
+                        )
+
+                risk_level = IDORRiskLevel.SAFE
+                confidence = 0.0
+                if full_table_readable:
+                    risk_level = IDORRiskLevel.CONFIRMED
+                    confidence = CrossUserIDORConfig.CONFIDENCE_FULL_TABLE_LEAK
+                elif select_probe.data_returned:
+                    risk_level = IDORRiskLevel.POSSIBLE
+                    confidence = IDORConfig.CONFIDENCE_POSSIBLE_IDOR
+
+                results.append(
+                    CrossUserIDORResult(
+                        table_or_endpoint=table,
+                        resource_id="*",
+                        owner_user_id=owner_session.user_id,
+                        attacker_user_id=attacker_session.user_id,
+                        full_table_readable=full_table_readable,
+                        read_accessible=select_probe.data_returned,
+                        evidence=probes,
+                        risk_level=risk_level,
+                        confidence=confidence,
+                    )
+                )
+                tables_tested += 1
+
+            except Exception as exc:
+                error_msg = CrossUserIDORConfig.ERROR_CROSS_USER_FAILED.format(
+                    error=str(exc)
+                )
+                logger.warning(error_msg)
+                tables_tested += 1
+
+        return results
+
+    async def _probe_with_session(
+        self,
+        client: RateLimitedClient,
+        url: str,
+        method: str,
+        session: AuthSession,
+        anon_key: str | None = None,
+        test_type: IDORTestType = IDORTestType.CROSS_USER_READ,
+        original_url: str = "",
+        body: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> IDORProbeResult:
+        """Make an authenticated request and return a probe result."""
+        headers: dict[str, str] = {
+            "Authorization": f"Bearer {session.access_token}",
+        }
+        if anon_key:
+            headers["apikey"] = anon_key
+        if extra_headers:
+            headers.update(extra_headers)
+
+        kwargs: dict[str, object] = {"headers": headers}
+        if body is not None:
+            kwargs["content"] = body
+
+        clear_cookie_jar(client)
+        try:
+            response = await client.request(method, url, **kwargs)
+        except httpx.HTTPError as exc:
+            return IDORProbeResult(
+                original_url=original_url or url,
+                probed_url=url,
+                test_type=test_type,
+                error=str(exc),
+            )
+
+        data_returned = self._response_has_data(response)
+
+        return IDORProbeResult(
+            original_url=original_url or url,
+            probed_url=url,
+            test_type=test_type,
+            probed_status=response.status_code,
+            probed_body_preview=response.text[: IDORConfig.MAX_RESPONSE_BODY_LOG],
+            data_returned=data_returned,
+        )
+
+    def _build_resource_url(
+        self,
+        table_or_path: str,
+        resource_id: str,
+        supabase_url: str | None = None,
+        anon_key: str | None = None,
+    ) -> str:
+        """Build a URL to access a specific resource."""
+        # If it looks like a Supabase table name (no slashes), build REST URL
+        if supabase_url and "/" not in table_or_path:
+            eq_filter = CrossUserIDORConfig.SUPABASE_EQ_FILTER.format(
+                resource_id=resource_id
+            )
+            return (
+                f"{supabase_url}/rest/v1/{table_or_path}"
+                f"?{CrossUserIDORConfig.SUPABASE_SELECT_ID_ONLY}&{eq_filter}"
+            )
+
+        # Otherwise treat it as a full path — append the resource ID
+        base = table_or_path.rstrip("/")
+        return f"{base}/{resource_id}"
+
+    @staticmethod
+    def _is_write_success(probe: IDORProbeResult) -> bool:
+        """Check if a PATCH probe proves the write reached a row.
+
+        A bare 200/204 is not enough: PostgREST answers 204 for zero rows
+        affected (RLS filtered the target out), so require returned rows.
+        """
+        if probe.error:
+            return False
+        return postgrest_rows_affected(
+            probe.probed_status, probe.probed_body_preview)
+
+    @staticmethod
+    def _assess_cross_user_risk(
+        read_accessible: bool,
+        write_accessible: bool,
+        delete_accessible: bool,
+    ) -> tuple[IDORRiskLevel, float]:
+        """Assess risk level from cross-user test results."""
+        if write_accessible or delete_accessible:
+            return (
+                IDORRiskLevel.CONFIRMED,
+                CrossUserIDORConfig.CONFIDENCE_CONFIRMED_WRITE,
+            )
+        if read_accessible:
+            return (
+                IDORRiskLevel.CONFIRMED,
+                CrossUserIDORConfig.CONFIDENCE_CONFIRMED_READ,
+            )
+        return IDORRiskLevel.SAFE, 0.0
+
+    @staticmethod
+    def _response_contains_ids(body_preview: str, target_ids: set[str]) -> bool:
+        """Check if a response body contains any of the target IDs."""
+        for target_id in target_ids:
+            if target_id in body_preview:
+                return True
+        return False
+
+
+def _json_has_substantive_content(body: str) -> bool:
+    """Whether a JSON body carries any real value rather than an empty shell.
+
+    Key names are irrelevant -- only whether some leaf holds data -- so this
+    does not depend on recognising ``data``/``result``/``user`` envelopes.
+    A body that is JSON-shaped but does not decode is treated as content
+    rather than silently dropped.
+    """
+    try:
+        return _has_substantive_value(json.loads(body))
+    except (json.JSONDecodeError, ValueError):
+        return True
+
+
+def _has_substantive_value(value: object) -> bool:
+    """True if ``value`` contains at least one non-empty scalar, recursively.
+
+    Empty containers, ``null`` and blank strings are not substantive; numbers
+    and booleans are -- including ``0`` and ``False``, which are real data.
+    """
+    if isinstance(value, dict):
+        return any(_has_substantive_value(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_substantive_value(v) for v in value)
+    if isinstance(value, str):
+        return value.strip() != ""
+    if value is None:
+        return False
+    return True
+
+
+def _bodies_differ(original: str, swapped: str) -> bool:
+    """Whether two response bodies carry different content.
+
+    Compared with all whitespace removed, so a formatting-only change (a
+    trailing newline, indentation) is not read as different content. With no
+    original captured we cannot claim a difference, so we do not -- the swap
+    then contributes no "differs" signal rather than a false one.
+    """
+    if not original:
+        return False
+    return "".join(original.split()) != "".join(swapped.split())
+
+
+def _is_spa_shell(response: httpx.Response) -> bool:
+    """Whether a 2xx response is the single-page-app shell, not an API write.
+
+    A code-split front end (Angular, React, Vue) serves its index.html with a
+    200 for every path its router does not recognise. A PUT/PATCH/DELETE to a
+    route with no server handler therefore comes back 200 text/html -- which
+    the mutation probes counted as a CRITICAL unauthorized change. A genuine
+    API write returns JSON, or an empty body (204); HTML is the shell.
+    """
+    ctype = response.headers.get("content-type", "").lower()
+    if "text/html" in ctype:
+        return True
+    body = response.text.lstrip()[:64].lower()
+    return body.startswith(("<!doctype", "<html", "<!--"))
+
+
+_MUTATION_IGNORE_KEYS = {"updatedat", "createdat", "deletedat"}
+
+
+def _mutation_data_object(body: str) -> dict | None:
+    """The resource object from a write/read response, unwrapping a
+    {"data": {...}} envelope. Returns None if the body is not a JSON object
+    (or is a list/scalar we cannot field-compare)."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(parsed, dict):
+        data = parsed.get("data", parsed)
+        return data if isinstance(data, dict) else None
+    return None
+
+
+def _pick_writable_field(obj: dict) -> tuple[str | None, str | None]:
+    """Choose one existing, non-empty string field safe to canary-write.
+
+    Skips identifiers, timestamps, and money/auth/PII fields (harm-avoidance,
+    not a security verdict). Returns (field, original_value) or (None, None)."""
+    for key, value in obj.items():
+        if not isinstance(value, str) or value.strip() == "":
+            continue
+        lowered = key.lower()
+        if any(sub in lowered for sub in IDORConfig.MUTATION_READBACK_SKIP_SUBSTRINGS):
+            continue
+        return key, value
+    return None, None
+
+
+def _mutation_bodies_differ(a: str, b: str) -> bool:
+    """Compare two resource bodies ignoring server-managed timestamp fields."""
+    oa, ob = _mutation_data_object(a), _mutation_data_object(b)
+    if oa is None or ob is None:
+        return "".join(a.split()) != "".join(b.split())
+    strip = lambda d: {k: v for k, v in d.items()
+                       if k.lower() not in _MUTATION_IGNORE_KEYS}
+    return strip(oa) != strip(ob)

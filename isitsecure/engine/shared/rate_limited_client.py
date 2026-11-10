@@ -1,0 +1,123 @@
+"""Rate-limited HTTP client for responsible scanning."""
+
+import asyncio
+import logging
+
+import httpx
+
+from isitsecure.engine.constants import RateLimitedClientConfig, SharedPatterns
+from isitsecure.engine.shared.target_health import TargetHealth
+
+logger = logging.getLogger(__name__)
+
+
+class TargetUnresponsiveError(httpx.TransportError):
+    """Raised instead of sending to a host that stopped answering.
+
+    A ``TransportError`` so scanners that already degrade on timeouts treat it
+    the same way; it ends that probe, never the scan.
+    """
+
+
+class RateLimitedClient:
+    """httpx.AsyncClient wrapper with concurrency and rate limiting.
+
+    Ensures we don't overwhelm the target with requests.
+    Uses asyncio.Semaphore for concurrency control.
+    """
+
+    def __init__(
+        self,
+        max_concurrent: int,
+        delay_seconds: float,
+        timeout_seconds: float,
+        user_agent: str,
+        extra_headers: dict[str, str] | None = None,
+        follow_redirects: bool = True,
+        health: TargetHealth | None = None,
+    ) -> None:
+        # Opt-in: share one TargetHealth across a scanner's clients to stop
+        # sending into a target that has stopped answering.
+        self._health = health
+        self._max_concurrent = max_concurrent
+        self._delay = delay_seconds
+        self._timeout = timeout_seconds
+        self._user_agent = user_agent
+        self._extra_headers = extra_headers or {}
+        self._follow_redirects = follow_redirects
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._request_count = 0
+        self._client: httpx.AsyncClient | None = None
+
+    # Header names that carry credentials and must never follow a redirect to
+    # another origin. httpx strips Authorization/Cookie cross-origin, but NOT
+    # custom auth headers (e.g. Supabase `apikey`).
+    _AUTH_HEADER_NAMES = frozenset({"authorization", "apikey", "x-api-key", "cookie"})
+
+    async def __aenter__(self) -> "RateLimitedClient":
+        headers = {SharedPatterns.HEADER_USER_AGENT: self._user_agent, **self._extra_headers}
+        follow = self._follow_redirects
+        if follow and any(k.lower() in self._AUTH_HEADER_NAMES for k in headers):
+            # Carrying credentials: don't auto-follow a redirect that could
+            # leak them to an attacker-controlled origin. The caller sees the
+            # 3xx directly, which is sufficient for probing.
+            follow = False
+        self._client = httpx.AsyncClient(
+            timeout=self._timeout,
+            follow_redirects=follow,
+            headers=headers,
+        )
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        if self._client:
+            await self._client.aclose()
+
+    async def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+        """Make a rate-limited HTTP request."""
+        async with self._semaphore:
+            if self._client is None:
+                raise RuntimeError(
+                    RateLimitedClientConfig.ERROR_NOT_CONTEXT_MANAGER
+                )
+            health = self._health
+            if health is not None and not health.should_send(url):
+                raise TargetUnresponsiveError(
+                    f"target unresponsive, not sending: {health.host_of(url)}"
+                )
+            try:
+                response = await self._client.request(method, url, **kwargs)
+            except httpx.TransportError:
+                if health is not None and health.note_failure(url):
+                    logger.warning(
+                        "Target %s stopped answering; suppressing further requests",
+                        health.host_of(url),
+                    )
+                raise
+            if health is not None:
+                health.note_success(url)
+            self._request_count += 1
+            if self._delay > 0:
+                await asyncio.sleep(self._delay)
+            return response
+
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        """Make a rate-limited GET request."""
+        return await self.request("GET", url, **kwargs)
+
+    async def post(self, url: str, **kwargs: object) -> httpx.Response:
+        """Make a rate-limited POST request."""
+        return await self.request("POST", url, **kwargs)
+
+    async def patch(self, url: str, **kwargs: object) -> httpx.Response:
+        """Make a rate-limited PATCH request."""
+        return await self.request("PATCH", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs: object) -> httpx.Response:
+        """Make a rate-limited DELETE request."""
+        return await self.request("DELETE", url, **kwargs)
+
+    @property
+    def request_count(self) -> int:
+        """Total number of requests made through this client."""
+        return self._request_count

@@ -1,0 +1,59 @@
+version: 2
+updates:
+  # Python dependencies (declared in pyproject.toml)
+  #
+  # pyproject.toml declares open lower bounds (`httpx>=0.25`, `rich>=13.0`, ...),
+  # not pins. Dependabot's default pip strategy ("increase") raises those floors
+  # on every release even though the existing range already permits the new
+  # version — so the PR changes nothing about what actually gets installed and
+  # only forbids older versions. "increase-if-necessary" raises a floor only when
+  # the declared range genuinely excludes the new release, which is the case we
+  # actually want a PR for.
+  - package-ecosystem: "pip"
+    directory: "/"
+    versioning-strategy: increase-if-necessary
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  # GitHub Actions used in workflows
+  #
+  # Ignored on purpose: these bumps are not required. Close-and-ignore was the
+  # decision for the setup-node and codeql-action bump PRs.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    ignore:
+      - dependency-name: "actions/setup-node"
+      - dependency-name: "github/codeql-action"
+
+  # UI dependencies (Next.js app) — version updates disabled on purpose.
+  #
+  # ui/ is SOURCE ONLY. The UI that actually ships is the prebuilt bundle
+  # committed at isitsecure/server/static/, which `isitsecure launch` serves via
+  # FastAPI StaticFiles. Regenerating it is a deliberate manual step (npm run
+  # build -> copy ui/out/. -> commit both source and output; see ui/README.md).
+  # Nothing in CI or in the wheel build (packages = ["isitsecure"]) does it
+  # automatically, and no CI job builds ui/ at all.
+  #
+  # So merging a ui/package.json bump changes a version string in a directory
+  # that is not built, not packaged, and not served — while widening the drift
+  # against the shipped bundle. `open-pull-requests-limit: 0` stops that PR
+  # class; UI dependencies are updated by rebuilding the bundle intentionally.
+  #
+  # NOTE: this disables VERSION updates only. Dependabot SECURITY updates are
+  # repo-wide and unaffected by this limit — they will still open PRs here (and
+  # for test-app/, which isn't even a configured ecosystem). Those are dismissed
+  # as `not_used`; see .github/codeql/codeql-config.yml for the rationale.
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "deps"

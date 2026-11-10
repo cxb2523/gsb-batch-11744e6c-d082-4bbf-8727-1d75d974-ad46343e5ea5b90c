@@ -1,0 +1,1309 @@
+"""Tests for AuthFlowTracer — LSP-powered auth flow tracing.
+
+Uses a mocked ``LSPClientProtocol`` to verify that the tracer correctly
+identifies tRPC, Express, and inline auth patterns, and degrades
+gracefully when the LSP client is unavailable.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, PropertyMock
+
+import pytest
+
+from isitsecure.engine.code_analysis.lsp.auth_flow_tracer import (
+    AuthFlowTracer,
+)
+from isitsecure.engine.code_analysis.lsp.protocols import (
+    LSPLocation,
+)
+from isitsecure.engine.code_analysis.protocols import (
+    RepoSnapshot,
+    RouteEntry,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_repo(
+    file_index: dict[str, str] | None = None,
+    route_map: list[RouteEntry] | None = None,
+) -> RepoSnapshot:
+    return RepoSnapshot(
+        repo_url="test",
+        branch="main",
+        clone_path="/tmp/test",
+        file_index=file_index or {},
+        route_map=route_map or [],
+    )
+
+
+def _make_route(
+    file_path: str, pattern: str = "/api/test", method: str = "GET"
+) -> RouteEntry:
+    return RouteEntry(
+        file_path=file_path,
+        http_methods=[method],
+        route_pattern=pattern,
+    )
+
+
+def _make_lsp(*, available: bool = True) -> AsyncMock:
+    """Create a mock LSP client conforming to LSPClientProtocol."""
+    lsp = AsyncMock()
+    type(lsp).is_available = PropertyMock(return_value=available)
+    lsp.initialize.return_value = available
+    lsp.get_definition.return_value = None
+    lsp.get_references.return_value = None
+    lsp.get_hover.return_value = None
+    return lsp
+
+
+# ===========================================================================
+# TestAuthFlowTracerBasic
+# ===========================================================================
+
+
+class TestAuthFlowTracerBasic:
+    """Basic trace_routes behavior."""
+
+    @pytest.mark.asyncio
+    async def test_empty_routes_returns_empty(self) -> None:
+        lsp = _make_lsp()
+        repo = _make_repo()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        results = await tracer.trace_routes([])
+        assert results == {}
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_by_file(self) -> None:
+        """Two routes from the same file should produce one trace call."""
+        file_content = "export const handler = () => {};"
+        repo = _make_repo(file_index={"src/routes/api.ts": file_content})
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [
+            _make_route("src/routes/api.ts", "/api/users"),
+            _make_route("src/routes/api.ts", "/api/posts"),
+        ]
+
+        results = await tracer.trace_routes(routes)
+
+        # Both routes should have results (mapped from the single file trace)
+        assert len(results) == 2
+        assert "src/routes/api.ts:GET /api/users" in results
+        assert "src/routes/api.ts:GET /api/posts" in results
+
+        # Both should share the same result (same file traced once)
+        r1 = results["src/routes/api.ts:GET /api/users"]
+        r2 = results["src/routes/api.ts:GET /api/posts"]
+        assert r1.confidence == r2.confidence
+
+
+# ===========================================================================
+# TestTRPCTracing
+# ===========================================================================
+
+
+class TestTRPCTracing:
+    """tRPC procedure base detection (Strategy 1)."""
+
+    @pytest.mark.asyncio
+    async def test_detects_protected_procedure(self) -> None:
+        """File containing protectedProcedure with LSP returning a definition
+        that contains enforcement patterns should yield has_verified_auth=True."""
+        trpc_router = (
+            "import { protectedProcedure } from '../trpc';\n"
+            "export const userRouter = router({\n"
+            "  getProfile: protectedProcedure.query(async ({ ctx }) => {\n"
+            "    return ctx.db.user.findUnique({ where: { id: ctx.user.id } });\n"
+            "  }),\n"
+            "});\n"
+        )
+        # The definition that LSP would trace to
+        trpc_middleware = (
+            "export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {\n"
+            "  if (!ctx.session?.user) {\n"
+            "    throw new TRPCError({ code: 'UNAUTHORIZED' });\n"
+            "  }\n"
+            "  return next({ ctx: { user: ctx.session.user } });\n"
+            "});\n"
+        )
+
+        repo = _make_repo(
+            file_index={
+                "src/server/routers/user.ts": trpc_router,
+                "src/server/trpc.ts": trpc_middleware,
+            }
+        )
+        lsp = _make_lsp()
+        # LSP traces protectedProcedure to the middleware definition file
+        lsp.get_definition.return_value = [
+            LSPLocation(file_path="/tmp/test/src/server/trpc.ts", line=0, character=0)
+        ]
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/server/routers/user.ts", "/api/user.getProfile")]
+
+        results = await tracer.trace_routes(routes)
+        result = results["src/server/routers/user.ts:GET /api/user.getProfile"]
+
+        assert result.has_verified_auth is True
+        assert result.confidence == 0.95
+        assert "protectedProcedure" in result.middleware_chain
+
+    @pytest.mark.asyncio
+    async def test_detects_public_procedure(self) -> None:
+        """File containing only publicProcedure (no auth) falls through to
+        the fallback result because _trace_file only returns strategy results
+        when has_verified_auth is True."""
+        trpc_public = (
+            "import { publicProcedure } from '../trpc';\n"
+            "export const healthRouter = router({\n"
+            "  check: publicProcedure.query(() => 'ok'),\n"
+            "});\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/server/routers/health.ts": trpc_public}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/server/routers/health.ts", "/api/health.check")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/server/routers/health.ts:GET /api/health.check"]
+
+        # Public procedures have no verified auth -- the tracer's _trace_file
+        # only keeps results where has_verified_auth is True, so this falls
+        # through to the default fallback with confidence 0.5.
+        assert result.has_verified_auth is False
+        assert result.confidence == 0.5
+
+    @pytest.mark.asyncio
+    async def test_traces_procedure_definition(self) -> None:
+        """When LSP returns a definition location, the tracer reads that file
+        and checks for auth terminal patterns."""
+        router_content = (
+            "const getUser = protectedProcedure.query(async ({ ctx }) => {\n"
+            "  return ctx.user;\n"
+            "});\n"
+        )
+        definition_content = (
+            "export const protectedProcedure = t.procedure.use(async ({ ctx, next }) => {\n"
+            "  const { data: { user } } = await supabase.auth.getUser();\n"
+            "  if (!user) throw new TRPCError({ code: 'UNAUTHORIZED' });\n"
+            "  return next({ ctx: { user } });\n"
+            "});\n"
+        )
+
+        repo = _make_repo(
+            file_index={
+                "src/router.ts": router_content,
+                "src/trpc.ts": definition_content,
+            }
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(file_path="/tmp/test/src/trpc.ts", line=0, character=0)
+        ]
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/router.ts")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/router.ts:GET /api/test"]
+
+        assert result.has_verified_auth is True
+        assert "getUser" in result.auth_method
+
+
+# ===========================================================================
+# TestExpressTracing
+# ===========================================================================
+
+
+class TestExpressTracing:
+    """Express middleware detection (Strategy 2)."""
+
+    @pytest.mark.asyncio
+    async def test_detects_require_auth(self) -> None:
+        """File with requireAuth middleware traced to a getUser call."""
+        express_route = (
+            "import { requireAuth } from '../middleware/auth';\n"
+            "router.get('/profile', requireAuth, handler);\n"
+        )
+        auth_middleware = (
+            "export async function requireAuth(req, res, next) {\n"
+            "  const { data: { user } } = await supabase.auth.getUser();\n"
+            "  if (!user) return res.status(401).json({ error: 'Unauthorized' });\n"
+            "  req.user = user;\n"
+            "  next();\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={
+                "src/routes/profile.ts": express_route,
+                "src/middleware/auth.ts": auth_middleware,
+            }
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(
+                file_path="/tmp/test/src/middleware/auth.ts", line=0, character=0
+            )
+        ]
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/routes/profile.ts", "/profile")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routes/profile.ts:GET /profile"]
+
+        assert result.has_verified_auth is True
+        assert "requireAuth" in result.middleware_chain
+
+    @pytest.mark.asyncio
+    async def test_detects_verify_auth(self) -> None:
+        """File with verifyAuth middleware and enforcement pattern."""
+        express_route = (
+            "import { verifyAuth } from '../middleware';\n"
+            "router.post('/data', verifyAuth, createData);\n"
+        )
+        auth_middleware = (
+            "export function verifyAuth(req, res, next) {\n"
+            "  const token = req.headers.authorization;\n"
+            "  if (!token) return res.status(401).json({ error: 'No token' });\n"
+            "  jwt.verify(token, SECRET, (err, decoded) => {\n"
+            "    if (err) return res.status(401).json({ error: 'Invalid' });\n"
+            "    req.user = decoded;\n"
+            "    next();\n"
+            "  });\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={
+                "src/routes/data.ts": express_route,
+                "src/middleware.ts": auth_middleware,
+            }
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(
+                file_path="/tmp/test/src/middleware.ts", line=0, character=0
+            )
+        ]
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/routes/data.ts", "/data", method="POST")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routes/data.ts:POST /data"]
+
+        assert result.has_verified_auth is True
+        assert "verifyAuth" in result.middleware_chain
+
+    @pytest.mark.asyncio
+    async def test_no_auth_middleware(self) -> None:
+        """File with no auth patterns yields no verified auth."""
+        plain_route = (
+            "router.get('/health', (req, res) => {\n"
+            "  res.json({ status: 'ok' });\n"
+            "});\n"
+        )
+
+        repo = _make_repo(file_index={"src/routes/health.ts": plain_route})
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/routes/health.ts", "/health")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routes/health.ts:GET /health"]
+
+        assert result.has_verified_auth is False
+        assert result.confidence == 0.5  # fallback confidence
+
+
+# ===========================================================================
+# TestInlineTracing
+# ===========================================================================
+
+
+class TestDecoratorTracing:
+    """Auth decorator detection (Strategy 3)."""
+
+    @pytest.mark.asyncio
+    async def test_detects_nestjs_use_guards(self) -> None:
+        """File with @UseGuards(AuthGuard) should be detected."""
+        nestjs_controller = (
+            "import { Controller, Get, UseGuards } from '@nestjs/common';\n"
+            "import { AuthGuard } from '../guards/auth.guard';\n"
+            "\n"
+            "@Controller('users')\n"
+            "export class UsersController {\n"
+            "  @Get()\n"
+            "  @UseGuards(AuthGuard)\n"
+            "  findAll() { return this.usersService.findAll(); }\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/users/users.controller.ts": nestjs_controller}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/users/users.controller.ts", "/users")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/users/users.controller.ts:GET /users"]
+
+        assert result.has_verified_auth is True
+        assert "UseGuards" in result.auth_method
+        assert "decorator" in result.middleware_chain
+
+    @pytest.mark.asyncio
+    async def test_detects_python_login_required(self) -> None:
+        """File with @login_required should be detected."""
+        django_view = (
+            "from django.contrib.auth.decorators import login_required\n"
+            "\n"
+            "@login_required\n"
+            "def profile(request):\n"
+            "    return render(request, 'profile.html')\n"
+        )
+
+        repo = _make_repo(
+            file_index={"views/profile.py": django_view}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("views/profile.py", "/profile")]
+        results = await tracer.trace_routes(routes)
+        result = results["views/profile.py:GET /profile"]
+
+        assert result.has_verified_auth is True
+        assert "login_required" in result.auth_method
+
+    @pytest.mark.asyncio
+    async def test_detects_spring_pre_authorize(self) -> None:
+        """File with @PreAuthorize should be detected."""
+        spring_controller = (
+            "@RestController\n"
+            "public class UserController {\n"
+            "    @GetMapping(\"/admin\")\n"
+            "    @PreAuthorize(\"hasRole('ADMIN')\")\n"
+            "    public ResponseEntity<List<User>> getAll() {\n"
+            "        return ResponseEntity.ok(userService.findAll());\n"
+            "    }\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/controllers/UserController.java": spring_controller}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/controllers/UserController.java", "/admin")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/controllers/UserController.java:GET /admin"]
+
+        assert result.has_verified_auth is True
+        assert "PreAuthorize" in result.auth_method
+
+    @pytest.mark.asyncio
+    async def test_no_decorator_falls_through(self) -> None:
+        """File without decorators should not match this strategy."""
+        plain_handler = (
+            "export async function handler(req, res) {\n"
+            "  res.json({ status: 'ok' });\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/handlers/health.ts": plain_handler}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/handlers/health.ts", "/health")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/handlers/health.ts:GET /health"]
+
+        assert result.has_verified_auth is False
+        assert result.confidence == 0.5
+
+
+class TestCJSImportFallback:
+    """CJS require() fallback for procedure base detection."""
+
+    @pytest.mark.asyncio
+    async def test_detects_cjs_require_protected_procedure(self) -> None:
+        """File using require() to import protectedProcedure should be detected."""
+        cjs_router = (
+            "const { protectedProcedure, router } = require('../trpc');\n"
+            "module.exports = router({\n"
+            "  getProfile: protectedProcedure.query(async ({ ctx }) => {\n"
+            "    return ctx.user;\n"
+            "  }),\n"
+            "});\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/routers/user.js": cjs_router}
+        )
+        lsp = _make_lsp()
+        # LSP can't trace, so fallback to import detection
+        lsp.get_definition.return_value = None
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/routers/user.js", "/api/user.getProfile")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routers/user.js:GET /api/user.getProfile"]
+
+        assert result.has_verified_auth is True
+        assert "protectedProcedure" in result.auth_method
+        assert result.confidence == 0.85
+
+
+
+
+    @pytest.mark.asyncio
+    async def test_detects_inline_get_user(self) -> None:
+        """File with supabase.auth.getUser() inline should be detected."""
+        nextjs_route = (
+            "export async function GET(req: Request) {\n"
+            "  const supabase = createServerClient();\n"
+            "  const { data: { user } } = await supabase.auth.getUser();\n"
+            "  if (!user) return NextResponse.json({}, { status: 401 });\n"
+            "  return NextResponse.json({ user });\n"
+            "}\n"
+        )
+
+        repo = _make_repo(file_index={"src/app/api/me/route.ts": nextjs_route})
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/app/api/me/route.ts", "/api/me")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/app/api/me/route.ts:GET /api/me"]
+
+        assert result.has_verified_auth is True
+        assert "getUser" in result.auth_method
+        assert "inline" in result.middleware_chain
+
+    @pytest.mark.asyncio
+    async def test_no_inline_auth(self) -> None:
+        """File without any auth patterns falls through all strategies."""
+        plain_handler = (
+            "export async function GET() {\n"
+            "  const data = await db.query('SELECT * FROM public_items');\n"
+            "  return NextResponse.json(data);\n"
+            "}\n"
+        )
+
+        repo = _make_repo(
+            file_index={"src/app/api/items/route.ts": plain_handler}
+        )
+        lsp = _make_lsp()
+        tracer = AuthFlowTracer(lsp, repo)
+
+        routes = [_make_route("src/app/api/items/route.ts", "/api/items")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/app/api/items/route.ts:GET /api/items"]
+
+        assert result.has_verified_auth is False
+        assert result.confidence == 0.5
+
+
+# ===========================================================================
+# TestTraceFallback
+# ===========================================================================
+
+
+class TestTraceFallback:
+    """Graceful degradation when LSP is unavailable or returns nothing."""
+
+    @pytest.mark.asyncio
+    async def test_lsp_unavailable_returns_low_confidence(self) -> None:
+        """When LSP is unavailable and file has no inline auth, confidence
+        should be the fallback value (0.5)."""
+        route_content = (
+            "import { requireAuth } from '../auth';\n"
+            "router.get('/secret', requireAuth, handler);\n"
+        )
+
+        repo = _make_repo(file_index={"src/routes/secret.ts": route_content})
+        lsp = _make_lsp(available=False)
+        # LSP returns None for all definitions (unavailable)
+        lsp.get_definition.return_value = None
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/routes/secret.ts", "/secret")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routes/secret.ts:GET /secret"]
+
+        # Without LSP tracing the definition, requireAuth can't be confirmed
+        # unless the definition is in the file_index. Since we didn't include
+        # the auth middleware file, it falls through to the fallback.
+        assert result.confidence < 0.95
+
+    @pytest.mark.asyncio
+    async def test_lsp_returns_none_for_definition(self) -> None:
+        """When LSP get_definition returns None, tracer falls back to
+        content-based detection and returns fallback confidence."""
+        route_content = (
+            "import { authenticate } from '../middleware';\n"
+            "router.post('/items', authenticate, createItem);\n"
+        )
+
+        repo = _make_repo(file_index={"src/routes/items.ts": route_content})
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = None
+
+        tracer = AuthFlowTracer(lsp, repo)
+        routes = [_make_route("src/routes/items.ts", "/items")]
+        results = await tracer.trace_routes(routes)
+        result = results["src/routes/items.ts:GET /items"]
+
+        # authenticate is detected as an auth pattern, but LSP can't
+        # trace it, so the tracer can't confirm it — falls to fallback
+        assert result.has_verified_auth is False
+        assert result.confidence == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Definition resolution: local helpers, scoping, and project-load readiness
+# ---------------------------------------------------------------------------
+
+
+class _Loc:
+    def __init__(self, file_path: str, line: int) -> None:
+        self.file_path, self.line = file_path, line
+
+
+# ---------------------------------------------------------------------------
+# _called_local_imports
+# ---------------------------------------------------------------------------
+
+
+class TestCalledLocalImports:
+    def test_finds_a_called_helper_from_a_project_alias(self) -> None:
+        src = '''
+import { getUserFromRequest } from "@/lib/auth"
+export async function GET(request: Request) {
+  const user = getUserFromRequest(request)
+}
+'''
+        assert AuthFlowTracer._called_local_imports(src) == ["getUserFromRequest"]
+
+    def test_relative_imports_count_as_local(self) -> None:
+        src = 'import { requireUser } from "../lib/auth"\nrequireUser(req)\n'
+        assert AuthFlowTracer._called_local_imports(src) == ["requireUser"]
+
+    def test_package_imports_are_skipped(self) -> None:
+        """`@/lib/auth` is a project alias; `@supabase/supabase-js` is a
+        package. Only the first is this app's own code."""
+        src = (
+            'import { createClient } from "@supabase/supabase-js"\n'
+            'import { NextResponse } from "next/server"\n'
+            "createClient()\nNextResponse.json({})\n"
+        )
+        assert AuthFlowTracer._called_local_imports(src) == []
+
+    def test_imported_but_never_called_is_ignored(self) -> None:
+        src = 'import { helper, unused } from "@/lib/x"\nhelper()\n'
+        assert AuthFlowTracer._called_local_imports(src) == ["helper"]
+
+    def test_aliased_import_is_matched_on_its_local_name(self) -> None:
+        src = 'import { getUser as currentUser } from "@/lib/auth"\ncurrentUser(req)\n'
+        assert AuthFlowTracer._called_local_imports(src) == ["currentUser"]
+
+    def test_duplicates_are_not_repeated(self) -> None:
+        src = 'import { f } from "@/a"\nimport { f } from "@/b"\nf()\n'
+        assert AuthFlowTracer._called_local_imports(src) == ["f"]
+
+    def test_the_number_of_symbols_is_bounded(self) -> None:
+        """One definition request per symbol — a wide import list must not
+        turn one route into a dozen LSP round trips."""
+        from isitsecure.engine.constants import LSPConfig
+
+        names = [f"f{i}" for i in range(20)]
+        src = (
+            'import { ' + ", ".join(names) + ' } from "@/lib/x"\n'
+            + "\n".join(f"{n}()" for n in names)
+        )
+        found = AuthFlowTracer._called_local_imports(src)
+        assert len(found) == LSPConfig.MAX_INLINE_TRACE_SYMBOLS
+
+
+# ---------------------------------------------------------------------------
+# _enclosing_block
+# ---------------------------------------------------------------------------
+
+
+MODULE = '''export function signToken(payload: object) {
+  return sign(payload)
+}
+
+export function verifyToken(token: string) {
+  return jwt.verify(token, SECRET)
+}
+'''
+
+
+class TestEnclosingBlock:
+    def test_returns_only_the_declaration_at_that_line(self) -> None:
+        """The bug this prevents: a login route imports `signToken` from the
+        module that also defines `verifyToken`, and searching the whole file
+        made the route look authenticated."""
+        block = AuthFlowTracer._enclosing_block(MODULE, 0)
+        assert "signToken" in block
+        assert "verifyToken" not in block
+
+    def test_a_later_declaration_is_scoped_too(self) -> None:
+        block = AuthFlowTracer._enclosing_block(MODULE, 4)
+        assert "jwt.verify" in block
+        assert "signToken" not in block
+
+    def test_a_statement_that_opens_no_block_is_just_that_line(self) -> None:
+        """An alias opens no block, so there is none to scan for. Scanning
+        anyway runs into the *next* declaration's closing brace and returns a
+        body containing neighbours — which is how an alias to something
+        unguarded gets vouched for by a guard defined below it."""
+        src = (
+            "const isLoggedIn = handler.isLoggedInMiddleware;\n"
+            "app.get('/x', (req, res) => {\n"
+            "  jwt.verify(req.token);\n"
+            "});\n"
+        )
+        block = AuthFlowTracer._enclosing_block(src, 0)
+        assert block == "const isLoggedIn = handler.isLoggedInMiddleware;"
+        assert "jwt.verify" not in block
+
+    def test_an_assigned_function_ends_at_its_closing_brace(self) -> None:
+        """`};` closes a function expression just as `}` closes a
+        declaration; not accepting it ran the body to the end of the file."""
+        src = (
+            "this.requireUser = (req, res, next) => {\n"
+            "  if (!req.user) return res.status(401).end();\n"
+            "  next();\n"
+            "};\n"
+            "this.other = () => { getUser(); };\n"
+        )
+        block = AuthFlowTracer._enclosing_block(src, 0)
+        assert "status(401)" in block
+        assert "getUser" not in block
+
+    def test_out_of_range_line_returns_everything(self) -> None:
+        assert AuthFlowTracer._enclosing_block(MODULE, 999) == MODULE
+
+    def test_unterminated_declaration_returns_the_remainder(self) -> None:
+        src = "export function open() {\n  doThing()\n"
+        assert "doThing" in AuthFlowTracer._enclosing_block(src, 0)
+
+    def test_indented_declaration_ends_at_its_own_indent(self) -> None:
+        src = "class A {\n  method() {\n    check()\n  }\n\n  other() {}\n}\n"
+        block = AuthFlowTracer._enclosing_block(src, 1)
+        assert "check()" in block
+        assert "other()" not in block
+
+
+# ---------------------------------------------------------------------------
+# _is_unresolved
+# ---------------------------------------------------------------------------
+
+
+ROUTE = '''import { getUserFromRequest } from "@/lib/auth"
+
+export function GET(request: Request) {
+  const user = getUserFromRequest(request)
+}
+'''
+
+
+class TestIsUnresolved:
+    @staticmethod
+    def _tracer(content: str) -> AuthFlowTracer:
+        tracer = AuthFlowTracer.__new__(AuthFlowTracer)
+        tracer._get_file_content_absolute = lambda _p: content  # type: ignore[method-assign]
+        return tracer
+
+    def test_a_hit_on_the_import_line_means_the_project_is_still_loading(
+        self,
+    ) -> None:
+        """tsserver answers with the import statement until its program is
+        built — indistinguishable from success unless you look at where it
+        landed."""
+        tracer = self._tracer(ROUTE)
+        assert tracer._is_unresolved([_Loc("/r.ts", 0)], "/r.ts") is True
+
+    def test_a_definition_in_another_file_is_resolved(self) -> None:
+        tracer = self._tracer(ROUTE)
+        assert tracer._is_unresolved([_Loc("/lib/auth.ts", 5)], "/r.ts") is False
+
+    def test_a_same_file_declaration_is_resolved_not_pending(self) -> None:
+        """A locally-declared helper legitimately resolves to this file; only
+        landing on an *import* line means "not ready"."""
+        tracer = self._tracer(ROUTE)
+        assert tracer._is_unresolved([_Loc("/r.ts", 2)], "/r.ts") is False
+
+    def test_unknown_content_is_treated_as_resolved(self) -> None:
+        tracer = self._tracer("")
+        assert tracer._is_unresolved([_Loc("/r.ts", 0)], "/r.ts") is False
+
+
+# ---------------------------------------------------------------------------
+# Per-route attribution for centrally-mounted (Express) routes
+# ---------------------------------------------------------------------------
+
+
+SERVER = """
+app.use('/api/BasketItems', security.isAuthorized())
+app.post('/api/Challenges', security.denyAll())
+app.get('/api/Products', productController())
+router.get('/profile', requireAuth, handler)
+"""
+
+
+class TestRouteMounts:
+    def test_each_mounted_route_maps_to_its_own_middleware(self) -> None:
+        mounts = AuthFlowTracer._route_mounts(SERVER)
+        assert "isAuthorized" in mounts[("*", "/api/BasketItems")]
+        assert "denyAll" in mounts[("POST", "/api/Challenges")]
+
+    def test_an_unguarded_route_is_still_recorded(self) -> None:
+        """It has to appear, so it can be answered "no auth" rather than
+        falling through to a file-wide scan that a neighbour would pass."""
+        assert ("GET", "/api/Products") in AuthFlowTracer._route_mounts(SERVER)
+
+    def test_a_file_that_mounts_nothing_yields_nothing(self) -> None:
+        assert AuthFlowTracer._route_mounts("const x = 1\n") == {}
+
+    def test_the_first_mount_wins(self) -> None:
+        src = "app.use('/x', authGuard())\napp.use('/x', other())\n"
+        assert "authGuard" in AuthFlowTracer._route_mounts(src)[("*", "/x")]
+
+    def test_the_same_path_keeps_a_verdict_per_method(self) -> None:
+        """Juice Shop leaves `GET /api/Recycles` open and guards the POST on
+        the very next line. Keyed by path alone, the first settled both."""
+        src = (
+            "app.get('/api/Recycles', recycles.blockRecycleItems())\n"
+            "app.post('/api/Recycles', security.isAuthorized())\n"
+        )
+        mounts = AuthFlowTracer._route_mounts(src)
+        assert "blockRecycleItems" in mounts[("GET", "/api/Recycles")]
+        assert "isAuthorized" in mounts[("POST", "/api/Recycles")]
+
+    def test_use_and_all_apply_to_any_method(self) -> None:
+        """They mount a path, not a method, so they answer whichever methods
+        have no mount of their own."""
+        mounts = AuthFlowTracer._route_mounts(
+            "app.use('/x', guard())\napp.all('/y', other())\n"
+        )
+        assert ("*", "/x") in mounts
+        assert ("*", "/y") in mounts
+
+
+class TestMiddlewareNames:
+    def test_a_qualified_call_yields_the_member(self) -> None:
+        assert AuthFlowTracer._middleware_names(" security.isAuthorized())") == [
+            "isAuthorized"
+        ]
+
+    def test_a_bare_reference_yields_the_name(self) -> None:
+        """Express middleware is as often passed by reference as called."""
+        assert AuthFlowTracer._middleware_names(" requireAuth, handler)") == [
+            "requireAuth",
+            "handler",
+        ]
+
+    def test_several_middlewares_keep_their_order(self) -> None:
+        names = AuthFlowTracer._middleware_names(
+            " security.isAuthorized(), security.appendUserId())"
+        )
+        assert names == ["isAuthorized", "appendUserId"]
+
+    def test_the_count_is_bounded(self) -> None:
+        from isitsecure.engine.constants import LSPConfig
+
+        args = ", ".join(f"mw{i}()" for i in range(10))
+        assert (
+            len(AuthFlowTracer._middleware_names(args))
+            == LSPConfig.MAX_MOUNT_MIDDLEWARE
+        )
+
+
+class TestLocateSymbol:
+    def test_prefers_a_use_site_over_the_import(self) -> None:
+        """Asking for the definition of an import specifier is answered with
+        the import itself, which is the shape the retry waits on."""
+        src = "import { requireAuth } from './auth'\nrouter.get('/x', requireAuth)\n"
+        line, _char = AuthFlowTracer._locate_symbol(src, "requireAuth")
+        assert line == 1
+
+    def test_falls_back_to_the_import_when_that_is_all_there_is(self) -> None:
+        src = "import { requireAuth } from './auth'\n"
+        assert AuthFlowTracer._locate_symbol(src, "requireAuth") == (0, 9)
+
+    def test_absent_symbol_returns_none(self) -> None:
+        assert AuthFlowTracer._locate_symbol("const a = 1\n", "nope") is None
+
+
+# ---------------------------------------------------------------------------
+# Express middleware is judged on its own body, not its module
+# ---------------------------------------------------------------------------
+
+
+# `requireAuth` does nothing but call next(); `checkToken`, further down the
+# same module, is the one that verifies. Auth helpers cluster like this.
+MIDDLEWARE_MODULE = """export function requireAuth(req, res, next) {
+  next()
+}
+
+export function checkToken(req, res, next) {
+  const user = jwt.verify(req.headers.authorization, SECRET)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  next()
+}
+"""
+
+# Applied without a path, so it guards every route on this router — the shape
+# `_trace_express_auth` serves. A `.use('/admin', guard)` would be a mount and
+# is attributed to its own route instead.
+ROUTE_USING_IT = (
+    "import { requireAuth } from '../middleware/auth'\n"
+    "router.use(requireAuth)\n"
+    "router.get('/profile', handler)\n"
+)
+
+
+class TestExpressMiddlewareScoping:
+    @staticmethod
+    def _tracer():
+        repo = _make_repo(
+            file_index={
+                "src/routes/profile.ts": ROUTE_USING_IT,
+                "src/middleware/auth.ts": MIDDLEWARE_MODULE,
+            }
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(
+                file_path="/tmp/test/src/middleware/auth.ts",
+                line=0,          # requireAuth's own declaration
+                character=0,
+            )
+        ]
+        return AuthFlowTracer(lsp, repo)
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_function_does_not_vouch_for_the_middleware(
+        self,
+    ) -> None:
+        """`requireAuth` only calls next(). The `jwt.verify` further down its
+        module belongs to `checkToken`, and searching the whole file — which
+        is what this replaced — reported the route as authenticated."""
+        result = await self._tracer()._trace_express_auth(
+            ROUTE_USING_IT, "/tmp/test/src/routes/profile.ts"
+        )
+        assert result is None or result.has_verified_auth is False
+
+    @pytest.mark.asyncio
+    async def test_middleware_that_does_verify_is_still_confirmed(self) -> None:
+        """The scoping must not cost a true positive: point the definition at
+        `checkToken` and the terminal is found in its own body."""
+        repo = _make_repo(
+            file_index={
+                "src/routes/profile.ts": ROUTE_USING_IT,
+                "src/middleware/auth.ts": MIDDLEWARE_MODULE,
+            }
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(
+                file_path="/tmp/test/src/middleware/auth.ts",
+                line=4,          # checkToken's declaration
+                character=0,
+            )
+        ]
+        result = await AuthFlowTracer(lsp, repo)._trace_express_auth(
+            ROUTE_USING_IT, "/tmp/test/src/routes/profile.ts"
+        )
+        assert result is not None and result.has_verified_auth is True
+        assert "jwt.verify" in result.auth_method
+
+
+class TestAppliedMiddlewareDiscovery:
+    """Middleware is found by where it is applied, not by a list of names.
+
+    The list this replaced had five entries, so it could only recognise
+    vocabulary someone had thought of in advance.
+    """
+
+    def test_a_project_specific_guard_is_found(self) -> None:
+        """`ensureMember` is nobody's convention — it is this app's word."""
+        src = "router.use(ensureMember)\nrouter.get('/x', handler)\n"
+        assert AuthFlowTracer._applied_middleware(src) == ["ensureMember"]
+
+    def test_a_qualified_call_yields_the_member(self) -> None:
+        src = "app.use(security.isAuthorized())\n"
+        assert AuthFlowTracer._applied_middleware(src) == ["isAuthorized"]
+
+    def test_mounted_middleware_is_left_to_its_route(self) -> None:
+        """`.use('/admin', guard)` guards one path, not the whole router, and
+        is attributed per route — counting it here would let it vouch for
+        every other route in the file."""
+        src = "app.use('/admin', requireAdmin)\n"
+        assert AuthFlowTracer._applied_middleware(src) == []
+
+    def test_both_forms_in_one_file_are_kept_apart(self) -> None:
+        src = (
+            "app.use(requestLogger)\n"
+            "app.use('/admin', requireAdmin)\n"
+            "app.use(sessionGuard)\n"
+        )
+        assert AuthFlowTracer._applied_middleware(src) == [
+            "requestLogger",
+            "sessionGuard",
+        ]
+
+    def test_several_middlewares_in_one_call_keep_their_order(self) -> None:
+        src = "app.use(cors(), sessionGuard, auditLog)\n"
+        assert AuthFlowTracer._applied_middleware(src) == [
+            "cors",
+            "sessionGuard",
+            "auditLog",
+        ]
+
+    def test_a_name_mentioned_but_never_applied_is_not_middleware(self) -> None:
+        """The old list matched `authenticate` anywhere in the file — an
+        unused import was enough to claim a route was guarded."""
+        src = "import { authenticate } from 'passport'\nconst x = 1\n"
+        assert AuthFlowTracer._applied_middleware(src) == []
+
+    def test_duplicates_collapse(self) -> None:
+        src = "app.use(guard)\nrouter.use(guard)\n"
+        assert AuthFlowTracer._applied_middleware(src) == ["guard"]
+
+    def test_the_count_is_bounded(self) -> None:
+        from isitsecure.engine.constants import LSPConfig
+
+        src = "".join(f"app.use(mw{i})\n" for i in range(12))
+        assert (
+            len(AuthFlowTracer._applied_middleware(src))
+            == LSPConfig.MAX_MOUNT_MIDDLEWARE
+        )
+
+
+class TestRouterWideMiddlewareWins:
+    """`router.use(guard)` guards every route on the router, including ones
+    whose own mount line names no middleware."""
+
+    @pytest.mark.asyncio
+    async def test_a_router_wide_guard_covers_a_mounted_route(self) -> None:
+        routes_src = (
+            "import { ensureMember } from '../auth/membership'\n"
+            "router.use(ensureMember)\n"
+            "router.get('/team/:id', handler)\n"
+        )
+        guard = (
+            "export function ensureMember(req, res, next) {\n"
+            "  const user = verifyToken(req.headers.authorization)\n"
+            "  if (!user) return res.status(401).json({ error: 'no' })\n"
+            "  next()\n"
+            "}\n"
+        )
+        repo = _make_repo(
+            file_index={
+                "src/routes/team.ts": routes_src,
+                "src/auth/membership.ts": guard,
+            },
+        )
+        lsp = _make_lsp()
+        lsp.get_definition.return_value = [
+            LSPLocation(
+                file_path="/tmp/test/src/auth/membership.ts", line=0, character=0
+            )
+        ]
+        route = _make_route("src/routes/team.ts", "/team/:id")
+
+        results = await AuthFlowTracer(lsp, repo).trace_routes([route])
+
+        result = results["src/routes/team.ts:GET /team/:id"]
+        assert result.has_verified_auth is True
+        assert result.middleware_chain == ["ensureMember"]
+
+
+# ---------------------------------------------------------------------------
+# Definition-body extraction and alias following
+# ---------------------------------------------------------------------------
+
+
+class TestAliasTargetColumn:
+    """Which declarations are only another name for something else."""
+
+    def test_a_dotted_alias_points_at_its_last_segment(self) -> None:
+        """`sessionHandler` resolves to the local variable; only
+        `isLoggedInMiddleware` resolves to the middleware itself."""
+        line = "    const isLoggedIn = sessionHandler.isLoggedInMiddleware;"
+        column = AuthFlowTracer._alias_target_column(line)
+        assert line[column:] == "isLoggedInMiddleware;"
+
+    def test_a_bare_alias_points_at_the_name(self) -> None:
+        line = "const guard = requireAuth;"
+        column = AuthFlowTracer._alias_target_column(line)
+        assert line[column:] == "requireAuth;"
+
+    def test_an_export_assignment_is_an_alias(self) -> None:
+        line = "module.exports.guard = internal.guard"
+        assert AuthFlowTracer._alias_target_column(line) is not None
+
+    def test_a_function_body_is_not_an_alias(self) -> None:
+        """This is the implementation — tracing stops here, not one hop on."""
+        line = "this.isLoggedInMiddleware = (req, res, next) => {"
+        assert AuthFlowTracer._alias_target_column(line) is None
+
+    def test_a_call_is_not_an_alias(self) -> None:
+        line = 'const ErrorHandler = require("./error").errorHandler;'
+        assert AuthFlowTracer._alias_target_column(line) is None
+
+    def test_a_construction_is_not_an_alias(self) -> None:
+        line = "const sessionHandler = new SessionHandler(db);"
+        assert AuthFlowTracer._alias_target_column(line) is None
+
+
+class _ScriptedLSP:
+    """An LSP that answers each symbol honestly, from its own position.
+
+    A mock that returns one file for every query proves nothing: a route can
+    then come out verified through a symbol that has no auth in it at all.
+    Definitions are keyed by the exact (file, line, column) asked about.
+    """
+
+    def __init__(self, definitions: dict, files: dict[str, str]) -> None:
+        self._definitions = definitions
+        self._files = files
+        self.queries: list[tuple[str, int, int]] = []
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    async def initialize(self, path: str) -> bool:
+        return True
+
+    async def get_definition(self, file_path: str, line: int, character: int):
+        self.queries.append((file_path, line, character))
+        target = self._definitions.get((file_path, line, character))
+        return [LSPLocation(file_path=target[0], line=target[1], character=0)] if target else []
+
+    async def get_references(self, *a, **k):
+        return None
+
+    async def get_hover(self, *a, **k):
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+class TestAliasFollowing:
+    """Following a local alias to the middleware it names.
+
+    `const isLoggedIn = sessionHandler.isLoggedInMiddleware` is how a project
+    shortens a name it applies to twenty routes. Stopping at the alias reads
+    an assignment with no auth in it and calls every one of those routes
+    unguarded.
+    """
+
+    ROOT = "/tmp/test"
+    ROUTES = "routes.js"
+    SESSION = "session.js"
+    ROUTES_ABS = f"{ROOT}/{ROUTES}"
+    SESSION_ABS = f"{ROOT}/{SESSION}"
+
+    ROUTES_SRC = (
+        "const sessionHandler = new SessionHandler(db);\n"
+        "const isLoggedIn = sessionHandler.isLoggedInMiddleware;\n"
+        "app.get('/dashboard', isLoggedIn, handler.show);\n"
+    )
+    SESSION_SRC = (
+        "this.isLoggedInMiddleware = (req, res, next) => {\n"
+        "  if (!jwt.verify(req.token)) return res.status(401).end();\n"
+        "  next();\n"
+        "};\n"
+    )
+
+    def _column(self, src: str, line: int, needle: str, occurrence: int = 0) -> int:
+        text = src.split("\n")[line]
+        index = -1
+        for _ in range(occurrence + 1):
+            index = text.index(needle, index + 1)
+        return index
+
+    def _tracer(self, *, resolve_alias: bool = True):
+        files = {self.ROUTES: self.ROUTES_SRC, self.SESSION: self.SESSION_SRC}
+        mount_col = self._column(self.ROUTES_SRC, 2, "isLoggedIn")
+        decl_col = self._column(self.ROUTES_SRC, 1, "isLoggedIn")
+        alias_col = self._column(self.ROUTES_SRC, 1, "isLoggedInMiddleware")
+        definitions = {
+            (self.ROUTES_ABS, 2, mount_col): (self.ROUTES_ABS, 1),
+            (self.ROUTES_ABS, 1, decl_col): (self.ROUTES_ABS, 1),
+        }
+        if resolve_alias:
+            definitions[(self.ROUTES_ABS, 1, alias_col)] = (self.SESSION_ABS, 0)
+        lsp = _ScriptedLSP(definitions, files)
+        repo = _make_repo(file_index=files)
+        return AuthFlowTracer(lsp, repo), lsp
+
+    async def test_an_alias_resolves_to_the_middleware_it_names(self) -> None:
+        tracer, _ = self._tracer()
+        body = await tracer._trace_definition_body(
+            self.ROUTES_ABS, 2, self._column(self.ROUTES_SRC, 2, "isLoggedIn")
+        )
+        assert "jwt.verify" in body
+
+    async def test_a_guarded_route_is_verified_through_its_alias(self) -> None:
+        tracer, _ = self._tracer()
+        results = await tracer.trace_routes([_make_route(self.ROUTES, "/dashboard")])
+        result = results[f"{self.ROUTES}:GET /dashboard"]
+        assert result.has_verified_auth
+        assert "jwt.verify" in result.auth_method
+
+    async def test_an_unresolvable_second_hop_does_not_verify(self) -> None:
+        """When the alias target cannot be resolved — an untyped property on
+        a constructed object, say — the alias line is the honest answer, and
+        it has no auth in it, so the route stays unverified rather than
+        falsely cleared."""
+        tracer, _ = self._tracer(resolve_alias=False)
+        results = await tracer.trace_routes([_make_route(self.ROUTES, "/dashboard")])
+        assert not results[f"{self.ROUTES}:GET /dashboard"].has_verified_auth
+
+    async def test_a_self_referential_alias_terminates(self) -> None:
+        """A cycle must end in an answer, not a hang."""
+        src = "const guard = guard;\napp.get('/x', guard, h);\n"
+        files = {"a.js": src}
+        abs_path = f"{self.ROOT}/a.js"
+        definitions = {
+            (abs_path, 1, self._column(src, 1, "guard")): (abs_path, 0),
+            (abs_path, 0, self._column(src, 0, "guard")): (abs_path, 0),
+            (abs_path, 0, self._column(src, 0, "guard", 1)): (abs_path, 0),
+        }
+        tracer = AuthFlowTracer(
+            _ScriptedLSP(definitions, files), _make_repo(file_index=files)
+        )
+        results = await tracer.trace_routes([_make_route("a.js", "/x")])
+        assert not results["a.js:GET /x"].has_verified_auth
+
+    async def test_the_hop_count_is_bounded(self) -> None:
+        """Aliases chained past MAX_TRACE_DEPTH stop rather than recurse on,
+        and the last body reached is still returned."""
+        from isitsecure.engine.constants import LSPConfig
+
+        depth = LSPConfig.MAX_TRACE_DEPTH + 3
+        src = "\n".join(f"const a{i} = a{i + 1};" for i in range(depth))
+        files = {"chain.js": src}
+        abs_path = f"{self.ROOT}/chain.js"
+        definitions = {
+            (abs_path, i, self._column(src, i, f"a{i + 1}")): (abs_path, i + 1)
+            for i in range(depth)
+        }
+        tracer = AuthFlowTracer(
+            _ScriptedLSP(definitions, files), _make_repo(file_index=files)
+        )
+        body = await tracer._trace_definition_body(
+            abs_path, 0, self._column(src, 0, "a1")
+        )
+        assert body is not None
+        assert len(tracer._lsp.queries) <= LSPConfig.MAX_TRACE_DEPTH
+
+
+@pytest.mark.asyncio
+class TestRejectionCountsAsAuth:
+    """A guard that rejects is a guard, but a handler that errors is not.
+
+    `isAccounting` names no auth library — it compares a role and answers 403
+    otherwise. Requiring a *terminal* call meant role guards read as unguarded
+    and their routes were reported as having no auth at all.
+    """
+
+    ROOT = "/tmp/test"
+    SERVER = "server.ts"
+    SERVER_ABS = f"{ROOT}/{SERVER}"
+    GUARDS = "guards.ts"
+    GUARDS_ABS = f"{ROOT}/{GUARDS}"
+
+    GUARD_SRC = (
+        "export const isAccounting = () => {\n"
+        "  return (req, res, next) => {\n"
+        "    if (decoded?.data?.role === roles.accounting) next()\n"
+        "    else res.status(403).json({ error: 'Malicious activity' })\n"
+        "  }\n"
+        "}\n"
+    )
+    # A handler, not a guard: its 401 is about the password being wrong.
+    HANDLER_SRC = (
+        "export const changePassword = () => {\n"
+        "  return (req, res, next) => {\n"
+        "    if (!req.query.new) return res.status(401).send('empty')\n"
+        "    res.json({ ok: true })\n"
+        "  }\n"
+        "}\n"
+    )
+
+    def _tracer(self, mount_line: str):
+        server = f"const app = express()\n{mount_line}\n"
+        files = {
+            self.SERVER: server,
+            self.GUARDS: self.GUARD_SRC + "\n" + self.HANDLER_SRC,
+        }
+        guard_line = (self.GUARD_SRC + "\n" + self.HANDLER_SRC).split("\n")
+        definitions = {}
+        for symbol, line in (("isAccounting", 0), ("changePassword", 7)):
+            for index, text in enumerate(server.split("\n")):
+                column = text.find(symbol)
+                if column != -1:
+                    definitions[(self.SERVER_ABS, index, column)] = (
+                        self.GUARDS_ABS, line
+                    )
+        assert guard_line[7].startswith("export const changePassword")
+        lsp = _ScriptedLSP(definitions, files)
+        return AuthFlowTracer(lsp, _make_repo(file_index=files))
+
+    async def _verdict(self, mount_line: str, method: str, pattern: str):
+        tracer = self._tracer(mount_line)
+        results = await tracer.trace_routes(
+            [_make_route(self.SERVER, pattern, method=method)]
+        )
+        return results[f"{self.SERVER}:{method} {pattern}"]
+
+    async def test_a_role_guard_that_rejects_is_verified(self) -> None:
+        verdict = await self._verdict(
+            "app.get('/orders', security.isAccounting(), allOrders())",
+            "GET", "/orders",
+        )
+        assert verdict.has_verified_auth
+        assert "isAccounting" in verdict.auth_method
+
+    async def test_a_handlers_own_error_path_is_not_auth(self) -> None:
+        """The last argument is the handler, and every handler has an error
+        path — accepting it cleared routes on their own validation errors."""
+        verdict = await self._verdict(
+            "app.get('/change-password', changePassword())",
+            "GET", "/change-password",
+        )
+        assert not verdict.has_verified_auth
+
+    async def test_a_path_wide_mount_is_all_middleware(self) -> None:
+        """`.use` mounts no handler, so its last argument guards too."""
+        verdict = await self._verdict(
+            "app.use('/orders', security.isAccounting())", "GET", "/orders"
+        )
+        assert verdict.has_verified_auth

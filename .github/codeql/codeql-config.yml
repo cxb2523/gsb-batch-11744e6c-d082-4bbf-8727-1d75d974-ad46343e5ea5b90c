@@ -1,0 +1,33 @@
+name: "isitsecure CodeQL config"
+
+# CodeQL should analyze the shipped product code only. The paths below are
+# excluded deliberately — flagging them produces noise, not vulnerabilities:
+#
+#   tests/     Test assertions and fixtures. CodeQL's url-substring rule fires on
+#              things like `assert "example.com" in url`, which is a test check,
+#              not runtime sanitization.
+#   test-app/  An INTENTIONALLY vulnerable sample app (old next/jsonwebtoken/etc.)
+#              used as input to exercise the scanner. It is supposed to be insecure.
+#   benchmarks/fixtures/
+#              INTENTIONALLY vulnerable SAST-injection fixtures (the taint
+#              benchmark's ground truth — planted SQLi/cmdi/SSRF/etc.). They are
+#              supposed to be insecure; flagging them is noise, not a finding.
+#   ui/        A Next.js STATIC EXPORT (`output: "export"`, images.unoptimized),
+#              served as plain files by the localhost-bound FastAPI launch server
+#              (`isitsecure launch` binds 127.0.0.1; CORS restricted to localhost).
+#              The Next.js server runtime — middleware, Server Actions, rewrites,
+#              image optimizer, response cache — never executes. Dependabot alerts
+#              against `ui/` are dismissed as `not_used` on this basis; do not
+#              "fix" them by bumping in response to an advisory. Exposed
+#              multi-user deployment is tracked as defense-in-depth in #20.
+#
+#              NOTE: this entry is currently vestigial. codeql.yml inits with
+#              `languages: python` only, so the JS/TS under ui/src is not analyzed
+#              either way. Excluding a Next.js dependency CVE is NOT a reason to
+#              skip code analysis of our own UI source — that remains a real gap.
+
+paths-ignore:
+  - tests
+  - test-app
+  - benchmarks/fixtures
+  - ui

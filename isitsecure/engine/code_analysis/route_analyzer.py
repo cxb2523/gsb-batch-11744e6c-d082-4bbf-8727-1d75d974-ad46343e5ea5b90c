@@ -1,0 +1,665 @@
+"""Route authentication and authorization analyzer.
+
+Analyzes API routes and Server Actions for:
+1. Missing authentication checks (no getUser/getSession call)
+2. Missing authorization checks (no ownership filter)
+3. Service role usage (bypasses RLS)
+4. Missing input validation (no zod/yup/joi)
+5. IDOR risk (user-supplied ID without ownership check)
+6. Server Actions without auth checks
+
+Monorepo-aware: respects ``has_auth_check`` from route mappers
+(tRPC, Express, Next.js).  When a route mapper has already confirmed
+auth status, this scanner trusts that classification instead of
+re-scanning with framework-specific patterns.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+
+from isitsecure.engine.code_analysis.models import CodeFinding
+from isitsecure.engine.code_analysis.protocols import (
+    RepoSnapshot,
+    RouteEntry,
+)
+from isitsecure.engine.constants import (
+    LSPConfig,
+    RouteAuthAnalyzerConfig,
+)
+from isitsecure.engine.shared.code_utils import find_line_number
+from isitsecure.engine.enums import FindingCategory, SeverityLevel
+
+logger = logging.getLogger(__name__)
+
+
+class RouteAuthAnalyzer:
+    """Analyzes API routes and Server Actions for security issues.
+
+    Implements CodeScannerProtocol.
+    """
+
+    CONFIDENCE_ROUTE_FINDING = 0.85
+    CONFIDENCE_SERVER_ACTION_FINDING = 0.85
+    SNIPPET_MAX_LENGTH = 300
+    EXPORTED_ASYNC_FUNCTION_PATTERN = r'export\s+async\s+function\s+(\w+)'
+
+    @property
+    def scanner_name(self) -> str:
+        return RouteAuthAnalyzerConfig.SCANNER_NAME
+
+    async def scan(self, repo: RepoSnapshot) -> list[CodeFinding]:
+        """Analyze all API routes and Server Actions.
+
+        Deduplicates analysis by file: when multiple routes share the
+        same file (common in tRPC/Express), file-level checks (service_role,
+        validation) are performed ONCE per file. Route-specific checks
+        (missing auth, IDOR) use per-route metadata from the route mapper.
+        """
+        findings: list[CodeFinding] = []
+
+        # Group routes by file to avoid duplicate file-level analysis
+        routes_by_file: dict[str, list[RouteEntry]] = {}
+        for route in repo.route_map:
+            routes_by_file.setdefault(route.file_path, []).append(route)
+
+        # Analyze each file once, then generate per-route findings
+        analyzed_files: set[str] = set()
+        for file_path, file_routes in routes_by_file.items():
+            file_findings = self._analyze_file_routes(
+                file_path, file_routes, analyzed_files
+            )
+            findings.extend(file_findings)
+
+        # Analyze Server Actions from file_index
+        server_action_findings = self._analyze_server_actions(repo)
+        findings.extend(server_action_findings)
+
+        logger.info(
+            "RouteAuthAnalyzer: analyzed %d routes across %d files, %d findings",
+            len(repo.route_map),
+            len(routes_by_file),
+            len(findings),
+        )
+        return findings
+
+    def _analyze_file_routes(
+        self,
+        file_path: str,
+        routes: list[RouteEntry],
+        analyzed_files: set[str],
+    ) -> list[CodeFinding]:
+        """Analyze routes grouped by file.
+
+        File-level checks (service_role, validation) run once per file.
+        Route-level checks (auth, IDOR) use per-route has_auth_check metadata.
+        """
+        findings: list[CodeFinding] = []
+
+        # Get content from any route (all share the same file content)
+        content = routes[0].content if routes else ""
+        if not content:
+            return findings
+
+        # File-level analysis (run ONCE per file, not per route)
+        if file_path not in analyzed_files:
+            analyzed_files.add(file_path)
+
+            # Service role check — ONE finding per file
+            if self._uses_service_role(content):
+                findings.append(self._create_finding(
+                    route=routes[0],
+                    title=RouteAuthAnalyzerConfig.TITLE_SERVICE_ROLE,
+                    description=(
+                        f"The file {file_path} uses the Supabase "
+                        f"service_role key, which bypasses all Row Level "
+                        f"Security policies. Routes: "
+                        f"{', '.join(r.route_pattern for r in routes[:5])}"
+                        f"{'...' if len(routes) > 5 else ''}"
+                    ),
+                    severity=SeverityLevel(
+                        RouteAuthAnalyzerConfig.SEVERITY_SERVICE_ROLE,
+                    ),
+                    category=FindingCategory.AUTH_WEAKNESS,
+                ))
+
+            # Input validation check — ONE finding per file
+            # Only flag if file has user-supplied IDs or Supabase ops
+            # but no validation framework (zod/yup/joi)
+            has_validation = self._has_input_validation(content)
+            has_user_supplied_id = self._has_user_supplied_id(content)
+            supabase_ops = self._extract_supabase_operations(content)
+            has_mutations = any(
+                m in route.http_methods
+                for route in routes
+                for m in ("POST", "PUT", "PATCH", "DELETE")
+            )
+
+            if (
+                not has_validation
+                and (has_user_supplied_id or supabase_ops)
+                and has_mutations
+            ):
+                findings.append(self._create_finding(
+                    route=routes[0],
+                    title=RouteAuthAnalyzerConfig.TITLE_MISSING_VALIDATION,
+                    description=(
+                        f"The file {file_path} accepts user input "
+                        f"but does not appear to validate it with zod, "
+                        f"yup, joi, or similar. Routes: "
+                        f"{', '.join(r.route_pattern for r in routes[:5])}"
+                        f"{'...' if len(routes) > 5 else ''}"
+                    ),
+                    severity=SeverityLevel(
+                        RouteAuthAnalyzerConfig.SEVERITY_MISSING_VALIDATION,
+                    ),
+                    category=FindingCategory.INJECTION_RISK,
+                ))
+
+        # Route-level analysis (per route, using mapper metadata)
+        for route in routes:
+            route_findings = self._analyze_route(route)
+            findings.extend(route_findings)
+
+        return findings
+
+    # Routes that are public by definition, exempt from the missing-auth
+    # check. Every entry is a name standardised outside this project —
+    # Kubernetes probe endpoints and the conventional API-documentation paths
+    # — and matching is exact, never a substring.
+    #
+    # Nothing app-specific belongs here, and neither does anything matched by
+    # a fragment: a scanned app that happens to reuse the word gets a real
+    # finding silently suppressed, and silence is indistinguishable from
+    # having looked. A project with its own public route suppresses that
+    # finding by fingerprint (`--suppress`), which is visible and reversible.
+    #
+    # "/" stays: a site's home page is public by convention, and removing it
+    # was measured to cost three false positives and buy nothing. The case
+    # that seemed to justify removing it — Juice Shop's /dataerasure, which
+    # declares `router.get('/')` — turned out to authenticate inside its
+    # handler, so the exemption was hiding no vulnerability there.
+    _PUBLIC_ROUTE_PATTERNS = frozenset({
+        "/health", "/ping", "/status", "/ready", "/livez", "/readyz",
+        "/", "/docs", "/swagger", "/openapi",
+    })
+
+    def _analyze_route(self, route: RouteEntry) -> list[CodeFinding]:
+        """Analyze a single API route for security issues.
+
+        Monorepo-aware: trusts ``has_auth_check`` from route mappers
+        (tRPC, Express, Next.js) before falling back to content-based
+        regex detection.
+
+        Note: service_role and validation checks are now file-level
+        (handled in ``_analyze_file_routes``), not per-route. This
+        prevents N duplicate findings for N routes in the same file.
+        """
+        findings: list[CodeFinding] = []
+
+        if not route.content:
+            return findings
+
+        # Skip intentionally public routes entirely
+        if self._is_intentionally_public(route):
+            return findings
+
+        # --- Determine auth status ---
+        # A mapper's True is a guard named on the mount line. Its False is
+        # narrower than it looks: no *known name* was applied there, which is
+        # not the same as no auth. A route may check inside its handler, and
+        # an anonymous arrow function offers no name to recognise:
+        #
+        #     router.get('/', (req, res, next) => {
+        #       const user = authenticatedUsers.get(req.cookies.token)
+        #       if (!user) { next(new Error('...')); return }
+        #
+        # So a False is re-examined against the route's own handler. Its own:
+        # `content` is the whole file, and one `server.ts` shares that between
+        # a hundred routes, so scanning it would let a single guarded
+        # neighbour clear all of them — the mistake fixed in #168 and #170.
+        if route.has_auth_check is True:
+            has_auth = True
+        elif route.has_auth_check is False:
+            has_auth = self._handler_authenticates(route)
+        else:
+            # has_auth_check is None (unknown) — fall back to content scan
+            has_auth = self._has_auth_check(route.content)
+
+        # Check 1: Missing authentication (only for routes not confirmed by mapper)
+        if not has_auth:
+            findings.append(self._create_finding(
+                route=route,
+                title=RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH,
+                description=(
+                    f"The API route {route.route_pattern} "
+                    f"({', '.join(route.http_methods)}) "
+                    f"does not appear to check authentication. Any "
+                    f"unauthenticated request can access this endpoint."
+                ),
+                severity=SeverityLevel(
+                    RouteAuthAnalyzerConfig.SEVERITY_MISSING_AUTH,
+                ),
+                category=FindingCategory.AUTH_WEAKNESS,
+            ))
+
+        # Check 2: IDOR / ownership — only for Next.js-style routes where
+        # each file is a single route handler. For tRPC/Express routes
+        # where multiple routes share the same file content, content-level
+        # IDOR checks produce false positives (one params.id match → flagged
+        # on all 16 routes). The LLM reviewer handles IDOR for those.
+        if has_auth and self._is_single_route_file(route):
+            has_ownership = self._has_ownership_check(route.content)
+            has_user_supplied_id = self._has_user_supplied_id(route.content)
+            supabase_ops = self._extract_supabase_operations(route.content)
+
+            if not has_ownership and has_user_supplied_id:
+                findings.append(self._create_finding(
+                    route=route,
+                    title=RouteAuthAnalyzerConfig.TITLE_IDOR_RISK,
+                    description=(
+                        f"The API route {route.route_pattern} checks "
+                        f"authentication but does not verify the authenticated "
+                        f"user owns the requested resource. A user-supplied ID "
+                        f"is used in a query without an ownership filter."
+                    ),
+                    severity=SeverityLevel(
+                        RouteAuthAnalyzerConfig.SEVERITY_IDOR_RISK,
+                    ),
+                    category=FindingCategory.IDOR,
+                ))
+            elif not has_ownership and supabase_ops:
+                findings.append(self._create_finding(
+                    route=route,
+                    title=RouteAuthAnalyzerConfig.TITLE_MISSING_OWNERSHIP,
+                    description=(
+                        f"The API route {route.route_pattern} checks "
+                        f"authentication but does not filter by user ownership. "
+                        f"Supabase operations: {', '.join(supabase_ops)}."
+                    ),
+                    severity=SeverityLevel(
+                        RouteAuthAnalyzerConfig.SEVERITY_MISSING_OWNERSHIP,
+                    ),
+                    category=FindingCategory.AUTH_WEAKNESS,
+                ))
+
+        return findings
+
+    @staticmethod
+    def _is_single_route_file(route: RouteEntry) -> bool:
+        """Check if this route is from a file with a single route handler.
+
+        Next.js route.ts/route.js files contain one route per file, so
+        content-level checks (IDOR, ownership) are accurate.
+
+        tRPC router files and Express entry files contain many routes
+        sharing the same content, making content-level checks unreliable.
+        """
+        # Next.js App Router files
+        if route.file_path.endswith(("route.ts", "route.js")):
+            return True
+
+        # Next.js Pages Router API files
+        if "/pages/api/" in route.file_path:
+            return True
+
+        # Everything else (tRPC routers, Express files) is multi-route
+        return False
+
+    def _handler_authenticates(self, route: RouteEntry) -> bool:
+        """Whether a route's own handler both identifies a caller and refuses.
+
+        Both are required, and the conjunction is the whole point. Looking up
+        an identity is not authentication on its own — it is most of what an
+        IDOR looks like::
+
+            app.get('/profile/:id', (req, res) => {
+              const user = getUser(req.params.id)   // no caller involved
+              res.json(user)                        // and nothing refused
+            })
+
+        Accepting `getUser(` there would suppress the finding for a route
+        whose whole problem is that it never checks who is asking. A handler
+        that authenticates also turns someone away, which is the shape
+        `_has_enforcement` recognises.
+        """
+        handler = route.handler_source
+        if not handler:
+            return False
+        return self._has_auth_check(handler) and self._has_enforcement(handler)
+
+    @staticmethod
+    def _has_enforcement(content: str) -> bool:
+        """Whether the code refuses a request — a 401/403 or an auth error."""
+        return any(
+            re.search(pattern, content)
+            for pattern in LSPConfig.AUTH_ENFORCEMENT_PATTERNS
+        )
+
+    def _is_intentionally_public(self, route: RouteEntry) -> bool:
+        """Check if a route is intentionally public and should not be flagged.
+
+        Covers:
+        - Health/status endpoints
+        - Webhook endpoints (signature-verified, not auth-gated)
+        - Public marketplace browse endpoints (publicProcedure in tRPC)
+        - Registration/password reset endpoints
+        """
+        pattern = route.route_pattern
+
+        # Exact matches
+        if pattern in self._PUBLIC_ROUTE_PATTERNS:
+            return True
+
+        # No substring matching, and in particular no exemption for a path
+        # containing "webhook". Webhook receivers authenticate by verifying
+        # the sender's signature rather than a session, so they are answered
+        # where every other route is: by what the handler does. The path
+        # cannot tell a receiver from an endpoint that *sends* a webhook —
+        # which is an SSRF sink, and was being silenced as though it were
+        # signature-verified.
+
+        # Deliberately no rule here for "the mapper found no auth on a GET".
+        # That was read as evidence the route is *intentionally* open, when it
+        # is the exact condition a missing-auth finding exists to report. The
+        # Express mapper always answers True or False, never None, so between
+        # that rule and `has_auth_check is True` no Express GET route could
+        # produce a missing-auth finding at all: 49 of Juice Shop's 104 and 13
+        # of NodeGoat's 19 were skipped here without being looked at.
+        #
+        # A route is public because of what it is — a health check, a webhook
+        # — not because we failed to find a guard on it. Absence of evidence
+        # belongs in the finding, not in the decision to stay quiet.
+        return False
+
+    def _analyze_server_actions(self, repo: RepoSnapshot) -> list[CodeFinding]:
+        """Find and analyze Server Actions (files with 'use server')."""
+        findings: list[CodeFinding] = []
+
+        for file_path, content in repo.file_index.items():
+            if not re.search(
+                RouteAuthAnalyzerConfig.USE_SERVER_DIRECTIVE, content,
+            ):
+                continue
+
+            # This is a server action file
+            if not self._has_auth_check(content):
+                # Find each exported async function (potential action)
+                functions = re.findall(
+                    self.EXPORTED_ASYNC_FUNCTION_PATTERN,
+                    content,
+                )
+
+                for func_name in functions:
+                    findings.append(CodeFinding(
+                        scanner_name=self.scanner_name,
+                        severity=SeverityLevel(
+                            RouteAuthAnalyzerConfig.SEVERITY_SERVER_ACTION_NO_AUTH,
+                        ),
+                        category=FindingCategory.AUTH_WEAKNESS,
+                        title=RouteAuthAnalyzerConfig.TITLE_SERVER_ACTION_NO_AUTH,
+                        description=(
+                            f"Server Action '{func_name}' in {file_path} "
+                            f"does not check authentication. Server Actions "
+                            f"are callable from the client — any user can "
+                            f"invoke this action without being logged in."
+                        ),
+                        file_path=file_path,
+                        confidence=self.CONFIDENCE_SERVER_ACTION_FINDING,
+                    ))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # LSP validation (Phase 7.5 — called by orchestrator after scan)
+    # ------------------------------------------------------------------
+
+    def validate_with_lsp(
+        self,
+        findings: list[CodeFinding],
+        auth_flow_results: dict[str, AuthFlowResult],
+    ) -> list[CodeFinding]:
+        """Validate regex findings against LSP auth flow analysis.
+
+        - LSP confirms auth exists → suppress "missing auth" finding
+        - LSP confirms no auth AND regex agrees → boost confidence
+        - LSP traces ownership → suppress IDOR finding
+
+        Args:
+            findings: Regex-generated findings from ``scan()``.
+            auth_flow_results: LSP auth flow data keyed by
+                ``file_path:route_pattern``.
+
+        Returns:
+            Filtered findings with LSP validation applied.
+        """
+        from isitsecure.engine.code_analysis.lsp.protocols import (
+            AuthFlowResult,
+        )
+        from isitsecure.engine.constants import LSPConfig
+
+        if not auth_flow_results:
+            return findings
+
+        validated: list[CodeFinding] = []
+        suppressed_count = 0
+
+        for finding in findings:
+            # Only validate route_auth_analyzer findings
+            if finding.scanner_name != self.scanner_name:
+                validated.append(finding)
+                continue
+
+            # Find matching LSP result
+            lsp_result = self._find_lsp_result(finding, auth_flow_results)
+
+            if lsp_result is None:
+                # No LSP data for this finding — keep as-is
+                validated.append(finding)
+                continue
+
+            # Suppress "missing auth" if LSP confirms auth exists
+            if (
+                finding.title == RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH
+                and lsp_result.has_verified_auth
+            ):
+                finding.lsp_suppressed = True
+                suppressed_count += 1
+                continue
+
+            # Suppress IDOR if LSP confirms ownership check
+            if (
+                finding.title == RouteAuthAnalyzerConfig.TITLE_IDOR_RISK
+                and lsp_result.has_ownership_check
+            ):
+                finding.lsp_suppressed = True
+                suppressed_count += 1
+                continue
+
+            # Suppress "missing ownership" if LSP confirms ownership
+            if (
+                finding.title == RouteAuthAnalyzerConfig.TITLE_MISSING_OWNERSHIP
+                and lsp_result.has_ownership_check
+            ):
+                finding.lsp_suppressed = True
+                suppressed_count += 1
+                continue
+
+            # LSP agrees with regex — boost confidence
+            if not lsp_result.has_verified_auth:
+                finding.confidence = min(
+                    LSPConfig.CONFIDENCE_LSP_CONFIRMED,
+                    finding.confidence + LSPConfig.CONFIDENCE_LSP_BOOST,
+                )
+                finding.lsp_validated = True
+
+            validated.append(finding)
+
+        if suppressed_count:
+            logger.info(
+                LSPConfig.MSG_VALIDATION_COMPLETE.format(
+                    confirmed=len(validated),
+                    suppressed=suppressed_count,
+                )
+            )
+
+        return validated
+
+    @staticmethod
+    def _find_lsp_result(
+        finding: CodeFinding,
+        auth_flow_results: dict[str, AuthFlowResult],
+    ) -> AuthFlowResult | None:
+        """Find the LSP result matching a finding's file and route."""
+        from isitsecure.engine.code_analysis.lsp.protocols import (
+            AuthFlowResult,
+        )
+
+        if finding.route_pattern:
+            from isitsecure.engine.code_analysis.lsp.auth_flow_tracer import (
+                AuthFlowTracer,
+            )
+
+            # A verdict is per method: `GET /api/Recycles` is open where
+            # `POST /api/Recycles` is guarded, so a finding about one must not
+            # be answered with the other's result.
+            for method in finding.http_methods:
+                result = auth_flow_results.get(
+                    AuthFlowTracer.result_key(
+                        finding.file_path, method, finding.route_pattern
+                    )
+                )
+                if result is not None:
+                    return result
+
+            # A finding that names no method is answered from the route only
+            # when every method on it agrees — same reason as the file-level
+            # case below.
+            suffix = f":{finding.route_pattern}"
+            on_route = [
+                result
+                for key, result in auth_flow_results.items()
+                if key.startswith(finding.file_path + ":")
+                and key.endswith(suffix)
+            ]
+            if on_route and all(
+                r.has_verified_auth == on_route[0].has_verified_auth
+                for r in on_route
+            ):
+                return on_route[0]
+            return None
+
+        # No route on the finding: only answer from the file when every route
+        # in it agrees. One `server.ts` can mount a hundred routes of which a
+        # handful are guarded, and picking any one of their verdicts would
+        # suppress findings on the rest — hiding real vulnerabilities.
+        in_file = [
+            result
+            for key, result in auth_flow_results.items()
+            if key.startswith(finding.file_path + ":")
+        ]
+        if in_file and all(
+            r.has_verified_auth == in_file[0].has_verified_auth for r in in_file
+        ):
+            return in_file[0]
+        return None
+
+    def _has_auth_check(self, content: str) -> bool:
+        """Check if content contains any authentication check pattern."""
+        return any(
+            re.search(pattern, content)
+            for pattern in RouteAuthAnalyzerConfig.AUTH_CHECK_PATTERNS
+        )
+
+    def _has_ownership_check(self, content: str) -> bool:
+        """Check if content contains any ownership/authorization check."""
+        return any(
+            re.search(pattern, content)
+            for pattern in RouteAuthAnalyzerConfig.OWNERSHIP_CHECK_PATTERNS
+        )
+
+    def _uses_service_role(self, content: str) -> bool:
+        """Check if content uses Supabase service_role key."""
+        return any(
+            re.search(pattern, content)
+            for pattern in RouteAuthAnalyzerConfig.SERVICE_ROLE_PATTERNS
+        )
+
+    def _has_input_validation(self, content: str) -> bool:
+        """Check if content has input validation."""
+        return any(
+            re.search(pattern, content)
+            for pattern in RouteAuthAnalyzerConfig.VALIDATION_PATTERNS
+        )
+
+    def _has_user_supplied_id(self, content: str) -> bool:
+        """Check if content uses user-supplied ID parameters."""
+        return any(
+            re.search(pattern, content)
+            for pattern in RouteAuthAnalyzerConfig.USER_SUPPLIED_ID_PATTERNS
+        )
+
+    def _extract_supabase_operations(self, content: str) -> list[str]:
+        """Extract Supabase table operations from content."""
+        ops: list[str] = []
+        for pattern in RouteAuthAnalyzerConfig.SUPABASE_OPERATION_PATTERNS:
+            for match in re.finditer(pattern, content):
+                groups = match.groups()
+                if len(groups) >= 2:
+                    ops.append(f"{groups[0]}.{groups[1]}")
+                elif len(groups) == 1:
+                    ops.append(f"rpc:{groups[0]}")
+        return ops
+
+    def _create_finding(
+        self,
+        route: RouteEntry,
+        title: str,
+        description: str,
+        severity: SeverityLevel,
+        category: FindingCategory,
+    ) -> CodeFinding:
+        """Create a CodeFinding from route analysis."""
+        from isitsecure.engine.shared.code_context import (
+            CodeContextExtractor,
+        )
+
+        line_number = self._find_relevant_line(route.content, route)
+
+        return CodeFinding(
+            scanner_name=self.scanner_name,
+            severity=severity,
+            category=category,
+            title=title,
+            description=description,
+            file_path=route.file_path,
+            route_pattern=route.route_pattern,
+            http_methods=list(route.http_methods),
+            line_number=line_number,
+            code_snippet=CodeContextExtractor.extract(
+                route.content, line_number
+            ),
+            confidence=self.CONFIDENCE_ROUTE_FINDING,
+        )
+
+    def _find_relevant_line(
+        self, content: str, route: RouteEntry,
+    ) -> int | None:
+        """Find the line number of the first exported handler function."""
+        if not content:
+            return None
+
+        # Look for exported handler functions
+        for method in route.http_methods:
+            pattern = rf'export\s+(?:async\s+)?function\s+{method}'
+            match = re.search(pattern, content)
+            if match:
+                return find_line_number(content, match.start())
+
+        # Fallback: first export
+        match = re.search(r'export\s+', content)
+        if match:
+            return find_line_number(content, match.start())
+
+        return 1

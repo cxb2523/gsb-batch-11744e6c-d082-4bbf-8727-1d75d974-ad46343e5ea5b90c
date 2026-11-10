@@ -1,0 +1,245 @@
+# isitsecure taint/sink rules for Go injection.
+# Rules target STANDARD-LIBRARY and popular-framework APIs (net/http, Gin, Echo,
+# chi request objects as sources; database/sql, os/exec, net/http client, os
+# file open, html/template as sinks) — they apply to any app on these stacks,
+# not to a specific app.
+rules:
+  # ---- SQL injection: dangerous query construction (pattern) ----
+  # Pattern-based (not taint) so parameterized queries — Query(sql, args...) —
+  # are never flagged; only string-built queries match. database/sql methods
+  # (Query, QueryRow, Exec, and their *Context variants) take the SQL as the
+  # first (or second, for *Context) argument; a Sprintf/concatenated first arg
+  # is the tell.
+  - id: isitsecure-go-sqli
+    languages: [go]
+    severity: ERROR
+    metadata: {category: injection_risk, isitsecure-severity: critical}
+    message: "Raw SQL built from fmt.Sprintf/concatenation — SQL injection. Use a parameterized query with placeholders."
+    patterns:
+      - pattern-either:
+          - pattern: $DB.Query(fmt.Sprintf(...), ...)
+          - pattern: $DB.QueryRow(fmt.Sprintf(...), ...)
+          - pattern: $DB.Exec(fmt.Sprintf(...), ...)
+          - pattern: $DB.QueryContext($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.QueryRowContext($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.ExecContext($CTX, fmt.Sprintf(...), ...)
+          - pattern: $DB.Query("..." + $X, ...)
+          - pattern: $DB.QueryRow("..." + $X, ...)
+          - pattern: $DB.Exec("..." + $X, ...)
+
+  # ---- SQL injection: dynamically-built query STRING (intra-file taint) ----
+  # Catches the assign-then-execute shape the inline pattern above misses:
+  #   q := fmt.Sprintf("... %s", x); db.Query(q)
+  # The SOURCE is the string-building itself (Sprintf / concatenation), NOT the
+  # request object — a single-arg query is SQLi-risky precisely when its string
+  # was built dynamically (gosec G201). Keying on the build, not on a request
+  # read, means a constant query (`db.Query("SELECT ...")`) has no source and is
+  # never flagged, and a parameterized call (multi-arg, excluded by the sink) is
+  # never flagged either.
+  - id: isitsecure-go-sqli-taint
+    mode: taint
+    languages: [go]
+    severity: ERROR
+    metadata: {category: injection_risk, isitsecure-severity: critical}
+    message: "A dynamically-built string (fmt.Sprintf/concatenation) flows into a raw SQL query — SQL injection. Use a parameterized query."
+    pattern-sources:
+      - pattern: fmt.Sprintf(...)
+      - pattern: '"..." + $X'
+      - pattern: '$X + "..."'
+    # Single-argument calls only: a placeholder query passes its user data as
+    # extra args — Query(sql, id) — so a tainted value in a *multi-arg* call is
+    # the parameter, not the SQL, and must NOT flag.
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $DB.Query($Q)
+          - pattern: $DB.QueryRow($Q)
+          - pattern: $DB.Exec($Q)
+          - pattern: $DB.QueryContext($CTX, $Q)
+          - pattern: $DB.QueryRowContext($CTX, $Q)
+          - pattern: $DB.ExecContext($CTX, $Q)
+
+  # ---- XSS: unescaped data cast to a template safe-string type ----
+  # html/template auto-escapes by default; casting a value to template.HTML/JS/
+  # HTMLAttr/CSS/URL explicitly BYPASSES that escaping, so a non-literal cast is
+  # the canonical Go XSS sink (gosec G203). A string-literal argument is the
+  # intentional, safe case and is excluded, so this does not false-positive on
+  # static markup.
+    # Regex, not an AST pattern, on purpose: `template.HTML(x)` is a Go type
+    # CONVERSION whose AST match needs type resolution, which fails on a cloned
+    # repo whose modules aren't downloaded. The regex requires a non-quote,
+    # non-close-paren first argument char, so a string-literal cast
+    # (`template.HTML("...")`) — the intentional, safe case — is excluded and
+    # this does not false-positive on static markup.
+  - id: isitsecure-go-xss-template-safestring
+    languages: [go]
+    severity: ERROR
+    metadata: {category: injection_risk, isitsecure-severity: high}
+    message: "Unescaped data cast to a template safe-string type (template.HTML/JS/HTMLAttr/CSS/URL) bypasses Go's auto-escaping — cross-site scripting (XSS)."
+    pattern-regex: 'template\.(?:HTML|JS|HTMLAttr|CSS|URL)\s*\(\s*[^")\s]'
+
+  # ---- Command injection: user input → shell (intra-file taint) ----
+  # os/exec runs the program directly (no shell) UNLESS invoked as sh -c, so a
+  # tainted arg is only injection when the command is a shell. Sink focuses on
+  # exec.Command with a shell interpreter.
+  - id: isitsecure-go-command-injection
+    mode: taint
+    languages: [go]
+    severity: ERROR
+    metadata: {category: injection_risk, isitsecure-severity: critical}
+    message: "User input flows into a shell command (sh -c / bash -c) — command injection."
+    # Shared request-derived taint sources for the taint rules below. NOT
+    # `$C.Query(...)`: it collides with database/sql's `db.Query(...)`, so a bare
+    # `.Query()` on any receiver would read as a source (see the SQLi rule).
+    pattern-sources:
+      # net/http
+      - pattern: $R.URL.Query().Get(...)
+      - pattern: $R.FormValue(...)
+      - pattern: $R.PostFormValue(...)
+      - pattern: $R.Header.Get(...)
+      # gorilla/mux
+      - pattern: mux.Vars($R)[...]
+      # Gin (DefaultQuery is Gin-specific; plain c.Query is omitted — collision)
+      - pattern: $C.DefaultQuery(...)
+      - pattern: $C.Param(...)
+      - pattern: $C.PostForm(...)
+      - pattern: $C.GetHeader(...)
+      # Echo / Fiber
+      - pattern: $C.QueryParam(...)
+      - pattern: $C.FormValue(...)
+      - pattern: $C.Params(...)
+    # Numeric/bool conversion neutralizes string-injection payloads — an int,
+    # float, or bool provably cannot carry `../`, a shell metacharacter, or a
+    # URL host. Sound and language-level (not app-specific), so no overfitting.
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec.Command("sh", "-c", ...)
+              - pattern: exec.Command("bash", "-c", ...)
+              - pattern: exec.CommandContext($CTX, "sh", "-c", ...)
+              - pattern: exec.CommandContext($CTX, "bash", "-c", ...)
+
+  # ---- SSRF: user-controlled URL → outbound request ----
+  - id: isitsecure-go-ssrf
+    mode: taint
+    languages: [go]
+    severity: ERROR
+    metadata: {category: injection_risk, isitsecure-severity: high}
+    message: "User-controlled URL flows into an outbound HTTP request — SSRF."
+    pattern-sources:
+      # net/http
+      - pattern: $R.URL.Query().Get(...)
+      - pattern: $R.FormValue(...)
+      - pattern: $R.PostFormValue(...)
+      - pattern: $R.Header.Get(...)
+      # gorilla/mux
+      - pattern: mux.Vars($R)[...]
+      # Gin (DefaultQuery is Gin-specific; plain c.Query is omitted — it
+      # collides with database/sql's db.Query, see the SQLi rule)
+      - pattern: $C.DefaultQuery(...)
+      - pattern: $C.Param(...)
+      - pattern: $C.PostForm(...)
+      - pattern: $C.GetHeader(...)
+      # Echo / Fiber
+      - pattern: $C.QueryParam(...)
+      - pattern: $C.FormValue(...)
+      - pattern: $C.Params(...)
+    # Numeric/bool conversion neutralizes string-injection payloads — an int,
+    # float, or bool provably cannot carry `../`, a shell metacharacter, or a
+    # URL host. Sound and language-level (not app-specific), so no overfitting.
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+    pattern-sinks:
+      - pattern: http.Get(...)
+      - pattern: http.Post(...)
+      - pattern: http.Head(...)
+      - pattern: http.NewRequest(..., $URL, ...)
+      - pattern: http.NewRequestWithContext($CTX, ..., $URL, ...)
+
+  # ---- Path traversal: request-derived path → file open ----
+  - id: isitsecure-go-path-traversal
+    mode: taint
+    languages: [go]
+    severity: WARNING
+    metadata: {category: injection_risk, isitsecure-severity: high}
+    message: "File opened with a request-derived path — path traversal."
+    pattern-sources:
+      # net/http
+      - pattern: $R.URL.Query().Get(...)
+      - pattern: $R.FormValue(...)
+      - pattern: $R.PostFormValue(...)
+      - pattern: $R.Header.Get(...)
+      # gorilla/mux
+      - pattern: mux.Vars($R)[...]
+      # Gin (DefaultQuery is Gin-specific; plain c.Query is omitted — it
+      # collides with database/sql's db.Query, see the SQLi rule)
+      - pattern: $C.DefaultQuery(...)
+      - pattern: $C.Param(...)
+      - pattern: $C.PostForm(...)
+      - pattern: $C.GetHeader(...)
+      # Echo / Fiber
+      - pattern: $C.QueryParam(...)
+      - pattern: $C.FormValue(...)
+      - pattern: $C.Params(...)
+    # filepath.Base/Clean strip traversal sequences — data through them is safe.
+    pattern-sanitizers:
+      - pattern: filepath.Base(...)
+      - pattern: filepath.Clean(...)
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+    pattern-sinks:
+      - pattern: os.Open(...)
+      - pattern: os.OpenFile(...)
+      - pattern: os.ReadFile(...)
+      - pattern: ioutil.ReadFile(...)
+
+  # ---- Open redirect: user input → redirect target ----
+  - id: isitsecure-go-open-redirect
+    mode: taint
+    languages: [go]
+    severity: WARNING
+    metadata: {category: injection_risk, isitsecure-severity: medium}
+    message: "User input flows into an HTTP redirect target — open redirect."
+    pattern-sources:
+      # net/http
+      - pattern: $R.URL.Query().Get(...)
+      - pattern: $R.FormValue(...)
+      - pattern: $R.PostFormValue(...)
+      - pattern: $R.Header.Get(...)
+      # gorilla/mux
+      - pattern: mux.Vars($R)[...]
+      # Gin (DefaultQuery is Gin-specific; plain c.Query is omitted — it
+      # collides with database/sql's db.Query, see the SQLi rule)
+      - pattern: $C.DefaultQuery(...)
+      - pattern: $C.Param(...)
+      - pattern: $C.PostForm(...)
+      - pattern: $C.GetHeader(...)
+      # Echo / Fiber
+      - pattern: $C.QueryParam(...)
+      - pattern: $C.FormValue(...)
+      - pattern: $C.Params(...)
+    # Numeric/bool conversion neutralizes string-injection payloads — an int,
+    # float, or bool provably cannot carry `../`, a shell metacharacter, or a
+    # URL host. Sound and language-level (not app-specific), so no overfitting.
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+    pattern-sinks:
+      - pattern: http.Redirect($W, $R, $URL, ...)
+      - patterns:
+          - pattern: $C.Redirect(...)

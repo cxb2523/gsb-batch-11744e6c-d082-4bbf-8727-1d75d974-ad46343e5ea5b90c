@@ -1,0 +1,874 @@
+"""Tests for the active XSS scanner."""
+
+import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from isitsecure.engine.constants import XSSConfig
+from isitsecure.engine.enums import EndpointMethod
+from isitsecure.engine.models import (
+    DeepFinding,
+    DiscoveredEndpoint,
+    FindingSource,
+)
+from isitsecure.engine.scanners.protocols import DASTScannerProtocol
+from isitsecure.engine.scanners.xss_scanner import XSSScanner
+from isitsecure.engine.shared.url_utils import inject_query_param
+from isitsecure.engine.enums import AssetType, FindingCategory, SeverityLevel
+from isitsecure.engine.ingestion.snapshot import (
+    CodebaseSnapshot,
+    HTTPHeadersData,
+    PageAsset,
+)
+
+
+def _make_endpoint(
+    url: str = "https://example.com/search",
+    method: EndpointMethod = EndpointMethod.GET,
+) -> DiscoveredEndpoint:
+    """Create a test endpoint."""
+    return DiscoveredEndpoint(url=url, method=method)
+
+
+def _make_snapshot(
+    url: str = "https://example.com",
+    js_content: str = "",
+) -> CodebaseSnapshot:
+    """Create a test snapshot with optional JS content."""
+    assets = []
+    if js_content:
+        assets.append(
+            PageAsset(
+                url=f"{url}/bundle.js",
+                asset_type=AssetType.JAVASCRIPT,
+                content=js_content,
+                size_bytes=len(js_content),
+                is_external=False,
+            )
+        )
+    return CodebaseSnapshot(
+        url=url,
+        html_content="<html></html>",
+        assets=assets,
+        headers=HTTPHeadersData(raw_headers={}, status_code=200),
+    )
+
+
+def _make_html_response(
+    body: str, status_code: int = 200, content_type: str = "text/html; charset=utf-8",
+    url: str = "https://example.com",
+) -> httpx.Response:
+    """Create a mock httpx.Response with HTML content."""
+    resp = httpx.Response(
+        status_code=status_code,
+        headers={"content-type": content_type},
+        text=body,
+        request=httpx.Request("GET", url),
+    )
+    resp.elapsed = datetime.timedelta(milliseconds=100)
+    return resp
+
+
+def _make_json_response(body: str, status_code: int = 200) -> httpx.Response:
+    """Create a mock httpx.Response with JSON content."""
+    resp = httpx.Response(
+        status_code=status_code,
+        headers={"content-type": "application/json"},
+        text=body,
+        request=httpx.Request("GET", "https://example.com"),
+    )
+    resp.elapsed = datetime.timedelta(milliseconds=100)
+    return resp
+
+
+class TestXSSScannerProtocol:
+    """Protocol compliance tests."""
+
+    def test_implements_dast_protocol(self) -> None:
+        """XSSScanner should satisfy DASTScannerProtocol."""
+        scanner = XSSScanner()
+        assert isinstance(scanner, DASTScannerProtocol)
+
+    def test_scanner_name(self) -> None:
+        """scanner_name should match XSSConfig."""
+        scanner = XSSScanner()
+        assert scanner.scanner_name == XSSConfig.SCANNER_NAME
+
+    def test_scan_categories(self) -> None:
+        """scan_categories should contain INJECTION_RISK."""
+        scanner = XSSScanner()
+        assert scanner.scan_categories == [FindingCategory.INJECTION_RISK]
+
+
+class TestReflectedXSS:
+    """Tests for reflected XSS detection."""
+
+    @pytest.mark.asyncio
+    async def test_detects_reflected_xss_unescaped(self) -> None:
+        """Canary with < > reflected unescaped should produce HIGH finding."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            # Extract the canary from the URL and reflect it unescaped
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            injected = params.get("q", [""])[0]
+            body = f"<html><body>Results for: {injected}</body></html>"
+            return _make_html_response(body)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) >= 1
+        finding = findings[0]
+        assert finding.severity == SeverityLevel.HIGH
+        assert finding.category == FindingCategory.INJECTION_RISK
+        assert finding.confidence == XSSConfig.CONFIDENCE_REFLECTED_CONFIRMED
+        assert finding.scanner_name == XSSConfig.SCANNER_NAME
+        assert finding.source == FindingSource.DAST_URL
+
+    @pytest.mark.asyncio
+    async def test_detects_partial_reflection(self) -> None:
+        """Canary text reflected but HTML chars encoded should produce MEDIUM."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            injected = params.get("q", [""])[0]
+            # Encode < and > but keep the canary text
+            escaped = injected.replace("<", "&lt;").replace(">", "&gt;")
+            body = f"<html><body>Results for: {escaped}</body></html>"
+            return _make_html_response(body)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) >= 1
+        finding = findings[0]
+        assert finding.severity == SeverityLevel.LOW
+        assert finding.confidence == XSSConfig.CONFIDENCE_REFLECTED_POSSIBLE
+
+    @pytest.mark.asyncio
+    async def test_no_finding_when_canary_not_reflected(self) -> None:
+        """Canary not in response should produce no finding."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            body = "<html><body>No results found</body></html>"
+            return _make_html_response(body)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_finding_for_json_response(self) -> None:
+        """JSON response should not trigger reflected XSS finding."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/api/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            injected = params.get("q", [""])[0]
+            body = f'{{"results": [], "query": "{injected}"}}'
+            return _make_json_response(body)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_finding_for_error_response(self) -> None:
+        """400+ response should be skipped."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            return _make_html_response("<html>Error</html>", status_code=404)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) == 0
+
+    @pytest.mark.asyncio
+    async def test_tests_every_endpoint_it_is_given(self) -> None:
+        """No endpoint cap: the bound is the scanner's time budget.
+
+        This asserted a cap of 20, which against an app with 77 endpoints
+        decided which quarter got examined. Probing costs HTTP requests
+        rather than tokens — measured, a DAST scan runs $0.12-$0.18 whether
+        it covers 59 endpoints or 154 — so the endpoint was never the scarce
+        thing being protected.
+        """
+        scanner = XSSScanner()
+        endpoints = [
+            _make_endpoint(url=f"https://example.com/page{i}?q=test")
+            for i in range(40)
+        ]
+
+        call_count = 0
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return _make_html_response("<html>No match</html>")
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            await scanner.scan(endpoints)
+
+        # One param ("q") per endpoint, one call per reflection probe. Every
+        # endpoint is reached, where a cap of 20 would have stopped halfway.
+        assert call_count == 40 * len(XSSConfig.REFLECTION_PROBES)
+
+    @pytest.mark.asyncio
+    async def test_handles_request_exception_gracefully(self) -> None:
+        """Should log and continue when a request fails."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused")
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        assert len(findings) == 0
+
+
+class TestDOMXSS:
+    """Tests for DOM-based XSS detection."""
+
+    def test_detects_innerhtml(self) -> None:
+        """JS with .innerHTML = should flag DOM XSS."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            js_content='document.getElementById("output").innerHTML = userInput;'
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        assert len(findings) >= 1
+        inner_html_findings = [
+            f for f in findings if "innerHTML" in f.description
+        ]
+        assert len(inner_html_findings) == 1
+        assert inner_html_findings[0].severity == SeverityLevel.LOW
+        assert inner_html_findings[0].confidence == XSSConfig.CONFIDENCE_DOM_BASED
+
+    def test_detects_eval(self) -> None:
+        """JS with eval() should flag DOM XSS."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(js_content='eval("alert(1)")')
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        eval_findings = [f for f in findings if "eval" in f.description]
+        assert len(eval_findings) >= 1
+
+    def test_detects_document_write(self) -> None:
+        """JS with document.write() should flag DOM XSS."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            js_content='document.write("<script>alert(1)</script>")'
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        write_findings = [f for f in findings if "document.write" in f.description]
+        assert len(write_findings) >= 1
+
+    def test_detects_dangerously_set_inner_html(self) -> None:
+        """React dangerouslySetInnerHTML should flag."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            js_content='<div dangerouslySetInnerHTML={{__html: userContent}} />'
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        dsh_findings = [
+            f for f in findings if "dangerouslySetInnerHTML" in f.description
+        ]
+        assert len(dsh_findings) >= 1
+
+    def test_no_dom_xss_in_clean_js(self) -> None:
+        """Clean JS without dangerous sinks should produce no findings."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            js_content=(
+                'const x = document.getElementById("output");\n'
+                "x.textContent = userInput;\n"
+                'console.log("safe code");'
+            )
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        assert len(findings) == 0
+
+    def test_no_dom_xss_when_no_js(self) -> None:
+        """Empty JS content should produce no findings."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(js_content="")
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        assert len(findings) == 0
+
+    def test_safe_innerhtml_static_string(self) -> None:
+        """innerHTML with static string assignment should be filtered as safe."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            js_content='element.innerHTML = "";'
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        # Safe context should be filtered out
+        inner_html_findings = [
+            f for f in findings if "innerHTML" in f.description
+        ]
+        assert len(inner_html_findings) == 0
+
+    def test_finding_fields_are_correct(self) -> None:
+        """DOM XSS findings should have correct field values."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(
+            url="https://target.com",
+            js_content="var x = eval('code');",
+        )
+
+        findings = scanner._test_dom_xss(snapshot)
+
+        assert len(findings) >= 1
+        finding = [f for f in findings if "eval" in f.description][0]
+        assert finding.source == FindingSource.DAST_URL
+        assert finding.category == FindingCategory.INJECTION_RISK
+        assert finding.scanner_name == XSSConfig.SCANNER_NAME
+        assert finding.endpoint_url == "https://target.com"
+
+
+class TestHelpers:
+    """Tests for helper methods."""
+
+    def test_get_testable_endpoints_with_params(self) -> None:
+        """Endpoints with query params should be testable."""
+        scanner = XSSScanner()
+        ep_with_params = _make_endpoint(
+            url="https://example.com/search?q=hello", method=EndpointMethod.GET
+        )
+        ep_post_with_params = _make_endpoint(
+            url="https://example.com/api?id=1", method=EndpointMethod.POST
+        )
+
+        result = scanner._get_testable_endpoints([ep_with_params, ep_post_with_params])
+
+        assert len(result) == 2
+
+    def test_get_testable_endpoints_get_only(self) -> None:
+        """GET endpoints without query params should be testable."""
+        scanner = XSSScanner()
+        ep_get = _make_endpoint(
+            url="https://example.com/page", method=EndpointMethod.GET
+        )
+        ep_post = _make_endpoint(
+            url="https://example.com/api", method=EndpointMethod.POST
+        )
+
+        result = scanner._get_testable_endpoints([ep_get, ep_post])
+
+        assert len(result) == 1
+        assert result[0].url == "https://example.com/page"
+
+    def test_inject_param_adds_to_url(self) -> None:
+        """Should add a query parameter to a URL without params."""
+        result = inject_query_param(
+            "https://example.com/search", "q", "test_value"
+        )
+        assert "q=test_value" in result
+        assert result.startswith("https://example.com/search?")
+
+    def test_inject_param_replaces_existing(self) -> None:
+        """Should replace an existing parameter value."""
+        result = inject_query_param(
+            "https://example.com/search?q=original", "q", "injected"
+        )
+        assert "q=injected" in result
+        assert "q=original" not in result
+
+    def test_inject_param_preserves_other_params(self) -> None:
+        """Should preserve other query parameters when injecting."""
+        result = inject_query_param(
+            "https://example.com/search?q=original&page=1", "q", "injected"
+        )
+        assert "q=injected" in result
+        assert "page=1" in result
+
+    def test_get_testable_params_from_url(self) -> None:
+        """Should extract existing parameter names from URL."""
+        scanner = XSSScanner()
+        ep = _make_endpoint(url="https://example.com/search?q=hello&page=1")
+
+        params = scanner._get_testable_params(ep)
+
+        assert "q" in params
+        assert "page" in params
+
+    def test_get_testable_params_defaults(self) -> None:
+        """Should use common reflectable params when URL has no params, capped at MAX."""
+        scanner = XSSScanner()
+        ep = _make_endpoint(url="https://example.com/page")
+
+        params = scanner._get_testable_params(ep)
+
+        expected = list(XSSConfig.COMMON_REFLECTABLE_PARAMS)[: XSSConfig.MAX_PARAMS_PER_ENDPOINT]
+        assert params == expected
+
+    def test_readable_sink_name(self) -> None:
+        """Should convert regex pattern to readable name."""
+        assert "innerHTML" in XSSScanner._readable_sink_name(r'\.innerHTML\s*=')
+        assert "eval(" in XSSScanner._readable_sink_name(r'eval\s*\(')
+
+
+class TestFullScan:
+    """Integration-level tests for the full scan method."""
+
+    @pytest.mark.asyncio
+    async def test_scan_combines_reflected_and_dom(self) -> None:
+        """scan() should return both reflected and DOM findings."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+        snapshot = _make_snapshot(
+            url="https://example.com",
+            js_content='document.getElementById("x").innerHTML = userInput;',
+        )
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            from urllib.parse import parse_qs, urlparse
+
+            params = parse_qs(urlparse(url).query)
+            injected = params.get("q", [""])[0]
+            body = f"<html><body>{injected}</body></html>"
+            return _make_html_response(body)
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint], snapshot)
+
+        # Should have at least 1 reflected + 1 DOM finding
+        reflected = [
+            f for f in findings if f.title == XSSConfig.TITLE_REFLECTED_XSS
+        ]
+        dom = [f for f in findings if f.title == XSSConfig.TITLE_DOM_XSS]
+        assert len(reflected) >= 1
+        assert len(dom) >= 1
+
+    @pytest.mark.asyncio
+    async def test_scan_without_snapshot(self) -> None:
+        """scan() with no snapshot should only run reflected XSS tests."""
+        scanner = XSSScanner()
+        endpoint = _make_endpoint(url="https://example.com/search?q=test")
+
+        async def mock_get(url: str, **kwargs: object) -> httpx.Response:
+            return _make_html_response("<html>No match</html>")
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            client_instance.get = mock_get
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([endpoint])
+
+        # No DOM findings since no snapshot
+        dom = [f for f in findings if f.title == XSSConfig.TITLE_DOM_XSS]
+        assert len(dom) == 0
+
+    @pytest.mark.asyncio
+    async def test_scan_empty_endpoints(self) -> None:
+        """scan() with empty endpoints should return only DOM findings if any."""
+        scanner = XSSScanner()
+        snapshot = _make_snapshot(js_content="var x = eval('code');")
+
+        with patch(
+            "isitsecure.engine.scanners.xss_scanner.RateLimitedClient"
+        ) as MockClient:
+            client_instance = AsyncMock()
+            MockClient.return_value.__aenter__ = AsyncMock(
+                return_value=client_instance
+            )
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            findings = await scanner.scan([], snapshot)
+
+        # Should still detect DOM XSS
+        assert any(f.title == XSSConfig.TITLE_DOM_XSS for f in findings)
+
+
+class TestStoredXss:
+    """Stored (persist-then-retrieve) XSS detection via _check_stored_reflection."""
+
+    def _resp(self, content_type, text):
+        r = MagicMock()
+        r.status_code = 200
+        r.headers = {"content-type": content_type}
+        r.text = text
+        r.elapsed = datetime.timedelta(seconds=0.1)
+        return r
+
+    async def _run(self, content_type, text):
+        scanner = XSSScanner()
+        client = MagicMock()
+        client.get = AsyncMock(return_value=self._resp(content_type, text))
+        ep = DiscoveredEndpoint(url="http://app/api/memos",
+                                method=EndpointMethod.POST)
+        canary = "<canary_xss_abc_comment>"
+        return await scanner._check_stored_reflection(
+            client, ep, {"comment": canary}, {"comment": canary}, "POST")
+
+    async def test_stored_xss_detected_in_html(self):
+        f = await self._run("text/html; charset=utf-8",
+                            "<div><canary_xss_abc_comment></div>")
+        assert f is not None
+        assert f.severity == SeverityLevel.CRITICAL
+        assert "Stored XSS" in f.title
+
+    async def test_json_retrieval_not_flagged(self):
+        # A JSON API echoing the stored value is not directly XSS -> no finding.
+        f = await self._run("application/json",
+                            '{"comment":"<canary_xss_abc_comment>"}')
+        assert f is None
+
+    async def test_encoded_canary_not_flagged(self):
+        f = await self._run("text/html",
+                            "<div>&lt;canary_xss_abc_comment&gt;</div>")
+        assert f is None
+
+
+# ---------------------------------------------------------------------------
+# POST-body XSS: use the form's discovered fields, try form + JSON (#109)
+# ---------------------------------------------------------------------------
+
+
+def _echoing_client(reflect_field: str, *, only_content_type: str | None = None):
+    """A mock RateLimitedClient whose request() echoes back a field's canary
+    (unescaped) — optionally only for one content-type — so we can assert the
+    scanner canaried that field via that transport."""
+    calls: list[dict] = []
+
+    async def _request(method, url, **kwargs):
+        ctype = kwargs.get("headers", {}).get("Content-Type", "")
+        calls.append({"method": method, "ctype": ctype, "kwargs": kwargs})
+        body = kwargs.get("data")
+        if body is None:  # JSON attempt carries a serialized string in `content`
+            import json as _j
+            try:
+                body = _j.loads(kwargs.get("content") or "{}")
+            except Exception:
+                body = {}
+        reflected = body.get(reflect_field, "")
+        blocked = only_content_type is not None and only_content_type not in ctype
+        html = "" if blocked else f"<html><input value='{reflected}'></html>"
+        return _make_html_response(html)
+
+    client = MagicMock()
+    client.request = AsyncMock(side_effect=_request)
+    client._calls = calls
+    return client
+
+
+@pytest.mark.asyncio
+async def test_post_body_xss_uses_discovered_form_fields():
+    """A form's real field (firstName) — not in the generic list — is canaried."""
+    assert "firstname" not in [f.lower() for f in XSSConfig.POST_BODY_FIELD_NAMES]
+    ep = DiscoveredEndpoint(
+        url="https://example.com/profile", method=EndpointMethod.POST,
+        query_param_names=["firstName", "lastName"],
+    )
+    client = _echoing_client("firstName")
+    finding = await XSSScanner()._test_single_post_body(client, ep)
+    assert finding is not None
+    assert finding.severity == SeverityLevel.HIGH
+    assert "firstName" in (finding.description + finding.evidence)
+
+
+@pytest.mark.asyncio
+async def test_post_body_xss_falls_back_to_generic_when_no_fields():
+    """Endpoints with no captured fields still use the generic list."""
+    ep = DiscoveredEndpoint(url="https://example.com/api", method=EndpointMethod.POST)
+    client = _echoing_client("comment")  # 'comment' is in the generic list
+    finding = await XSSScanner()._test_single_post_body(client, ep)
+    assert finding is not None and "comment" in finding.description
+
+
+@pytest.mark.asyncio
+async def test_post_body_xss_tries_form_then_json():
+    """Form-urlencoded is tried first; JSON is tried when the form doesn't reflect."""
+    ep = DiscoveredEndpoint(
+        url="https://example.com/profile", method=EndpointMethod.POST,
+        query_param_names=["firstName"],
+    )
+    # Only the JSON transport reflects -> scanner must fall through to it.
+    client = _echoing_client("firstName", only_content_type="application/json")
+    finding = await XSSScanner()._test_single_post_body(client, ep)
+    assert finding is not None
+    ctypes = [c["ctype"] for c in client._calls]
+    assert any("x-www-form-urlencoded" in c for c in ctypes)  # form tried first
+    assert any("application/json" in c for c in ctypes)        # json tried too
+
+
+@pytest.mark.asyncio
+async def test_post_body_xss_passes_auth_headers_to_client(monkeypatch):
+    """#111 — the scanner's _auth_headers (session cookie) reach its HTTP client."""
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, *a, **k):
+            return _make_html_response("")  # no reflection; we only check the ctor
+
+    monkeypatch.setattr(
+        "isitsecure.engine.scanners.xss_scanner.RateLimitedClient", _FakeClient
+    )
+    scanner = XSSScanner()
+    scanner._auth_headers = {"Cookie": "connect.sid=abc"}
+    ep = DiscoveredEndpoint(
+        url="https://ex.com/profile", method=EndpointMethod.POST,
+        query_param_names=["firstName"],
+    )
+    await scanner._test_post_body_xss([ep])
+    assert captured.get("extra_headers") == {"Cookie": "connect.sid=abc"}
+
+
+@pytest.mark.asyncio
+async def test_post_body_xss_no_auth_headers_passes_none(monkeypatch):
+    """Unauthenticated (url-only) scans pass no extra headers."""
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def request(self, *a, **k):
+            return _make_html_response("")
+
+    monkeypatch.setattr(
+        "isitsecure.engine.scanners.xss_scanner.RateLimitedClient", _FakeClient
+    )
+    scanner = XSSScanner()  # default _auth_headers = {}
+    ep = DiscoveredEndpoint(
+        url="https://ex.com/profile", method=EndpointMethod.POST,
+        query_param_names=["firstName"],
+    )
+    await scanner._test_post_body_xss([ep])
+    assert captured.get("extra_headers") is None
+
+
+class TestDepthBehavior:
+    """Quick vs deep depth behavior (#118).
+
+    At quick depth XSSScanner runs only the network reflected + POST-body
+    phases on a tighter budget and skips the static DOM sink pass, so it can
+    join the quick-depth DAST set and catch server-reflected XSS on protected
+    endpoints without the deep-only cost.
+    """
+
+    def test_deep_default_uses_full_budget(self) -> None:
+        from isitsecure.engine.shared.scanner_runner import ScannerTimeouts
+
+        assert XSSScanner()._active_budget_seconds == ScannerTimeouts.XSS_ACTIVE_SECONDS
+        assert XSSScanner(deep=True)._active_budget_seconds == ScannerTimeouts.XSS_ACTIVE_SECONDS
+
+    def test_quick_uses_tighter_budget(self) -> None:
+        from isitsecure.engine.shared.scanner_runner import ScannerTimeouts
+
+        assert XSSScanner(deep=False)._active_budget_seconds == ScannerTimeouts.XSS_QUICK_SECONDS
+        assert ScannerTimeouts.XSS_QUICK_SECONDS < ScannerTimeouts.XSS_ACTIVE_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_quick_skips_static_dom_pass(self) -> None:
+        """A quick scanner must NOT run the static DOM sink heuristic even when a
+        code snapshot is present."""
+        scanner = XSSScanner(deep=False)
+        snapshot = _make_snapshot(
+            js_content='document.getElementById("o").innerHTML = userInput;'
+        )
+        with patch.object(scanner, "_test_dom_xss") as dom:
+            await scanner.scan([], snapshot=snapshot)
+            dom.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deep_runs_static_dom_pass(self) -> None:
+        """A deep scanner runs the static DOM sink heuristic when a snapshot is
+        present."""
+        scanner = XSSScanner(deep=True)
+        snapshot = _make_snapshot(
+            js_content='document.getElementById("o").innerHTML = userInput;'
+        )
+        with patch.object(scanner, "_test_dom_xss", return_value=[]) as dom:
+            await scanner.scan([], snapshot=snapshot)
+            dom.assert_called_once_with(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_both_network_phases_use_the_depth_budget(self) -> None:
+        """Both the reflected AND POST-body phases must build their TimeBudget
+        from the depth-aware value, so a quick pass actually bounds both (#118)."""
+        from isitsecure.engine.shared.scanner_runner import ScannerTimeouts
+
+        ep = DiscoveredEndpoint(
+            url="https://ex.com/profile", method=EndpointMethod.POST,
+            query_param_names=["firstName"],
+        )
+        get_ep = _make_endpoint("https://ex.com/search?q=1")
+
+        for deep, expected in ((False, ScannerTimeouts.XSS_QUICK_SECONDS),
+                               (True, ScannerTimeouts.XSS_ACTIVE_SECONDS)):
+            seen: list[float] = []
+
+            def _spy(seconds: float, _seen=seen):
+                _seen.append(seconds)
+                b = MagicMock()
+                b.expired.return_value = False
+                return b
+
+            scanner = XSSScanner(deep=deep)
+            with patch("isitsecure.engine.scanners.xss_scanner.TimeBudget", _spy), \
+                 patch("isitsecure.engine.scanners.xss_scanner.RateLimitedClient") as rc:
+                rc.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+                rc.return_value.__aexit__ = AsyncMock(return_value=False)
+                await scanner.scan([get_ep, ep], snapshot=None)
+
+            # Two budgets built (reflected + POST-body), both at the depth value.
+            assert seen == [expected, expected], f"deep={deep}: {seen}"
+
+
+class TestFactoryDepthWiring:
+    """XSSScanner is wired into both depth sets with the right effort (#118)."""
+
+    def test_quick_set_includes_xss_scanner_non_deep(self) -> None:
+        from isitsecure.engine.enums import ScanDepth
+        from isitsecure.engine.factory import create_deep_security_scan_agent
+
+        agent = create_deep_security_scan_agent(depth=ScanDepth.QUICK)
+        xss = [s for s in agent._dast_scanners if isinstance(s, XSSScanner)]
+        assert len(xss) == 1
+        assert xss[0]._deep is False
+
+    def test_deep_set_includes_xss_scanner_deep(self) -> None:
+        from isitsecure.engine.enums import ScanDepth
+        from isitsecure.engine.factory import create_deep_security_scan_agent
+
+        agent = create_deep_security_scan_agent(depth=ScanDepth.DEEP)
+        xss = [s for s in agent._dast_scanners if isinstance(s, XSSScanner)]
+        assert len(xss) == 1
+        assert xss[0]._deep is True
+
+    def test_default_depth_is_quick_non_deep(self) -> None:
+        from isitsecure.engine.factory import create_deep_security_scan_agent
+
+        agent = create_deep_security_scan_agent()
+        xss = [s for s in agent._dast_scanners if isinstance(s, XSSScanner)]
+        assert len(xss) == 1
+        assert xss[0]._deep is False

@@ -1,0 +1,770 @@
+"""Tests for RouteAuthAnalyzer."""
+
+from __future__ import annotations
+
+import pytest
+
+from isitsecure.engine.code_analysis.route_analyzer import (
+    RouteAuthAnalyzer,
+)
+from isitsecure.engine.code_analysis.protocols import (
+    RepoSnapshot,
+    RouteEntry,
+)
+from isitsecure.engine.constants import RouteAuthAnalyzerConfig
+from isitsecure.engine.enums import FindingCategory, SeverityLevel
+
+
+# --- Fixture: route content samples ---
+
+NO_AUTH_ROUTE = '''
+export async function GET(request, { params }) {
+    const { id } = params
+    const deal = await supabase
+        .from('deals')
+        .select('*')
+        .eq('id', id)
+        .single()
+    return Response.json(deal.data)
+}
+'''
+
+AUTH_NO_OWNERSHIP_ROUTE = '''
+export async function GET(request, { params }) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return new Response('Unauthorized', { status: 401 })
+
+    const deal = await supabase
+        .from('deals')
+        .select('*')
+        .eq('id', params.id)
+        .single()
+    return Response.json(deal.data)
+}
+'''
+
+FULLY_PROTECTED_ROUTE = '''
+export async function GET(request, { params }) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return new Response('Unauthorized', { status: 401 })
+
+    const result = z.object({ id: z.string().uuid() }).safeParse(params)
+    if (!result.success) return new Response('Bad Request', { status: 400 })
+
+    const deal = await supabase
+        .from('deals')
+        .select('*')
+        .eq('id', result.data.id)
+        .eq('user_id', user.id)
+        .single()
+    return Response.json(deal.data)
+}
+'''
+
+SERVICE_ROLE_ROUTE = '''
+import { supabaseAdmin } from '@/lib/supabase/admin'
+
+export async function POST(request) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return new Response('Unauthorized', { status: 401 })
+
+    const result = await supabaseAdmin
+        .from('users')
+        .update({ role: 'premium' })
+        .eq('id', user.id)
+    return Response.json(result)
+}
+'''
+
+SERVER_ACTION_NO_AUTH = '''
+"use server"
+
+export async function createDeal(formData) {
+    const title = formData.get('title')
+    await supabase.from('deals').insert({ title })
+}
+
+export async function deleteDeal(id) {
+    await supabase.from('deals').delete().eq('id', id)
+}
+'''
+
+SERVER_ACTION_WITH_AUTH = '''
+"use server"
+
+export async function createDeal(formData) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Unauthorized')
+
+    const title = formData.get('title')
+    await supabase.from('deals').insert({ title, user_id: user.id })
+}
+'''
+
+AUTH_WITH_SUPABASE_OPS_NO_OWNERSHIP = '''
+export async function GET(request) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return new Response('Unauthorized', { status: 401 })
+
+    const { data } = await supabase
+        .from('reports')
+        .select('*')
+    return Response.json(data)
+}
+'''
+
+NO_VALIDATION_WITH_INPUT = '''
+export async function POST(request, { params }) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return new Response('Unauthorized', { status: 401 })
+
+    const body = await request.json()
+    const deal = await supabase
+        .from('deals')
+        .insert(body)
+        .eq('user_id', user.id)
+    return Response.json(deal.data)
+}
+'''
+
+
+def _make_route(
+    content: str,
+    file_path: str = "app/api/deals/[id]/route.ts",
+    route_pattern: str = "/api/deals/:id",
+    http_methods: list[str] | None = None,
+) -> RouteEntry:
+    """Helper to create a RouteEntry for testing."""
+    return RouteEntry(
+        file_path=file_path,
+        http_methods=http_methods or ["GET"],
+        route_pattern=route_pattern,
+        content=content,
+    )
+
+
+def _make_repo(
+    routes: list[RouteEntry] | None = None,
+    file_index: dict[str, str] | None = None,
+) -> RepoSnapshot:
+    """Helper to create a minimal RepoSnapshot for testing."""
+    return RepoSnapshot(
+        repo_url="https://github.com/test/repo",
+        branch="main",
+        clone_path="/tmp/test-repo",
+        route_map=routes or [],
+        file_index=file_index or {},
+    )
+
+
+class TestRouteAuthAnalyzer:
+    """Tests for the RouteAuthAnalyzer scanner."""
+
+    def setup_method(self) -> None:
+        self.analyzer = RouteAuthAnalyzer()
+
+    def test_scanner_name(self) -> None:
+        assert self.analyzer.scanner_name == RouteAuthAnalyzerConfig.SCANNER_NAME
+
+    # --- Missing Auth Tests ---
+
+    @pytest.mark.asyncio
+    async def test_detects_missing_auth(self) -> None:
+        """Route with no auth check should be flagged."""
+        route = _make_route(NO_AUTH_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        auth_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH
+        ]
+        assert len(auth_findings) >= 1
+        assert auth_findings[0].severity == SeverityLevel.HIGH
+        assert auth_findings[0].category == FindingCategory.AUTH_WEAKNESS
+
+    @pytest.mark.asyncio
+    async def test_no_finding_when_auth_present(self) -> None:
+        """Route with getUser() should not flag missing auth."""
+        route = _make_route(AUTH_NO_OWNERSHIP_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        auth_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH
+        ]
+        assert len(auth_findings) == 0
+
+    # --- Missing Ownership Tests ---
+
+    @pytest.mark.asyncio
+    async def test_detects_missing_ownership_with_user_id(self) -> None:
+        """Route with auth but no .eq('user_id', ...) and user-supplied ID -> IDOR risk."""
+        route = _make_route(AUTH_NO_OWNERSHIP_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        idor_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_IDOR_RISK
+        ]
+        assert len(idor_findings) == 1
+        assert idor_findings[0].severity == SeverityLevel.CRITICAL
+        assert idor_findings[0].category == FindingCategory.IDOR
+
+    @pytest.mark.asyncio
+    async def test_detects_missing_ownership_supabase_ops(self) -> None:
+        """Route with auth + supabase ops but no ownership filter -> missing ownership."""
+        route = _make_route(
+            AUTH_WITH_SUPABASE_OPS_NO_OWNERSHIP,
+            file_path="app/api/reports/route.ts",
+            route_pattern="/api/reports",
+        )
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        ownership_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_MISSING_OWNERSHIP
+        ]
+        assert len(ownership_findings) == 1
+        assert ownership_findings[0].severity == SeverityLevel.HIGH
+
+    @pytest.mark.asyncio
+    async def test_no_idor_when_ownership_present(self) -> None:
+        """Route with auth AND ownership check should not flag IDOR."""
+        route = _make_route(FULLY_PROTECTED_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        idor_findings = [
+            f for f in findings
+            if f.title in (
+                RouteAuthAnalyzerConfig.TITLE_IDOR_RISK,
+                RouteAuthAnalyzerConfig.TITLE_MISSING_OWNERSHIP,
+            )
+        ]
+        assert len(idor_findings) == 0
+
+    # --- Service Role Tests ---
+
+    @pytest.mark.asyncio
+    async def test_detects_service_role_usage(self) -> None:
+        """Route using supabaseAdmin should be flagged."""
+        route = _make_route(
+            SERVICE_ROLE_ROUTE,
+            http_methods=["POST"],
+        )
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        service_role_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_SERVICE_ROLE
+        ]
+        assert len(service_role_findings) == 1
+        assert service_role_findings[0].severity == SeverityLevel.MEDIUM
+        assert service_role_findings[0].category == FindingCategory.AUTH_WEAKNESS
+
+    # --- Input Validation Tests ---
+
+    @pytest.mark.asyncio
+    async def test_detects_missing_validation(self) -> None:
+        """Mutation route with user input but no zod/yup should flag missing validation."""
+        route = _make_route(NO_AUTH_ROUTE, http_methods=["POST"])
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        validation_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_MISSING_VALIDATION
+        ]
+        assert len(validation_findings) >= 1
+        assert validation_findings[0].severity == SeverityLevel.MEDIUM
+        assert validation_findings[0].category == FindingCategory.INJECTION_RISK
+
+    @pytest.mark.asyncio
+    async def test_no_validation_finding_when_zod_present(self) -> None:
+        """Route with z.object().safeParse() should not flag validation."""
+        route = _make_route(FULLY_PROTECTED_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        validation_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_MISSING_VALIDATION
+        ]
+        assert len(validation_findings) == 0
+
+    # --- Server Action Tests ---
+
+    @pytest.mark.asyncio
+    async def test_detects_server_action_no_auth(self) -> None:
+        """'use server' file without getUser() should flag each exported function."""
+        repo = _make_repo(
+            file_index={"app/actions/deals.ts": SERVER_ACTION_NO_AUTH},
+        )
+
+        findings = await self.analyzer.scan(repo)
+
+        action_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_SERVER_ACTION_NO_AUTH
+        ]
+        assert len(action_findings) == 2
+        func_names = [f.description for f in action_findings]
+        assert any("createDeal" in d for d in func_names)
+        assert any("deleteDeal" in d for d in func_names)
+        assert all(f.severity == SeverityLevel.HIGH for f in action_findings)
+
+    @pytest.mark.asyncio
+    async def test_no_finding_for_auth_server_action(self) -> None:
+        """'use server' with getUser() should not flag."""
+        repo = _make_repo(
+            file_index={"app/actions/deals.ts": SERVER_ACTION_WITH_AUTH},
+        )
+
+        findings = await self.analyzer.scan(repo)
+
+        action_findings = [
+            f for f in findings
+            if f.title == RouteAuthAnalyzerConfig.TITLE_SERVER_ACTION_NO_AUTH
+        ]
+        assert len(action_findings) == 0
+
+    # --- Fully Protected Route ---
+
+    @pytest.mark.asyncio
+    async def test_fully_protected_route_no_findings(self) -> None:
+        """Route with auth + ownership + validation should have 0 findings."""
+        route = _make_route(FULLY_PROTECTED_ROUTE)
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        assert len(findings) == 0
+
+    # --- Empty Route ---
+
+    @pytest.mark.asyncio
+    async def test_empty_content_no_findings(self) -> None:
+        """Route with empty content should produce no findings."""
+        route = _make_route("")
+        repo = _make_repo(routes=[route])
+
+        findings = await self.analyzer.scan(repo)
+
+        assert len(findings) == 0
+
+    # --- Helper Method Tests ---
+
+    def test_has_auth_check_getUser(self) -> None:
+        assert self.analyzer._has_auth_check(
+            "const user = await supabase.auth.getUser()",
+        )
+
+    def test_has_auth_check_getSession(self) -> None:
+        assert self.analyzer._has_auth_check(
+            "const session = await getSession()",
+        )
+
+    def test_has_auth_check_clerk(self) -> None:
+        assert self.analyzer._has_auth_check(
+            "const user = await currentUser()",
+        )
+
+    def test_has_auth_check_verifyToken(self) -> None:
+        assert self.analyzer._has_auth_check(
+            "const decoded = await verifyToken(token)",
+        )
+
+    def test_has_auth_check_negative(self) -> None:
+        assert not self.analyzer._has_auth_check(
+            "const data = await fetchData()",
+        )
+
+    def test_has_ownership_check_user_id(self) -> None:
+        assert self.analyzer._has_ownership_check(
+            '.eq("user_id", user.id)',
+        )
+
+    def test_has_ownership_check_owner_id(self) -> None:
+        assert self.analyzer._has_ownership_check(
+            ".eq('owner_id', session.user.id)",
+        )
+
+    def test_has_ownership_check_negative(self) -> None:
+        assert not self.analyzer._has_ownership_check(
+            ".eq('id', params.id)",
+        )
+
+    def test_uses_service_role(self) -> None:
+        assert self.analyzer._uses_service_role(
+            "import { supabaseAdmin } from",
+        )
+
+    def test_uses_service_role_env_var(self) -> None:
+        assert self.analyzer._uses_service_role(
+            "process.env.SUPABASE_SERVICE_ROLE",
+        )
+
+    def test_uses_service_role_negative(self) -> None:
+        assert not self.analyzer._uses_service_role(
+            "import { supabase } from '@/lib/supabase'",
+        )
+
+    def test_has_input_validation_safeParse(self) -> None:
+        assert self.analyzer._has_input_validation(
+            "const result = schema.safeParse(body)",
+        )
+
+    def test_has_input_validation_zod(self) -> None:
+        assert self.analyzer._has_input_validation(
+            "const schema = z.object({ name: z.string() })",
+        )
+
+    def test_has_input_validation_negative(self) -> None:
+        assert not self.analyzer._has_input_validation(
+            "const body = await request.json()",
+        )
+
+    def test_extract_supabase_operations(self) -> None:
+        ops = self.analyzer._extract_supabase_operations(
+            '.from("deals").select("*")',
+        )
+        assert "deals.select" in ops
+
+    def test_extract_supabase_operations_insert(self) -> None:
+        ops = self.analyzer._extract_supabase_operations(
+            ".from('users').insert({ name })",
+        )
+        assert "users.insert" in ops
+
+    def test_extract_supabase_rpc(self) -> None:
+        ops = self.analyzer._extract_supabase_operations(
+            '.rpc("get_user_deals")',
+        )
+        assert "rpc:get_user_deals" in ops
+
+    def test_extract_supabase_operations_empty(self) -> None:
+        ops = self.analyzer._extract_supabase_operations(
+            "const x = 1 + 2",
+        )
+        assert ops == []
+
+    def test_find_relevant_line_export_function(self) -> None:
+        content = "import foo\n\nexport async function GET(req) {}\n"
+        route = _make_route(content, http_methods=["GET"])
+        line = self.analyzer._find_relevant_line(content, route)
+        assert line == 3
+
+    def test_find_relevant_line_fallback_export(self) -> None:
+        content = "import foo\n\nexport default handler\n"
+        route = _make_route(content, http_methods=["POST"])
+        line = self.analyzer._find_relevant_line(content, route)
+        assert line == 3
+
+    def test_find_relevant_line_empty_content(self) -> None:
+        route = _make_route("", http_methods=["GET"])
+        line = self.analyzer._find_relevant_line("", route)
+        assert line is None
+
+
+# ---------------------------------------------------------------------------
+# _is_intentionally_public
+# ---------------------------------------------------------------------------
+
+
+class TestIntentionallyPublic:
+    """Which routes are exempt from the missing-auth check.
+
+    A route is public because of what it *is* — a health check, a webhook —
+    never because we looked for a guard and did not find one. Treating the
+    second as the first is how 49 of Juice Shop's 104 routes and 13 of
+    NodeGoat's 19 were skipped without being examined.
+    """
+
+    def setup_method(self) -> None:
+        self.analyzer = RouteAuthAnalyzer()
+
+    @staticmethod
+    def _route(pattern: str, method: str = "GET", has_auth=None) -> RouteEntry:
+        return RouteEntry(
+            file_path="server.ts",
+            http_methods=[method],
+            route_pattern=pattern,
+            has_auth_check=has_auth,
+            content=f"app.get('{pattern}', handler)",
+        )
+
+    def test_a_health_check_is_public(self) -> None:
+        assert self.analyzer._is_intentionally_public(self._route("/health"))
+
+    def test_a_webhook_path_is_not_public_on_its_name(self) -> None:
+        """Receivers authenticate by verifying a signature, which is checked
+        for directly — see TestWebhookRoutesAreJudgedByBehaviour. The path
+        cannot tell a receiver from an endpoint that sends one."""
+        assert not self.analyzer._is_intentionally_public(
+            self._route("/api/webhook/stripe", "POST")
+        )
+
+    def test_an_unguarded_get_is_not_public(self) -> None:
+        """The regression this guards: `has_auth_check is False` on a GET was
+        read as "deliberately open" when it is the exact condition a
+        missing-auth finding exists to report."""
+        route = self._route("/api/Products", "GET", has_auth=False)
+        assert not self.analyzer._is_intentionally_public(route)
+
+    def test_an_unguarded_get_produces_a_finding(self) -> None:
+        route = self._route("/rest/wallet/balance", "GET", has_auth=False)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH in titles
+
+    def test_a_guarded_get_still_produces_no_finding(self) -> None:
+        """Removing the exemption must not start flagging routes the mapper
+        did find a guard on."""
+        route = self._route("/api/BasketItems", "GET", has_auth=True)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH not in titles
+
+    def test_an_unguarded_post_still_produces_a_finding(self) -> None:
+        """POST was never exempt; it must stay that way."""
+        route = self._route("/api/Recycles", "POST", has_auth=False)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH in titles
+
+    def test_a_root_path_is_still_public(self) -> None:
+        """`/` is exempt by name, not by method, and stays so."""
+        assert self.analyzer._is_intentionally_public(
+            self._route("/", "GET", has_auth=False)
+        )
+
+
+# ---------------------------------------------------------------------------
+# LSP suppression is per method
+# ---------------------------------------------------------------------------
+
+
+class TestLSPSuppressionIsPerMethod:
+    """A verdict belongs to one method, not to a path.
+
+    Juice Shop leaves `GET /api/Recycles` open and guards
+    `POST /api/Recycles` on the very next line. Answering a finding from the
+    path alone hands one of them the other's verdict — and in the direction
+    that suppresses, that hides a live vulnerability.
+    """
+
+    def setup_method(self) -> None:
+        self.analyzer = RouteAuthAnalyzer()
+
+    @staticmethod
+    def _finding(analyzer, method: str) -> object:
+        route = RouteEntry(
+            file_path="server.ts",
+            http_methods=[method],
+            route_pattern="/api/Recycles",
+            has_auth_check=False,
+            content="app.get('/api/Recycles', open)\n",
+        )
+        return analyzer._create_finding(
+            route=route,
+            title=RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH,
+            description="no auth",
+            severity=SeverityLevel(RouteAuthAnalyzerConfig.SEVERITY_MISSING_AUTH),
+            category=FindingCategory.AUTH_WEAKNESS,
+        )
+
+    @staticmethod
+    def _results():
+        from isitsecure.engine.code_analysis.lsp.auth_flow_tracer import (
+            AuthFlowTracer,
+        )
+        from isitsecure.engine.code_analysis.lsp.protocols import AuthFlowResult
+
+        return {
+            AuthFlowTracer.result_key("server.ts", "GET", "/api/Recycles"):
+                AuthFlowResult(has_verified_auth=False, confidence=0.5),
+            AuthFlowTracer.result_key("server.ts", "POST", "/api/Recycles"):
+                AuthFlowResult(has_verified_auth=True, auth_method="isAuthorized"),
+        }
+
+    def test_the_guarded_method_is_suppressed(self) -> None:
+        kept = self.analyzer.validate_with_lsp(
+            [self._finding(self.analyzer, "POST")], self._results()
+        )
+        assert kept == []
+
+    def test_the_open_method_is_not(self) -> None:
+        """The bug: the POST's guard used to answer for the GET too."""
+        kept = self.analyzer.validate_with_lsp(
+            [self._finding(self.analyzer, "GET")], self._results()
+        )
+        assert len(kept) == 1
+
+    def test_a_finding_with_no_method_needs_agreement(self) -> None:
+        """Nothing identifies which mount it came from, so a verdict is only
+        safe to apply when every method on the route agrees."""
+        finding = self._finding(self.analyzer, "GET")
+        finding.http_methods = []
+        kept = self.analyzer.validate_with_lsp([finding], self._results())
+        assert len(kept) == 1
+
+
+class TestWebhookRoutesAreJudgedByBehaviour:
+    """A path containing "webhook" used to exempt a route outright.
+
+    Webhook receivers do authenticate — by verifying the sender's signature,
+    the sender holding no session to present — so the *rationale* was sound.
+    The path is not evidence of it, though: an endpoint with "webhook" in its
+    name may equally be one that **sends** them, which is an SSRF sink. The
+    test app's `/api/webhooks/test` is exactly that, and was silenced.
+    """
+
+    def setup_method(self) -> None:
+        self.analyzer = RouteAuthAnalyzer()
+
+    @staticmethod
+    def _route(pattern: str, content: str) -> RouteEntry:
+        return RouteEntry(
+            file_path="route.ts",
+            http_methods=["POST"],
+            route_pattern=pattern,
+            content=content,
+        )
+
+    SENDS_A_WEBHOOK = (
+        "export async function POST(request) {\n"
+        "  const { webhook_url } = await request.json()\n"
+        "  await fetch(webhook_url, { method: 'POST' })\n"
+        "}\n"
+    )
+    VERIFIES_A_SIGNATURE = (
+        "export async function POST(request) {\n"
+        "  const sig = request.headers.get('stripe-signature')\n"
+        "  const event = stripe.webhooks.constructEvent(body, sig, secret)\n"
+        "}\n"
+    )
+
+    def test_a_webhook_path_alone_no_longer_exempts(self) -> None:
+        route = self._route("/api/webhooks/test", self.SENDS_A_WEBHOOK)
+        assert not self.analyzer._is_intentionally_public(route)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH in titles
+
+    def test_verifying_a_signature_counts_as_authentication(self) -> None:
+        """A receiver that checks the signature is authenticated, whatever
+        its path is called."""
+        route = self._route("/api/hooks/incoming", self.VERIFIES_A_SIGNATURE)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH not in titles
+
+    def test_a_stripe_path_alone_no_longer_exempts(self) -> None:
+        route = self._route("/api/stripe/hook", self.SENDS_A_WEBHOOK)
+        assert not self.analyzer._is_intentionally_public(route)
+
+    def test_conventional_public_endpoints_are_still_exempt(self) -> None:
+        for pattern in ("/health", "/livez", "/readyz", "/", "/openapi"):
+            assert self.analyzer._is_intentionally_public(
+                self._route(pattern, "export async function GET() {}\n")
+            ), pattern
+
+    def test_exemption_is_exact_not_a_substring(self) -> None:
+        """`/health` is a liveness probe; `/api/health-records` is patient
+        data. A fragment match cannot tell them apart."""
+        route = self._route("/api/health-records", "export async function GET() {}\n")
+        assert not self.analyzer._is_intentionally_public(route)
+
+
+class TestHandlerScopedAuth:
+    """Auth checked inside a route's own handler (#183).
+
+    The Express mapper answers `has_auth_check=False` when no known guard
+    *name* sits on the mount line — which an anonymous handler never has.
+    That was believed outright, so a route checking auth in its own body was
+    reported as having none.
+    """
+
+    def setup_method(self) -> None:
+        self.analyzer = RouteAuthAnalyzer()
+
+    @staticmethod
+    def _route(handler: str, pattern: str = "/orders") -> RouteEntry:
+        return RouteEntry(
+            file_path="routes/orders.ts",
+            http_methods=["GET"],
+            route_pattern=pattern,
+            has_auth_check=False,
+            content="a hundred other routes live here too\n",
+            handler_source=handler,
+        )
+
+    GUARDED = (
+        ", (req, res) => {\n"
+        "  const session = getServerSession(req)\n"
+        "  if (!session) return res.status(401).end()\n"
+        "  res.json(orders)\n"
+        "}"
+    )
+    # Looks up a user, refuses nobody. This is what an IDOR looks like.
+    LOOKS_UP_A_USER = (
+        ", (req, res) => {\n"
+        "  const user = getUser(req.params.id)\n"
+        "  res.json(user)\n"
+        "}"
+    )
+
+    def test_a_handler_that_identifies_and_refuses_is_authenticated(self) -> None:
+        titles = [f.title for f in self.analyzer._analyze_route(self._route(self.GUARDED))]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH not in titles
+
+    def test_looking_up_a_user_is_not_authenticating(self) -> None:
+        """The conjunction's whole purpose: `getUser(req.params.id)` takes an
+        id from the caller and refuses nobody, which is the vulnerability
+        rather than the defence."""
+        route = self._route(self.LOOKS_UP_A_USER)
+        assert not self.analyzer._handler_authenticates(route)
+        titles = [f.title for f in self.analyzer._analyze_route(route)]
+        assert RouteAuthAnalyzerConfig.TITLE_MISSING_AUTH in titles
+
+    def test_refusing_without_identifying_is_not_authenticating(self) -> None:
+        """A 400-guard on a missing field is not an auth check."""
+        route = self._route(
+            ", (req, res) => {\n"
+            "  if (!req.body.name) return res.status(401).end()\n"
+            "  res.json(ok)\n"
+            "}"
+        )
+        assert not self.analyzer._handler_authenticates(route)
+
+    def test_the_file_is_not_searched_in_the_handler_s_place(self) -> None:
+        """One `server.ts` shares its content with a hundred routes, so a
+        guarded neighbour must not clear an unguarded route."""
+        route = RouteEntry(
+            file_path="server.ts",
+            http_methods=["GET"],
+            route_pattern="/open",
+            has_auth_check=False,
+            content=(
+                "app.get('/guarded', (req, res) => {\n"
+                "  const s = getServerSession(req)\n"
+                "  if (!s) return res.status(401).end()\n"
+                "})\n"
+            ),
+            handler_source=", (req, res) => res.json(everything)",
+        )
+        assert not self.analyzer._handler_authenticates(route)
+
+    def test_a_route_with_no_handler_source_is_unchanged(self) -> None:
+        """Mappers for other frameworks do not set it; they must keep their
+        existing behaviour."""
+        route = self._route("", pattern="/legacy")
+        assert not self.analyzer._handler_authenticates(route)

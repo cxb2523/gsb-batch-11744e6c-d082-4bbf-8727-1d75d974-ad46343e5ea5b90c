@@ -1,0 +1,803 @@
+"""Active Cross-Site Scripting (XSS) scanner.
+
+Tests for four types of XSS:
+1. Reflected XSS -- injects canary strings in query params, checks if reflected unescaped
+2. POST body XSS -- injects canary strings in JSON POST bodies for state-changing endpoints
+3. DOM-based XSS -- analyzes JavaScript for dangerous sinks (innerHTML, eval, etc.)
+4. Stored XSS detection hints -- flags writable endpoints that could lead to stored XSS
+
+Uses a canary-based approach: first inject a unique identifier with HTML-significant
+characters. If the canary appears unescaped in the response, the endpoint is vulnerable.
+"""
+
+import json
+import logging
+import re
+import uuid
+from urllib.parse import parse_qs, urlencode, urlparse
+
+from isitsecure.engine.constants import DeepScanConfig, XSSConfig
+from isitsecure.engine.shared.progress import emit
+from isitsecure.engine.models import (
+    DeepFinding,
+    DiscoveredEndpoint,
+    FindingSource,
+)
+from isitsecure.engine.shared.auth_aware import AuthAwareScanner
+from isitsecure.engine.shared.endpoint_prioritizer import PriorityDimension, rank
+from isitsecure.engine.shared.probe_capture import build_probe_capture
+from isitsecure.engine.shared.rate_limited_client import RateLimitedClient
+from isitsecure.engine.shared.scanner_runner import ScannerTimeouts
+from isitsecure.engine.shared.time_budget import TimeBudget
+from isitsecure.engine.shared.url_utils import inject_query_param
+from isitsecure.engine.enums import FindingCategory, SeverityLevel
+from isitsecure.engine.ingestion.snapshot import CodebaseSnapshot
+
+logger = logging.getLogger(__name__)
+
+
+class XSSScanner(AuthAwareScanner):
+    """Active XSS scanner implementing DASTScannerProtocol.
+
+    Performs canary-based reflected XSS testing (GET query params and POST
+    bodies) and static DOM sink analysis.
+
+    Auth headers (bearer token and/or session Cookie) reach probes via the
+    ``AuthAwareScanner`` mixin's ``_auth_headers`` slot (#111, generalized #115).
+
+    ``deep`` (default ``True``) selects the effort level. At quick depth (#118)
+    the scanner runs only the network reflected + POST-body phases on a tighter
+    time budget and skips the static DOM sink pass, so it fits the quick-depth
+    DAST set while still catching server-reflected XSS on protected endpoints.
+    """
+
+    def __init__(self, deep: bool = True) -> None:
+        self._deep = deep
+
+    @property
+    def _active_budget_seconds(self) -> float:
+        """Per-phase time budget: full at deep depth, tighter at quick (#118)."""
+        return (
+            ScannerTimeouts.XSS_ACTIVE_SECONDS
+            if self._deep
+            else ScannerTimeouts.XSS_QUICK_SECONDS
+        )
+
+    @property
+    def scanner_name(self) -> str:
+        """Unique name identifying this scanner."""
+        return XSSConfig.SCANNER_NAME
+
+    @property
+    def scan_categories(self) -> list[FindingCategory]:
+        """Finding categories this scanner can detect."""
+        return [FindingCategory.INJECTION_RISK]
+
+    async def scan(
+        self,
+        endpoints: list[DiscoveredEndpoint],
+        snapshot: CodebaseSnapshot | None = None,
+    ) -> list[DeepFinding]:
+        """Run XSS tests on discovered endpoints and JS content.
+
+        Args:
+            endpoints: Endpoints discovered during the discovery phase.
+            snapshot: Optional codebase snapshot for code-aware scanning.
+
+        Returns:
+            List of unified findings from this scanner.
+        """
+        findings: list[DeepFinding] = []
+
+        # Phase 1: Reflected XSS testing on GET endpoints
+        reflected_findings = await self._test_reflected_xss(endpoints)
+        findings.extend(reflected_findings)
+
+        # Phase 2: POST body XSS testing on state-changing endpoints
+        post_findings = await self._test_post_body_xss(endpoints)
+        findings.extend(post_findings)
+
+        # Phase 3: DOM-based XSS analysis on JS content (deep only — static sink
+        # heuristic; the semgrep taint layer already covers DOM-XSS at quick).
+        if self._deep and snapshot:
+            dom_findings = self._test_dom_xss(snapshot)
+            findings.extend(dom_findings)
+
+        logger.info("XSSScanner: %d findings", len(findings))
+        return findings
+
+    # ------------------------------------------------------------------
+    # Reflected XSS (GET query parameters)
+    # ------------------------------------------------------------------
+
+    async def _test_reflected_xss(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DeepFinding]:
+        """Test endpoints for reflected XSS via query parameters."""
+        findings: list[DeepFinding] = []
+        testable = self._get_testable_endpoints(endpoints)
+        budget = TimeBudget(self._active_budget_seconds)
+        candidates = rank(testable, PriorityDimension.XSS)[: XSSConfig.MAX_ENDPOINTS_TO_TEST]
+
+        async with RateLimitedClient(
+            max_concurrent=XSSConfig.MAX_CONCURRENT,
+            delay_seconds=XSSConfig.PROBE_DELAY,
+            timeout_seconds=XSSConfig.HTTP_TIMEOUT_SECONDS,
+            user_agent=DeepScanConfig.USER_AGENT,
+            extra_headers=self.auth_headers,
+        ) as client:
+            for tested, endpoint in enumerate(candidates):
+                if budget.expired():
+                    logger.info(
+                        "XSSScanner: time budget reached, tested %d/%d endpoints",
+                        tested, len(candidates),
+                    )
+                    break
+                params = self._get_testable_params(endpoint)
+                for param in params[: XSSConfig.MAX_PARAMS_PER_ENDPOINT]:
+                    finding = await self._test_param_reflection(
+                        client, endpoint, param
+                    )
+                    if finding:
+                        findings.append(finding)
+
+        return findings
+
+    async def _test_param_reflection(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        param_name: str,
+    ) -> DeepFinding | None:
+        """Test a single parameter for reflection.
+
+        Strategy:
+        1. Inject canary with HTML chars: <canary_xss_abc123>
+        2. Check if the canary appears in the response WITH the < > intact
+        3. If yes: the parameter is reflected without encoding -- XSS confirmed
+        """
+        canary_id = uuid.uuid4().hex[:8]
+
+        for probe_template in XSSConfig.REFLECTION_PROBES:
+            probe_value = probe_template.format(id=canary_id)
+
+            try:
+                url = inject_query_param(endpoint.url, param_name, probe_value)
+                response = await client.get(url)
+
+                if response.status_code >= 400:
+                    continue
+
+                body = response.text
+                content_type = response.headers.get("content-type", "")
+
+                # Check if canary is reflected with HTML chars unescaped
+                # Only the angle-bracket probe proves unescaped HTML: a quote-only
+                # probe reflecting says nothing about < > encoding, so it falls
+                # through to the context-aware check below.
+                if (
+                    probe_value in body
+                    and "<" in probe_value
+                    and "text/html" in content_type.lower()
+                ):
+                    capture = build_probe_capture(
+                        method="GET",
+                        url=url,
+                        headers=dict(response.request.headers),
+                        body="",
+                        response_status=response.status_code,
+                        response_headers=dict(response.headers),
+                        response_body=body,
+                        elapsed_ms=response.elapsed.total_seconds() * 1000,
+                        scanner_name=self.scanner_name,
+                    )
+                    return DeepFinding(
+                        source=FindingSource.DAST_URL,
+                        category=FindingCategory.INJECTION_RISK,
+                        severity=SeverityLevel.HIGH,
+                        title=XSSConfig.TITLE_REFLECTED_XSS,
+                        description=XSSConfig.DESC_REFLECTED_XSS.format(
+                            url=endpoint.url, param=param_name,
+                        ),
+                        technical_detail=(
+                            f"**Request:** GET {url}\n"
+                            f"**Injected value:** `{probe_value}`\n"
+                            f"**Parameter:** `{param_name}`\n"
+                            f"**Response status:** {response.status_code}\n"
+                            f"**Content-Type:** {content_type}\n"
+                            f"**Observation:** The full probe value including "
+                            f"HTML characters (<, >, quotes) appears UNESCAPED "
+                            f"in the response body. This confirms the server "
+                            f"does not encode user input before rendering."
+                        ),
+                        evidence=(
+                            f"GET {url}\n"
+                            f"Response body contains `{probe_value}` — "
+                            f"HTML chars NOT encoded (confirmed XSS)"
+                        ),
+                        confidence=XSSConfig.CONFIDENCE_REFLECTED_CONFIRMED,
+                        scanner_name=self.scanner_name,
+                        endpoint_url=endpoint.url,
+                        http_method="GET",
+                        request_payload=probe_value,
+                        response_preview=body[:300],
+                        probe_captures=[capture],
+                    )
+
+                # Check for partial reflection (some chars encoded, some not)
+                # This is where context-aware XSS kicks in: the text is
+                # reflected but HTML chars are encoded. Detect which context
+                # the canary landed in and send a context-specific payload.
+                canary_text = f"canary_xss_{canary_id}"
+                if canary_text in body and "text/html" in content_type.lower():
+                    # Attempt context-aware confirmation before reporting LOW
+                    ctx_finding = await self._test_context_xss(
+                        client, endpoint, param_name, canary_text,
+                        # Neutralise our own probe quotes so a quote-only probe
+                        # echoed in a plain text node is not read as a JS/attr
+                        # string context.
+                        body.replace(probe_value, canary_text),
+                    )
+                    if ctx_finding:
+                        return ctx_finding
+
+                    return DeepFinding(
+                        source=FindingSource.DAST_URL,
+                        category=FindingCategory.INJECTION_RISK,
+                        severity=SeverityLevel.LOW,
+                        title=XSSConfig.TITLE_REFLECTED_XSS_POSSIBLE,
+                        description=XSSConfig.DESC_REFLECTED_XSS_POSSIBLE.format(
+                            url=endpoint.url, param=param_name,
+                        ),
+                        technical_detail=(
+                            f"**Request:** GET {url}\n"
+                            f"**Injected value:** `{probe_value}`\n"
+                            f"**Parameter:** `{param_name}`\n"
+                            f"**Response status:** {response.status_code}\n"
+                            f"**Observation:** The canary text `{canary_text}` "
+                            f"appears in the response body, but the HTML-significant "
+                            f"characters (<, >) from the probe were encoded. "
+                            f"This suggests framework-level output encoding is active."
+                        ),
+                        evidence=(
+                            f"GET {url}\n"
+                            f"Response contains `{canary_text}` as text — "
+                            f"HTML chars encoded (< → &lt;, > → &gt;)"
+                        ),
+                        confidence=XSSConfig.CONFIDENCE_REFLECTED_POSSIBLE,
+                        scanner_name=self.scanner_name,
+                        endpoint_url=endpoint.url,
+                        http_method="GET",
+                        request_payload=probe_value,
+                    )
+
+            except Exception as exc:
+                logger.debug(
+                    XSSConfig.ERROR_XSS_SCAN_FAILED.format(
+                        endpoint=endpoint.url, error=str(exc)
+                    )
+                )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # POST body XSS
+    # ------------------------------------------------------------------
+
+    async def _test_post_body_xss(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DeepFinding]:
+        """Test state-changing endpoints for XSS via JSON POST bodies.
+
+        Identifies POST/PUT/PATCH endpoints and sends JSON bodies with
+        canary values in common field names. If canaries are reflected
+        unescaped in the response, the endpoint is vulnerable.
+        """
+        findings: list[DeepFinding] = []
+        post_endpoints = self._get_post_testable_endpoints(endpoints)
+
+        if not post_endpoints:
+            return findings
+
+        # Shares the depth-aware budget with the reflected phase so the quick
+        # pass bounds BOTH network phases, not just the reflected one (#118).
+        budget = TimeBudget(self._active_budget_seconds)
+        candidates = rank(post_endpoints, PriorityDimension.XSS)[: XSSConfig.MAX_POST_ENDPOINTS_TO_TEST]
+        async with RateLimitedClient(
+            max_concurrent=XSSConfig.MAX_CONCURRENT,
+            delay_seconds=XSSConfig.PROBE_DELAY,
+            timeout_seconds=XSSConfig.HTTP_TIMEOUT_SECONDS,
+            user_agent=DeepScanConfig.USER_AGENT,
+            extra_headers=self.auth_headers,
+        ) as client:
+            for tested, endpoint in enumerate(candidates):
+                if budget.expired():
+                    logger.info(
+                        "XSSScanner: POST-body budget reached, tested %d/%d endpoints",
+                        tested, len(candidates),
+                    )
+                    emit(
+                        f"XSS: time budget reached after {tested}/"
+                        f"{len(candidates)} write endpoints"
+                    )
+                    break
+                emit(
+                    f"XSS: body probe {tested + 1}/{len(candidates)} "
+                    f"{endpoint.method.value} {urlparse(endpoint.url).path}"
+                )
+                finding = await self._test_single_post_body(client, endpoint)
+                if finding:
+                    findings.append(finding)
+
+        return findings
+
+    async def _post_body_variants(
+        self,
+        client: RateLimitedClient,
+        method: str,
+        url: str,
+        body_payload: dict[str, str],
+        canary_map: dict[str, str],
+    ) -> tuple[object | None, str, str]:
+        """POST the canary body as form-urlencoded, then JSON.
+
+        Real HTML forms are ``application/x-www-form-urlencoded``; APIs take JSON.
+        Returns the response that reflects a canary (or the last valid attempt),
+        the sent body string, and a content-type label for the finding.
+        """
+        json_body = json.dumps(body_payload)
+        attempts = [
+            ("form-urlencoded", urlencode(body_payload),
+             {"data": body_payload,
+              "headers": {"Content-Type": "application/x-www-form-urlencoded"}}),
+            ("JSON", json_body,
+             {"content": json_body, "headers": {"Content-Type": "application/json"}}),
+        ]
+        last: tuple[object | None, str, str] = (None, "", "")
+        for label, sent_body, kwargs in attempts:
+            try:
+                resp = await client.request(method, url, **kwargs)
+            except Exception:  # noqa: BLE001, S112 - try the next content-type
+                continue
+            last = (resp, sent_body, label)
+            if resp.status_code < 400 and any(c in resp.text for c in canary_map.values()):
+                return resp, sent_body, label
+        return last
+
+    async def _test_single_post_body(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+    ) -> DeepFinding | None:
+        """Test a single POST endpoint for body reflection XSS.
+
+        Builds a JSON body with canary values for each common field name
+        and checks whether any canary is reflected unescaped in the response.
+        """
+        canary_id = uuid.uuid4().hex[:8]
+
+        # Canary the form's ACTUAL discovered fields (extracted from the crawled
+        # <form>'s <input name=...>), falling back to generic names only when the
+        # endpoint carried none. A fixed generic list misses app-specific fields
+        # like firstName/lastName, so real form-POST XSS goes undetected.
+        field_names = list(endpoint.query_param_names) or list(XSSConfig.POST_BODY_FIELD_NAMES)
+        field_names = field_names[: XSSConfig.MAX_POST_BODY_FIELDS]
+        body_payload: dict[str, str] = {}
+        field_canary_map: dict[str, str] = {}
+        for field_name in field_names:
+            canary_value = f"<canary_xss_{canary_id}_{field_name}>"
+            body_payload[field_name] = canary_value
+            field_canary_map[field_name] = canary_value
+
+        http_method = endpoint.method.value
+
+        try:
+            # Try form-urlencoded (most HTML forms) then JSON (APIs); use whichever
+            # reflects a canary so the finding reflects the real request.
+            response, sent_body, sent_desc = await self._post_body_variants(
+                client, http_method, endpoint.url, body_payload, field_canary_map,
+            )
+            if response is None or response.status_code >= 400:
+                return None
+
+            response_body = response.text
+            content_type = response.headers.get("content-type", "")
+
+            # A JSON/plain-text echo is not executable in a browser: only an
+            # HTML response can be reflected XSS (same gate as the GET path).
+            is_html = "text/html" in content_type.lower()
+
+            # Check each field's canary for unescaped reflection
+            for field_name, canary_value in field_canary_map.items():
+                if not is_html:
+                    break
+                if canary_value in response_body:
+                    capture = build_probe_capture(
+                        method=http_method,
+                        url=endpoint.url,
+                        headers=dict(response.request.headers),
+                        body=sent_body,
+                        response_status=response.status_code,
+                        response_headers=dict(response.headers),
+                        response_body=response_body,
+                        elapsed_ms=response.elapsed.total_seconds() * 1000,
+                        scanner_name=self.scanner_name,
+                    )
+                    return DeepFinding(
+                        source=FindingSource.DAST_URL,
+                        category=FindingCategory.INJECTION_RISK,
+                        severity=SeverityLevel.HIGH,
+                        title=XSSConfig.TITLE_POST_BODY_XSS,
+                        description=XSSConfig.DESC_POST_BODY_XSS.format(
+                            url=endpoint.url, field=field_name
+                        ),
+                        technical_detail=(
+                            f"Sent {http_method} with {sent_desc} body containing "
+                            f"canary in field '{field_name}'.\n"
+                            f"Canary: {canary_value}\n"
+                            f"Reflected unescaped in response body.\n"
+                            f"Content-Type: {content_type}"
+                        ),
+                        evidence=(
+                            f"{http_method} {endpoint.url} with {sent_desc} body -> "
+                            f"canary in '{field_name}' reflected unescaped"
+                        ),
+                        confidence=XSSConfig.CONFIDENCE_POST_BODY_REFLECTED,
+                        scanner_name=self.scanner_name,
+                        endpoint_url=endpoint.url,
+                        http_method=http_method,
+                        request_payload=sent_body,
+                        response_preview=response_body[:300],
+                        probe_captures=[capture],
+                    )
+
+                # Check for partial reflection (canary text without HTML chars)
+                canary_text = f"canary_xss_{canary_id}_{field_name}"
+                if canary_text in response_body:
+                    return DeepFinding(
+                        source=FindingSource.DAST_URL,
+                        category=FindingCategory.INJECTION_RISK,
+                        severity=SeverityLevel.LOW,
+                        title=XSSConfig.TITLE_POST_BODY_XSS_POSSIBLE,
+                        description=(
+                            XSSConfig.DESC_POST_BODY_XSS.format(
+                                url=endpoint.url, field=field_name
+                            )
+                            + " HTML characters appear to be encoded by the "
+                            "framework, but the input text is reflected. "
+                            "Verify that encoding is applied in all contexts."
+                        ),
+                        technical_detail=(
+                            f"Sent {http_method} with {sent_desc} body containing "
+                            f"canary in field '{field_name}'.\n"
+                            f"Canary text reflected (HTML chars may be encoded)."
+                        ),
+                        evidence=(
+                            f"{http_method} {endpoint.url} with {sent_desc} body -> "
+                            f"canary in '{field_name}' partially reflected"
+                        ),
+                        confidence=XSSConfig.CONFIDENCE_REFLECTED_POSSIBLE,
+                        scanner_name=self.scanner_name,
+                        endpoint_url=endpoint.url,
+                        http_method=http_method,
+                        request_payload=sent_body,
+                    )
+
+            # Stored XSS: the payload may reflect only when the resource is
+            # RETRIEVED, not in the POST response. Fetch the collection and
+            # check for an unescaped canary in an HTML response.
+            stored = await self._check_stored_reflection(
+                client, endpoint, field_canary_map, body_payload, http_method,
+            )
+            if stored:
+                return stored
+
+        except Exception as exc:
+            logger.debug(
+                XSSConfig.ERROR_XSS_SCAN_FAILED.format(
+                    endpoint=endpoint.url, error=str(exc)
+                )
+            )
+
+        return None
+
+    async def _check_stored_reflection(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        field_canary_map: dict[str, str],
+        body_payload: dict[str, str],
+        http_method: str,
+    ) -> DeepFinding | None:
+        """GET the endpoint and flag a canary reflected unescaped in HTML.
+
+        This is the stored-then-rendered XSS pattern: the value was accepted by
+        the POST but only appears when the collection is read back. Restricted
+        to HTML responses so a JSON API echoing the stored value isn't a false
+        positive (that path is the DOM scanner's job).
+        """
+        try:
+            response = await client.get(endpoint.url)
+        except Exception:
+            return None
+        if "text/html" not in response.headers.get("content-type", "").lower():
+            return None
+        body = response.text
+        for field_name, canary_value in field_canary_map.items():
+            if canary_value not in body:
+                continue
+            capture = build_probe_capture(
+                method=http_method, url=endpoint.url, headers={},
+                body=json.dumps(body_payload), response_status=response.status_code,
+                response_headers=dict(response.headers), response_body=body,
+                elapsed_ms=response.elapsed.total_seconds() * 1000,
+                scanner_name=self.scanner_name,
+            )
+            return DeepFinding(
+                source=FindingSource.DAST_URL,
+                category=FindingCategory.INJECTION_RISK,
+                severity=SeverityLevel.CRITICAL,
+                title="Stored XSS (persisted, reflected unescaped on retrieval)",
+                description=(
+                    f"A canary submitted to {endpoint.url} via '{field_name}' "
+                    f"was stored and reflected UNESCAPED in the HTML response "
+                    f"when the resource was retrieved (GET). Persisted user "
+                    f"input rendered without encoding is stored XSS."
+                ),
+                technical_detail=(
+                    f"{http_method} stored canary in '{field_name}'; a "
+                    f"subsequent GET {endpoint.url} returned it unescaped in "
+                    f"an HTML response.\nCanary: {canary_value}"
+                ),
+                evidence=(
+                    f"POST->GET {endpoint.url}: '{field_name}' canary persisted "
+                    f"and reflected unescaped in HTML"
+                ),
+                confidence=XSSConfig.CONFIDENCE_REFLECTED_CONFIRMED,
+                scanner_name=self.scanner_name,
+                endpoint_url=endpoint.url,
+                http_method=http_method,
+                request_payload=json.dumps(body_payload),
+                response_preview=body[:300],
+                probe_captures=[capture],
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # DOM-based XSS
+    # ------------------------------------------------------------------
+
+    def _test_dom_xss(self, snapshot: CodebaseSnapshot) -> list[DeepFinding]:
+        """Scan JavaScript for dangerous DOM sinks."""
+        findings: list[DeepFinding] = []
+        js_content = snapshot.all_js_content
+
+        if not js_content:
+            return findings
+
+        for sink_pattern in XSSConfig.DANGEROUS_SINKS:
+            matches = list(re.finditer(sink_pattern, js_content))
+            if not matches:
+                continue
+
+            # Check if ALL matches are in safe contexts
+            if self._all_matches_safe(sink_pattern, js_content, matches):
+                continue
+
+            # Deduplicate: report once per unique sink type
+            sink_name = self._readable_sink_name(sink_pattern)
+
+            findings.append(
+                DeepFinding(
+                    source=FindingSource.DAST_URL,
+                    category=FindingCategory.INJECTION_RISK,
+                    severity=SeverityLevel.LOW,
+                    title=XSSConfig.TITLE_DOM_XSS,
+                    description=XSSConfig.DESC_DOM_XSS.format(sink=sink_name),
+                    technical_detail=(
+                        f"Pattern: {sink_pattern}\n"
+                        f"Matches: {len(matches)} occurrences in JS bundles"
+                    ),
+                    evidence=(
+                        f"Found {len(matches)} instances of "
+                        f"{sink_name} in JavaScript"
+                    ),
+                    confidence=XSSConfig.CONFIDENCE_DOM_BASED,
+                    scanner_name=self.scanner_name,
+                    endpoint_url=snapshot.url,
+                )
+            )
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Context-aware XSS confirmation
+    # ------------------------------------------------------------------
+
+    async def _test_context_xss(
+        self,
+        client: RateLimitedClient,
+        endpoint: DiscoveredEndpoint,
+        param_name: str,
+        canary_text: str,
+        response_body: str,
+    ) -> DeepFinding | None:
+        """Detect the injection context and send a targeted breakout payload.
+
+        Called when the canary text is reflected but HTML chars are encoded.
+        Analyzes the surrounding HTML/JS to determine which context the
+        canary landed in, then sends a context-appropriate payload.
+
+        Returns a HIGH-severity finding if the breakout payload is
+        reflected unescaped, or None if no context yields a confirmed XSS.
+        """
+        for ctx_name, (detect_re, payload, desc) in XSSConfig.CONTEXT_PAYLOADS.items():
+            # Check if the canary appears in this context
+            pattern = detect_re.replace("{canary}", re.escape(canary_text))
+            if not re.search(pattern, response_body):
+                continue
+
+            # Canary is in this context — send the breakout payload
+            try:
+                url = inject_query_param(endpoint.url, param_name, payload)
+                resp = await client.get(url)
+
+                if resp.status_code >= 400:
+                    continue
+
+                # Check if the breakout payload is reflected unescaped
+                if payload in resp.text:
+                    capture = build_probe_capture(
+                        method="GET",
+                        url=url,
+                        headers=dict(resp.request.headers),
+                        body="",
+                        response_status=resp.status_code,
+                        response_headers=dict(resp.headers),
+                        response_body=resp.text,
+                        elapsed_ms=resp.elapsed.total_seconds() * 1000,
+                        scanner_name=self.scanner_name,
+                    )
+                    return DeepFinding(
+                        source=FindingSource.DAST_URL,
+                        category=FindingCategory.INJECTION_RISK,
+                        severity=SeverityLevel.HIGH,
+                        title=XSSConfig.TITLE_CONTEXT_XSS.format(
+                            context_desc=desc, param=param_name,
+                        ),
+                        description=XSSConfig.DESC_CONTEXT_XSS.format(
+                            url=endpoint.url,
+                            param=param_name,
+                            context_desc=desc,
+                            payload=payload,
+                        ),
+                        technical_detail=(
+                            f"**Context:** {desc}\n"
+                            f"**Parameter:** `{param_name}`\n"
+                            f"**Detection:** Canary `{canary_text}` found "
+                            f"inside {ctx_name} context\n"
+                            f"**Confirmation payload:** `{payload}`\n"
+                            f"**Result:** Payload reflected unescaped in "
+                            f"response (status {resp.status_code})"
+                        ),
+                        evidence=(
+                            f"GET {url}\n"
+                            f"Context: {desc}\n"
+                            f"Payload `{payload}` reflected unescaped"
+                        ),
+                        confidence=XSSConfig.CONFIDENCE_CONTEXT_CONFIRMED,
+                        scanner_name=self.scanner_name,
+                        endpoint_url=endpoint.url,
+                        http_method="GET",
+                        request_payload=payload,
+                        response_preview=resp.text[:300],
+                        probe_captures=[capture],
+                    )
+
+            except Exception as exc:
+                logger.debug(
+                    "Context XSS test failed for %s/%s: %s",
+                    endpoint.url, ctx_name, exc,
+                )
+
+        return None
+
+    def _all_matches_safe(
+        self,
+        sink_pattern: str,
+        js_content: str,
+        matches: list[re.Match[str]],
+    ) -> bool:
+        """Check whether all matches of a sink are in safe contexts."""
+        sink_prefix = sink_pattern.split(r"\s")[0]
+        relevant_safe_patterns = [
+            sp
+            for sp in XSSConfig.SAFE_SINK_CONTEXTS
+            if sink_prefix in sp
+        ]
+        if not relevant_safe_patterns:
+            return False
+
+        for match in matches:
+            # Extract surrounding context (up to 80 chars after match start)
+            start = match.start()
+            context = js_content[start : start + 80]
+            is_safe = any(
+                re.search(safe_p, context)
+                for safe_p in relevant_safe_patterns
+            )
+            if not is_safe:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _get_testable_endpoints(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DiscoveredEndpoint]:
+        """Filter endpoints that are worth testing for reflected XSS."""
+        testable: list[DiscoveredEndpoint] = []
+        for ep in endpoints:
+            parsed = urlparse(ep.url)
+            # Has query params already, or is a GET endpoint we can add params to
+            if parsed.query or ep.method.value == "GET":
+                testable.append(ep)
+        return testable
+
+    def _get_post_testable_endpoints(
+        self, endpoints: list[DiscoveredEndpoint]
+    ) -> list[DiscoveredEndpoint]:
+        """Filter endpoints with state-changing HTTP methods (POST/PUT/PATCH)."""
+        return [
+            ep
+            for ep in endpoints
+            if ep.method.value in XSSConfig.STATE_CHANGING_METHODS
+        ]
+
+    def _get_testable_params(self, endpoint: DiscoveredEndpoint) -> list[str]:
+        """Get parameter names to test for an endpoint.
+
+        Priority order:
+        1. Params already in the URL query string (known to exist)
+        2. Params from endpoint discovery (query_param_names)
+        3. Small fallback set of common reflectable params (capped)
+        """
+        seen: set[str] = set()
+        params: list[str] = []
+
+        # 1. Params in the URL
+        parsed = urlparse(endpoint.url)
+        for p in parse_qs(parsed.query).keys():
+            if p not in seen:
+                params.append(p)
+                seen.add(p)
+
+        # 2. Discovered query params
+        for p in endpoint.query_param_names:
+            if p not in seen:
+                params.append(p)
+                seen.add(p)
+
+        # 3. If still empty, use a small fallback (not the full list)
+        if not params:
+            for p in XSSConfig.COMMON_REFLECTABLE_PARAMS:
+                if len(params) >= XSSConfig.MAX_PARAMS_PER_ENDPOINT:
+                    break
+                if p not in seen:
+                    params.append(p)
+                    seen.add(p)
+
+        return params[: XSSConfig.MAX_PARAMS_PER_ENDPOINT]
+
+    @staticmethod
+    def _readable_sink_name(pattern: str) -> str:
+        """Convert a regex sink pattern to a human-readable name."""
+        return (
+            pattern.replace(r"\s*", "")
+            .replace(r"\s*\(", "(")
+            .replace(r"\(", "(")
+            .replace(r"\.", ".")
+            .replace("\\", "")
+        )

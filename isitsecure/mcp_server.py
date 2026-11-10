@@ -1,0 +1,1108 @@
+"""Local stdio MCP server exposing isitsecure's ``scan`` tool (#58).
+
+Hosted nowhere: the user's AI coding tool (Cursor, Claude Code, Claude Desktop)
+spawns ``isitsecure mcp`` as a subprocess and speaks MCP over stdio. This is the
+day-one thin slice — a single ``scan`` tool that runs a fast **code-only (SAST)**
+scan on a local repo and returns trimmed, agent-friendly findings enriched with
+the plain-English layer (what it is / what an attacker could do / how to fix).
+
+The heavy ``mcp`` SDK is an optional dependency; import failures surface as a
+clear "install isitsecure[mcp]" message rather than a traceback.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections import OrderedDict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+# Pydantic (used by FastMCP to build the tool's output schema) requires
+# typing_extensions.TypedDict, not typing.TypedDict, on Python < 3.12.
+from typing_extensions import TypedDict
+
+logger = logging.getLogger(__name__)
+
+
+class McpFinding(TypedDict):
+    """One trimmed, agent-facing finding (part of the tool's output schema)."""
+
+    id: str
+    severity: str
+    category: str
+    title: str
+    file: str | None
+    line: int | None
+    priority: int | None
+    what_it_is: str
+    attacker_could: str
+    fix: str
+
+
+class GradeStepDict(TypedDict):
+    """One rung on the climb to a better grade."""
+
+    grade: str
+    requires: str
+    clear_at_least: int
+
+
+class ThemeSummary(TypedDict):
+    """A root-cause grouping of related findings."""
+
+    theme_id: str
+    title: str
+    severity: str
+    finding_count: int
+
+
+class ScanResult(TypedDict):
+    """The `scan` tool's structured result — drives the MCP output schema."""
+
+    scan_id: str
+    grade: str
+    grade_label: str
+    safe_to_launch: bool
+    verdict: str
+    incomplete: bool
+    coverage_gaps: list[str]
+    counts: dict[str, int]
+    total_findings: int
+    returned_findings: int
+    min_severity: str
+    path_to_next_grade: list[GradeStepDict]
+    themes: list[ThemeSummary]
+    findings: list[McpFinding]
+
+
+class FindingDetail(TypedDict):
+    """Deep dive on one finding — the `explain` tool's output schema.
+
+    Leads with the finding's OWN generated text (description / technical detail /
+    evidence / the vulnerable snippet) so it's specific to this finding, not the
+    category-level blurb the `scan` list carries.
+    """
+
+    id: str
+    severity: str
+    category: str
+    title: str
+    file: str | None
+    line: int | None
+    code_snippet: str | None
+    description: str
+    technical_detail: str
+    evidence: str
+    what_it_is: str
+    attacker_could: str
+    business_impact: str
+    remediation: str
+    stack_remediation: str
+    walkthrough: list[str]
+
+
+class FixBrief(TypedDict):
+    """Everything the host LLM needs to fix one finding — the `fix` tool's output.
+
+    The MCP makes no LLM call and writes no files: the host LLM (which already has
+    the user's model, context and editor) writes the patch and applies it, then
+    `verify` confirms. The CLI / web UI have no host LLM, so they keep generating
+    fixes themselves via FixGenerator (see docs/mcp.md "Who applies the fix").
+    """
+
+    finding_id: str
+    file: str
+    line: int | None
+    title: str
+    category: str
+    severity: str
+    description: str
+    guidance: str
+    fix_patterns: str
+    guidelines: str
+    file_content: str
+    applied: bool
+    next_step: str
+
+
+class VerifyResult(TypedDict):
+    """Result of re-scanning after fixes — the `verify` tool's output schema.
+
+    Re-scans the same path and reports which findings cleared and how the grade
+    moved. resolved/still_present cover only *verifiable* rule-based SAST findings
+    (LLM/DAST findings can't be reliably re-checked by a code re-scan → counted
+    as unverifiable). Carries a fresh `scan_id` for the re-scanned state so the
+    fix loop can continue.
+    """
+
+    scan_id: str
+    previous_grade: str
+    grade: str
+    grade_improved: bool
+    incomplete: bool
+    previous_counts: dict[str, int]
+    counts: dict[str, int]
+    safe_to_launch: bool
+    resolved_count: int
+    resolved: list[str]
+    still_present_count: int
+    still_present: list[str]
+    possibly_moved_count: int
+    possibly_moved: list[str]
+    unverifiable_count: int
+    summary: str
+
+
+class ExportResult(TypedDict):
+    """A rendered, shareable report — the `export` tool's output schema.
+
+    Returns the report *content* for the host to save; the MCP does not write
+    files (same stance as `fix`).
+    """
+
+    format: str
+    content: str
+    suggested_filename: str
+    next_step: str
+
+
+class ScanJobHandle(TypedDict):
+    """Handle returned by `scan_url` for a started DAST job."""
+
+    job_id: str
+    status: str
+    message: str
+
+
+class ScanJobStatus(TypedDict):
+    """Status of a DAST scan job — the `scan_status` tool's output schema.
+
+    `result` is null until `status == "done"`, then it's the same shape as a
+    `scan` result (grade, counts, path_to_next_grade, findings, …).
+    """
+
+    job_id: str
+    status: str          # "running" | "done" | "error"
+    progress: float      # 0.0–1.0
+    message: str
+    result: ScanResult | None
+    error: str
+
+
+MCP_MISSING_MSG = (
+    "The MCP server needs the optional 'mcp' dependency.\n"
+    "Install it with:  pip install 'isitsecure[mcp]'   (or 'isitsecure[all]')."
+)
+
+# Surfaced to the host LLM in the MCP initialize response so it knows *when* to
+# reach for these tools on its own — users say "run a security audit", not
+# "call the isitsecure scan tool".
+_SERVER_INSTRUCTIONS = (
+    "isitsecure runs a security review of the user's own code. Reach for the "
+    "`scan` tool whenever the user wants to check their code for security "
+    "problems — e.g. \"run a security audit\", \"scan for vulnerabilities\", "
+    "\"is this safe to ship/launch\", \"review my code for security issues\", "
+    "\"any security bugs?\", or before a release — even when they don't name "
+    "isitsecure. It runs a local static analysis (SAST) on a repository path and "
+    "returns a letter grade, a launch verdict, findings with plain-English "
+    "explanations, and what it takes to reach a better grade. Prefer it over "
+    "reading the code yourself for security posture. Do NOT use it for general "
+    "code review, style, or non-security bugs. After a scan, use `explain` with "
+    "the scan_id and a finding's id to dig into a specific finding (\"explain the "
+    "SQL injection one\", \"why does this matter\"). Use `fix` with the scan_id "
+    "and a finding's id to get a proposed patch (\"fix the SQL injection\", \"patch "
+    "finding X\") — it returns a diff for YOU to apply with your editor; the MCP "
+    "does not write files. After the user applies fixes, use `verify` with the "
+    "scan_id to re-scan and report what cleared and how the grade moved (\"did "
+    "that work?\", \"verify my fixes\", \"what's my grade now?\"). Use `export` "
+    "with the scan_id to render a shareable report (html/sarif/json/markdown) to "
+    "save or attach — it returns the content for YOU to write; the MCP does not "
+    "write files. To scan a RUNNING app/site (DAST), use `scan_url` with an "
+    "http(s) URL — it returns a job_id immediately (DAST takes minutes); then poll "
+    "`scan_status(job_id)` for progress and the result."
+)
+
+# Severity ranking for the min-severity filter and result ordering.
+_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+@dataclass(frozen=True)
+class _CachedScan:
+    """A cached scan: the full report plus the local path that was scanned.
+
+    The path lets `fix`/`verify` read the actual source files a finding refers to
+    (findings carry a repo-relative path, not file contents).
+    """
+
+    report: Any
+    repo_path: str | None
+
+
+# In-process cache of scans, keyed by scan_id, so later tools (explain/fix/
+# verify) can resolve a finding — and its source file — from a *prior* scan
+# within the same session. The `scan` tool returns only trimmed findings, but
+# these keep the full report. Bounded to the most recent scans to cap memory.
+_SCAN_CACHE: "OrderedDict[str, _CachedScan]" = OrderedDict()
+_SCAN_CACHE_MAX = 20
+
+
+def _cache_report(report, repo_path: str | None = None) -> str:
+    """Store a scan under a fresh scan_id; evict oldest past the cap.
+
+    Synchronous with no ``await`` inside, so insert+evict is atomic w.r.t. other
+    coroutines on the event loop — keep it that way (an ``async`` refactor would
+    reintroduce an interleaving race on the shared cache).
+    """
+    scan_id = uuid4().hex[:12]
+    _SCAN_CACHE[scan_id] = _CachedScan(report=report, repo_path=repo_path)
+    while len(_SCAN_CACHE) > _SCAN_CACHE_MAX:
+        _SCAN_CACHE.popitem(last=False)
+    return scan_id
+
+
+def get_cached_report(scan_id: str):
+    """Return the full DeepScanReport for a scan_id, or None if unknown/evicted."""
+    entry = _SCAN_CACHE.get(scan_id)
+    return entry.report if entry else None
+
+
+def get_scan_path(scan_id: str) -> str | None:
+    """Return the local path that was scanned for a scan_id, or None."""
+    entry = _SCAN_CACHE.get(scan_id)
+    return entry.repo_path if entry else None
+
+
+def get_finding(scan_id: str, finding_id: str):
+    """Resolve a single finding from a prior scan (for explain/fix/verify).
+
+    Returns None if the scan_id is unknown/evicted or the finding_id isn't in it.
+    """
+    entry = _SCAN_CACHE.get(scan_id)
+    if entry is None:
+        return None
+    return next((f for f in entry.report.findings if f.id == finding_id), None)
+
+
+@dataclass
+class _ScanJob:
+    """A background DAST scan job (#60). DAST takes minutes, so `scan_url` starts
+    one of these and returns a job_id; `scan_status` polls it."""
+
+    status: str            # "running" | "done" | "error"
+    progress: float
+    message: str
+    result: Any = None     # a ScanResult once done
+    error: str = ""
+    task: Any = None       # the asyncio.Task running the scan
+
+
+# Background DAST jobs, keyed by job_id, bounded like the scan cache.
+_JOBS: "OrderedDict[str, _ScanJob]" = OrderedDict()
+_JOBS_MAX = 20
+
+
+def _require_fastmcp():
+    """Return the FastMCP class, or raise a friendly error if uninstalled."""
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:  # pragma: no cover - exercised via CLI message
+        raise RuntimeError(MCP_MISSING_MSG) from exc
+    return FastMCP
+
+
+def _maybe_llm_client():
+    """Build an LLM client if a key is configured, else None.
+
+    Code-only SAST runs entirely on rule-based scanners, so the MCP scan works
+    with no API key; a configured key just adds the LLM review pass.
+    """
+    try:
+        from isitsecure.config import load_api_key
+
+        api_key = load_api_key("anthropic")
+        if not api_key:
+            return None
+        from isitsecure.llm.adapters import create_llm_client
+
+        return create_llm_client("anthropic", api_key)
+    except Exception as exc:
+        # Best-effort: fall back to rule-based SAST, but leave a breadcrumb on
+        # stderr so a real misconfig (bad key, import break) is diagnosable.
+        logger.debug("LLM client unavailable, running rule-based only: %s", exc)
+        return None
+
+
+async def _run_scan_silent(path: Path, scan_mode) -> Any:
+    """Run a scan to completion, discarding progress events, returning report."""
+    from isitsecure.engine.factory import (
+        create_deep_security_scan_agent,
+        create_repo_ingestion_service,
+    )
+    from isitsecure.engine.models import DeepScanReport
+
+    llm_client = _maybe_llm_client()
+    agent = create_deep_security_scan_agent(
+        llm_client=llm_client,
+        judgment_llm_client=llm_client,
+        repo_ingestion_service=create_repo_ingestion_service(),
+    )
+
+    report = None
+    async for event in agent.scan(repo_url=str(path), scan_mode=scan_mode):
+        data = getattr(event, "data", None) or {}
+        if "report" in data:
+            report = DeepScanReport.model_validate(data["report"])
+    return report
+
+
+# Grades best → worst, for "did the grade improve?" comparisons.
+_GRADE_ORDER = ("A+", "A", "A-", "B+", "B", "C+", "C", "D", "F")
+
+
+def _grade_rank(grade: str) -> int:
+    return _GRADE_ORDER.index(grade) if grade in _GRADE_ORDER else len(_GRADE_ORDER)
+
+
+def _count_by_severity(findings) -> dict[str, int]:
+    """Count a list of findings by severity (every bucket, reconciles with len)."""
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for finding in findings:
+        sev = finding.severity.value.lower()
+        if sev in counts:
+            counts[sev] += 1
+    return counts
+
+
+def _coverage_gaps(report) -> list[str]:
+    """What did not run (ingestion errors + scanner failures); [] when complete."""
+    return list(getattr(report, "coverage_gaps", None) or [])
+
+
+def _severity_counts(report) -> dict[str, int]:
+    """Count a report's findings by severity."""
+    return _count_by_severity(report.findings)
+
+
+def _trim_report(report, min_severity: str, scan_id: str) -> ScanResult:
+    """Collapse a full DeepScanReport into a compact, agent-friendly payload."""
+    from isitsecure.engine.reporting.plain_english import (
+        calculate_grade,
+        explain_finding,
+        grade_path,
+        launch_verdict,
+    )
+    from isitsecure.engine.shared.redaction import redact_finding
+
+    threshold = _SEVERITY_RANK.get(min_severity.lower(), _SEVERITY_RANK["medium"])
+    counts = _severity_counts(report)
+
+    findings_out: list[dict] = []
+    for finding in report.findings:
+        sev = finding.severity.value.lower()
+        if _SEVERITY_RANK.get(sev, 0) < threshold:
+            continue
+        finding = redact_finding(finding)  # fingerprint is pinned to the raw finding
+        explanation = explain_finding(finding)
+        loc = finding.code_location
+        findings_out.append(
+            {
+                "id": finding.id,
+                "fingerprint": finding.fingerprint,  # stable id for suppression (#38)
+                "severity": sev,
+                "category": finding.category.value,
+                "title": finding.title,
+                "file": loc.file_path if loc else None,
+                "line": loc.line_number if loc else None,
+                "priority": finding.priority,
+                "what_it_is": explanation.what_it_is,
+                "attacker_could": explanation.attacker_could,
+                "fix": explanation.what_to_do,
+            }
+        )
+
+    findings_out.sort(key=lambda f: -_SEVERITY_RANK.get(f["severity"], 0))
+
+    gaps = _coverage_gaps(report)
+    grade = calculate_grade(
+        counts["critical"], counts["high"], counts["medium"], counts["low"],
+        provisional=bool(gaps),
+    )
+    verdict = launch_verdict(
+        counts["critical"], counts["high"], counts["medium"], incomplete=bool(gaps)
+    )
+
+    # What it takes to climb to each better grade — so an assistant can answer
+    # "what gets me to a C?" without reading isitsecure's grader (#68).
+    path = [
+        {"grade": s.grade, "requires": s.requires, "clear_at_least": s.clear_at_least}
+        for s in grade_path(
+            counts["critical"], counts["high"], counts["medium"], counts["low"]
+        )
+    ]
+    themes = [
+        {
+            "theme_id": t.theme_id,
+            "title": t.title,
+            "severity": t.severity,
+            "finding_count": t.finding_count,
+        }
+        for t in (report.themes or [])
+    ]
+
+    return {
+        "scan_id": scan_id,
+        "grade": grade.grade,
+        "grade_label": grade.label,
+        "safe_to_launch": verdict.ready,
+        "verdict": verdict.headline,
+        "incomplete": bool(gaps),
+        "coverage_gaps": gaps,
+        "counts": counts,
+        "total_findings": len(report.findings),
+        "returned_findings": len(findings_out),
+        "min_severity": min_severity,
+        "path_to_next_grade": path,
+        "themes": themes,
+        "findings": findings_out,
+    }
+
+
+def _finding_detail(finding, report) -> FindingDetail:
+    """Build the deep-dive payload for one finding (the `explain` tool core)."""
+    from isitsecure.engine.reporting.plain_english import (
+        business_impact,
+        explain_finding,
+        remediation_detail,
+        walkthrough_for,
+    )
+
+    from isitsecure.engine.shared.redaction import redact_finding
+
+    finding = redact_finding(finding)  # explain output never carries raw evidence (#282)
+    explanation = explain_finding(finding)
+    loc = finding.code_location
+    walkthrough = walkthrough_for(finding.category)
+
+    # Stack-tailored category guidance (#47/#48), using the scan's detected stack.
+    stack_remediation = remediation_detail(
+        finding.category,
+        framework=getattr(report, "framework", None) or None,
+        backend=getattr(report, "backend", None) or None,
+    )
+    # Prefer this finding's OWN generated remediation when present; else the
+    # stack-tailored category guidance.
+    finding_specific = (finding.remediation_guidance or "").strip()
+
+    return {
+        "id": finding.id,
+        "severity": finding.severity.value.lower(),
+        "category": finding.category.value,
+        "title": finding.title,
+        "file": loc.file_path if loc else None,
+        "line": loc.line_number if loc else None,
+        "code_snippet": (loc.code_snippet if loc else None) or None,
+        "description": finding.description or "",
+        "technical_detail": finding.technical_detail or "",
+        "evidence": finding.evidence or "",
+        "what_it_is": explanation.what_it_is,
+        "attacker_could": explanation.attacker_could,
+        "business_impact": business_impact(finding.category),
+        "remediation": finding_specific or stack_remediation,
+        "stack_remediation": stack_remediation,
+        "walkthrough": list(walkthrough.steps) if walkthrough else [],
+    }
+
+
+def _resolve_scan_and_finding(scan_id: str, finding_id: str):
+    """Resolve (report, finding) from the cache, or raise a ToolError.
+
+    Shared by explain/fix so the two distinct not-found errors (unknown scan vs
+    unknown finding) stay identical and DRY.
+    """
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    report = get_cached_report(scan_id)
+    if report is None:
+        raise ToolError(
+            f"Unknown scan_id '{scan_id}'. Run a scan first — its result "
+            "includes the scan_id to pass here."
+        )
+    finding = next((f for f in report.findings if f.id == finding_id), None)
+    if finding is None:
+        raise ToolError(
+            f"No finding '{finding_id}' in scan '{scan_id}'. Use a finding "
+            "id from that scan's results."
+        )
+    return report, finding
+
+
+def _read_finding_file(finding, repo_path: str | None) -> str:
+    """Read the source file a finding points at, via the hardened strict reader.
+
+    Same rules as the CLI/server fix paths: confined to the scanned repo, never
+    ``.git/``, strict UTF-8 and newlines untouched (a lossy or newline-translating
+    read would make the ``fixed_file`` the host writes corrupt CRLF / non-UTF-8
+    files). Raises ValueError with an actionable, user-facing "skipped" reason
+    when the file cannot be fixed -- never a raw OS error or absolute path.
+    """
+    from isitsecure.engine.fixes.fix_generator import (
+        FixGenerator,
+        read_source_file,
+        resolve_fix_target,
+    )
+
+    loc = finding.code_location
+    rel = loc.file_path if loc else ""
+    if not rel:
+        raise ValueError("This finding has no source file to fix.")
+    if not repo_path:
+        raise ValueError(
+            "The scanned path is no longer known for this scan_id — re-run scan, "
+            "then fix using the new scan_id."
+        )
+    try:
+        target = resolve_fix_target(repo_path, rel)  # traversal, symlink escape, .git
+    except ValueError as exc:
+        raise ValueError(f"Skipped {rel}: {exc}") from exc
+    try:
+        if not os.path.isfile(target):
+            raise ValueError(f"Source file not found: {rel}")
+        # Size-guard before reading (shares FixGenerator's threshold so they
+        # can't drift).
+        if os.path.getsize(target) > FixGenerator.MAX_FILE_SIZE:
+            raise ValueError(f"Source file too large to fix: {rel}")
+    except OSError as exc:
+        raise ValueError(f"Skipped {rel}: could not read source file") from exc
+    text = read_source_file(repo_path, rel)
+    if text is None:
+        raise ValueError(
+            f"Skipped {rel}: not valid UTF-8 or unreadable, so it cannot be fixed "
+            "without risking corrupting it."
+        )
+    return text
+
+
+def _fix_brief(finding, file_content: str) -> FixBrief:
+    """Package a finding + its source file for the host LLM to fix and apply."""
+    from isitsecure.engine.fixes.prompts import FixPrompts
+    from isitsecure.engine.shared.redaction import redact_finding
+
+    # Finding text is redacted; ``file_content`` is the user's own local source and
+    # must reach the host raw so it can edit the file (#282).
+    finding = redact_finding(finding)
+    loc = finding.code_location
+    return {
+        "finding_id": finding.id,
+        "file": loc.file_path if loc else "",
+        "line": loc.line_number if loc else None,
+        "title": finding.title,
+        "category": finding.category.value,
+        "severity": finding.severity.value.lower(),
+        "description": finding.description or "",
+        "guidance": finding.remediation_guidance or "",
+        "fix_patterns": FixPrompts.FIX_PATTERNS,
+        "guidelines": FixPrompts.HOST_GUIDELINES,
+        "file_content": file_content,
+        "applied": False,
+        "next_step": (
+            "Edit the file yourself to fix this finding (the MCP makes no LLM "
+            "call and writes no files), then call verify to confirm it cleared."
+        ),
+    }
+
+
+def _verify_result(
+    old_report, new_report, new_scan_id: str, repo_path: str | None = None
+) -> VerifyResult:
+    """Compare an original scan to a re-scan: what cleared + grade movement.
+
+    Only rule-based SAST findings are verifiable (LLM/DAST findings aren't
+    deterministically reproducible). Crucially, the grade too reflects **verified
+    change only**: the re-scan's verifiable findings plus the original scan's
+    unverifiable findings (held constant, since a code re-scan can't confirm those
+    cleared) — so LLM non-determinism can never inflate or deflate the grade.
+    """
+    from isitsecure.engine.code_analysis.semgrep_analyzer import SEMGREP_MISSING_REASON
+    from isitsecure.engine.fixes.parse_check import unparseable_files
+    from isitsecure.engine.fixes.verifier import (
+        classify_against_rescan,
+        failed_scanner_names,
+        failure_blocks,
+        finding_as_rescan_dict,
+        is_verifiable,
+    )
+    from isitsecure.engine.reporting.plain_english import calculate_grade, launch_verdict
+
+    # Resolved vs still-present vs possibly-moved, by the ONE classifier the fix
+    # flow and `isitsecure verify` also use (v2 + legacy fingerprints, multiset).
+    old_verifiable = [f for f in old_report.findings if is_verifiable(f)]
+    # A finding whose scanner failed/timed out/never ran in the re-scan proves
+    # nothing by being absent: it is "could not verify", never "resolved".
+    failed, unmapped = failed_scanner_names(getattr(new_report, "scanner_errors", []))
+    blocked = [f for f in old_verifiable if failure_blocks(f.scanner_name, failed, unmapped)]
+    blocked_ids = {id(f) for f in blocked}
+    checkable = [f for f in old_verifiable if id(f) not in blocked_ids]
+    still_f, moved_f, gone_f = classify_against_rescan(
+        checkable,
+        [finding_as_rescan_dict(f) for f in new_report.findings],
+        context=old_verifiable,
+    )
+    # A finding vanishing from a file that no longer parses is not a fix: the
+    # scanners skip such files silently.
+    broken = unparseable_files(
+        repo_path, [f.code_location.file_path for f in gone_f if f.code_location]
+    ) if repo_path else {}
+    broken_f = [f for f in gone_f if f.code_location and f.code_location.file_path in broken]
+    gone_f = [f for f in gone_f if f not in broken_f]
+    blocked_ids |= {id(f) for f in broken_f}  # held constant in the grade like blocked ones
+    still = [f.title for f in still_f]
+    resolved = [f.title for f in gone_f]
+    moved = [f.title for f in moved_f]
+    unverifiable = (
+        len(old_report.findings) - len(old_verifiable)
+        + len(blocked) + len(moved_f) + len(broken_f)
+    )
+
+    # Grade movement = verified change only. Old unverifiable findings are assumed
+    # to persist (we can't confirm they cleared), so they never move the grade.
+    effective = [
+        f for f in new_report.findings
+        if is_verifiable(f) and not failure_blocks(f.scanner_name, failed, unmapped)
+    ] + [
+        f for f in old_report.findings
+        if not is_verifiable(f) or id(f) in blocked_ids
+    ]
+    # A missing optional semgrep is only an error because verification asked for
+    # it; the original scan was complete without it. The affected findings are
+    # already reported unverifiable above, so it must not also flip the verdict.
+    gaps = [
+        g for g in _coverage_gaps(new_report)
+        if SEMGREP_MISSING_REASON not in g
+    ]
+    prev = _severity_counts(old_report)
+    cur = _count_by_severity(effective)
+    prev_grade = calculate_grade(prev["critical"], prev["high"], prev["medium"], prev["low"]).grade
+    grade = calculate_grade(cur["critical"], cur["high"], cur["medium"], cur["low"]).grade
+    verdict = launch_verdict(
+        cur["critical"], cur["high"], cur["medium"],
+        incomplete=bool(gaps),
+    )
+
+    if resolved and grade != prev_grade:
+        summary = (
+            f"Resolved {len(resolved)} of {len(old_verifiable)} checkable finding(s). "
+            f"Grade {prev_grade} → {grade}."
+        )
+    elif resolved:
+        summary = (
+            f"Resolved {len(resolved)} of {len(old_verifiable)} checkable finding(s); "
+            f"grade still {grade} ({len(still)} still present)."
+        )
+    else:
+        summary = f"No checkable findings resolved yet — grade {grade}."
+    if blocked:
+        summary += (
+            f" {len(blocked)} finding(s) could not be re-checked because their scanner "
+            "did not run in the re-scan (e.g. install isitsecure[taint] for Semgrep); "
+            "they are not counted as resolved."
+        )
+    if broken_f:
+        summary += (
+            f" {len(broken_f)} finding(s) disappeared because "
+            + ", ".join(sorted(broken)[:3])
+            + " no longer parses, which is not a fix; they are not counted as resolved."
+        )
+    if moved:
+        summary += (
+            f" {len(moved)} finding(s) may have moved to another file rather than been "
+            "fixed; they are not counted as resolved."
+        )
+
+    return {
+        "scan_id": new_scan_id,
+        "previous_grade": prev_grade,
+        "grade": grade,
+        "grade_improved": _grade_rank(grade) < _grade_rank(prev_grade),
+        "previous_counts": prev,
+        "counts": cur,
+        "safe_to_launch": verdict.ready,
+        "incomplete": verdict.incomplete,
+        "resolved_count": len(resolved),
+        "resolved": resolved[:20],
+        "still_present_count": len(still),
+        "still_present": still[:20],
+        "possibly_moved_count": len(moved),
+        "possibly_moved": moved[:20],
+        "unverifiable_count": unverifiable,
+        "summary": summary,
+    }
+
+
+def _render_markdown(report) -> str:
+    """A compact, deterministic Markdown report — a shareable summary (no LLM)."""
+    from isitsecure.engine.reporting.plain_english import (
+        calculate_grade,
+        explain_finding,
+        launch_verdict,
+    )
+
+    counts = _severity_counts(report)
+    gaps = _coverage_gaps(report)
+    grade = calculate_grade(
+        counts["critical"], counts["high"], counts["medium"], counts["low"],
+        provisional=bool(gaps),
+    )
+    verdict = launch_verdict(
+        counts["critical"], counts["high"], counts["medium"], incomplete=bool(gaps)
+    )
+
+    lines = [
+        f"# Security Report — Grade {grade.grade}",
+        "",
+        verdict.headline,
+        "",
+        *([f"**Did not run:** {'; '.join(gaps)}", ""] if gaps else []),
+        f"**Findings:** {counts['critical']} critical · {counts['high']} high · "
+        f"{counts['medium']} medium · {counts['low']} low",
+        "",
+        "## Findings",
+        "",
+    ]
+    for finding in sorted(
+        report.findings,
+        key=lambda f: -_SEVERITY_RANK.get(f.severity.value.lower(), 0),
+    ):
+        loc = finding.code_location
+        where = ""
+        if loc and loc.file_path:
+            fp = loc.file_path.replace("`", "'")
+            where = f" — `{fp}`" + (f":{loc.line_number}" if loc.line_number else "")
+        explanation = explain_finding(finding)
+        # Neutralise backticks in the title so they can't break the heading.
+        title = finding.title.replace("`", "'")
+        lines += [
+            f"### [{finding.severity.value.upper()}] {title}{where}",
+            "",
+            explanation.what_it_is,
+            "",
+            f"**Fix:** {explanation.what_to_do}",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def _render_report(report, fmt: str) -> str:
+    """Render a cached report in the requested format, reusing engine renderers."""
+    from isitsecure.engine.shared.redaction import redact_report
+
+    report = redact_report(report)  # exports never carry raw evidence secrets (#282)
+    if fmt == "json":
+        return report.model_dump_json(indent=2)
+    if fmt == "markdown":
+        return _render_markdown(report)
+    if fmt == "sarif":
+        from isitsecure.engine.reporting.sarif_renderer import SARIFRenderer
+
+        return SARIFRenderer().render(report)
+    if fmt == "html":
+        from isitsecure.engine.reporting.html_renderer import HTMLReportRenderer
+        from isitsecure.engine.reporting.report_generator import ReportGenerator
+
+        return HTMLReportRenderer().render(ReportGenerator().generate(report))
+    raise ValueError(f"Unknown format '{fmt}'. Use one of: html, sarif, json, markdown.")
+
+
+async def _run_dast_job(job: "_ScanJob", url: str, min_severity: str) -> None:
+    """Run a URL-only DAST scan in the background, updating the job as it goes."""
+    try:
+        # Imports inside the try so even an import failure sets job.error rather
+        # than wedging the job in "running" (the task is fire-and-forget).
+        from isitsecure.engine.enums import ScanMode
+        from isitsecure.engine.factory import (
+            create_deep_security_scan_agent,
+            create_repo_ingestion_service,
+        )
+        from isitsecure.engine.models import DeepScanReport
+
+        llm_client = _maybe_llm_client()
+        agent = create_deep_security_scan_agent(
+            llm_client=llm_client,
+            judgment_llm_client=llm_client,
+            repo_ingestion_service=create_repo_ingestion_service(),
+        )
+        report = None
+        async for event in agent.scan(target_url=url, scan_mode=ScanMode.URL_ONLY):
+            data = getattr(event, "data", None) or {}
+            if "report" in data:
+                report = DeepScanReport.model_validate(data["report"])
+                continue
+            # Engine progress is an int 0–100; normalise to 0–1.
+            p = getattr(event, "progress", 0) or 0
+            job.progress = max(0.0, min(1.0, p / 100))
+            job.message = getattr(event, "message", "") or job.message
+        if report is None:
+            job.status, job.error = "error", "Scan completed but produced no report."
+            return
+        scan_id = _cache_report(report, repo_path=None)  # DAST has no local path
+        job.result = _trim_report(report, min_severity, scan_id)
+        job.status, job.progress, job.message = "done", 1.0, "Scan complete."
+    except Exception as exc:  # keep the job's error, never crash the server
+        logger.warning("DAST scan job failed: %s", exc)
+        job.status, job.error = "error", str(exc)
+
+
+async def scan_repo(
+    path: str, mode: str = "code-only", min_severity: str = "medium"
+) -> dict:
+    """Scan a local repo and return a trimmed, structured result.
+
+    Async because FastMCP invokes tools inside its own running event loop —
+    calling ``asyncio.run`` from there raises "event loop already running", so we
+    ``await`` the scan directly instead. Returns ``{"error": ...}`` on bad input
+    rather than raising, so the calling agent gets an actionable message.
+    """
+    from isitsecure.engine.enums import ScanMode
+
+    resolved = Path(path).expanduser()
+    if not resolved.exists() or not resolved.is_dir():
+        return {"error": f"Path not found or not a directory: {path}"}
+
+    mode_map = {
+        "code-only": ScanMode.CODE_ONLY,
+        "full": ScanMode.FULL,
+        "url-only": ScanMode.URL_ONLY,
+    }
+    scan_mode = mode_map.get(mode, ScanMode.CODE_ONLY)
+
+    report = await _run_scan_silent(resolved, scan_mode)
+    if report is None:
+        return {"error": "Scan completed but produced no report."}
+    # Cache the full report + scanned path so explain/fix/verify can resolve
+    # findings (and their source files) by (scan_id, finding_id) later (#69).
+    scan_id = _cache_report(report, repo_path=str(resolved))
+    return _trim_report(report, min_severity, scan_id)
+
+
+def build_server():
+    """Construct the FastMCP server exposing the ``scan`` tool."""
+    FastMCP = _require_fastmcp()
+    server = FastMCP("isitsecure", instructions=_SERVER_INSTRUCTIONS)
+
+    @server.tool()
+    async def scan(path: str, min_severity: str = "medium") -> ScanResult:
+        """Security audit / vulnerability scan of a local code repository (SAST).
+
+        Use this whenever the user asks to check, audit, scan, or review their
+        code for security issues or vulnerabilities, or asks whether their app is
+        safe to ship or launch — not only when they name isitsecure. Runs fast
+        static analysis on the given path; no network or running app needed.
+
+        Args:
+            path: Path to the local repo/directory to scan.
+            min_severity: Only return findings at or above this severity
+                (critical | high | medium | low). Default: medium.
+
+        Returns a security grade, a go/no-go launch verdict, severity counts,
+        the steps to reach a better grade (`path_to_next_grade`), root-cause
+        themes, and a list of findings — each with a plain-English explanation of
+        what it is, what an attacker could do, and how to fix it. Raises a tool
+        error if the path does not exist or is not a directory.
+        """
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        result = await scan_repo(path, mode="code-only", min_severity=min_severity)
+        if "error" in result:
+            raise ToolError(result["error"])
+        return result  # type: ignore[return-value]  # shape matches ScanResult
+
+    @server.tool()
+    async def explain(scan_id: str, finding_id: str) -> FindingDetail:
+        """Deep dive on one finding from a prior scan.
+
+        Use after a scan when the user wants to understand a specific finding —
+        "explain the SQL injection one", "tell me more about that", "why does
+        this matter", "how do I fix finding X". Pass the `scan_id` from the scan
+        result and the finding's `id`. Returns the finding's own description,
+        technical detail, evidence, and vulnerable code, plus business impact and
+        step-by-step remediation (stack-tailored when the framework is known).
+        """
+        report, finding = _resolve_scan_and_finding(scan_id, finding_id)
+        return _finding_detail(finding, report)
+
+    @server.tool()
+    async def fix(scan_id: str, finding_id: str) -> FixBrief:
+        """Get what you need to fix one finding — YOU (the host) write and apply the patch.
+
+        Use after a scan when the user wants to fix a specific finding ("fix the
+        SQL injection", "fix finding X", "patch this"). Pass the `scan_id` and the
+        finding's `id`. Returns the finding, its source file, common fix patterns
+        and guidelines — no API key needed. Write the minimal fix with your own
+        editor, then call `verify` to confirm the finding is resolved.
+        """
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        _, finding = _resolve_scan_and_finding(scan_id, finding_id)
+        try:
+            file_content = _read_finding_file(finding, get_scan_path(scan_id))
+        except ValueError as exc:
+            raise ToolError(str(exc))
+        return _fix_brief(finding, file_content)
+
+    @server.tool()
+    async def verify(scan_id: str) -> VerifyResult:
+        """Re-scan after applying fixes and report what cleared + grade movement.
+
+        Use after the user has applied one or more fixes ("did that work?", "re-check",
+        "verify my fixes", "what's my grade now?"). Pass the `scan_id` of the scan you
+        fixed against. Re-scans the same path, reports which findings are resolved vs
+        still present, the grade before → after, and a fresh `scan_id` for the new
+        state so you can keep fixing.
+        """
+        from isitsecure.engine.code_analysis.semgrep_analyzer import require_semgrep
+        from isitsecure.engine.enums import ScanMode
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        old_report = get_cached_report(scan_id)
+        if old_report is None:
+            raise ToolError(f"Unknown scan_id '{scan_id}'. Run a scan first.")
+        repo_path = get_scan_path(scan_id)
+        if not repo_path:
+            raise ToolError(
+                "The scanned path is no longer known for this scan_id — run scan "
+                "again to get a fresh scan_id, then verify against that."
+            )
+        if not Path(repo_path).is_dir():
+            raise ToolError(
+                f"The scanned path no longer exists ({repo_path}) — run scan again."
+            )
+
+        # A verification re-scan must not read a missing optional semgrep as "fixed".
+        with require_semgrep():
+            new_report = await _run_scan_silent(Path(repo_path), ScanMode.CODE_ONLY)
+        if new_report is None:
+            raise ToolError(
+                "Could not verify: the re-scan did not run to completion "
+                "(no report was produced, e.g. the path could not be read). "
+                "Nothing is reported as resolved."
+            )
+        new_scan_id = _cache_report(new_report, repo_path=repo_path)
+        try:
+            return _verify_result(old_report, new_report, new_scan_id, repo_path)
+        except Exception as exc:  # malformed/unexpected report data: a clear error, not a traceback
+            raise ToolError(
+                "Could not compare the scans: the report data was malformed "
+                f"({type(exc).__name__}). Run scan again and verify against the new scan_id."
+            )
+
+    @server.tool()
+    async def export(scan_id: str, format: str = "markdown") -> ExportResult:
+        """Render a prior scan as a shareable report and return its content.
+
+        Use when the user wants to save, share, or attach the results ("export the
+        report", "give me a SARIF file for CI", "save an HTML report", "a summary
+        for the PR"). Renders the cached scan (no re-scan) in `format` =
+        html | sarif | json | markdown, and RETURNS the content as a string — YOU
+        save it with your editor; the MCP does not write files.
+        """
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        report = get_cached_report(scan_id)
+        if report is None:
+            raise ToolError(f"Unknown scan_id '{scan_id}'. Run a scan first.")
+        fmt = (format or "markdown").lower()
+        try:
+            content = _render_report(report, fmt)
+        except ValueError as exc:  # unknown format
+            raise ToolError(str(exc))
+        except Exception as exc:  # renderer failure — keep the tool surface clean
+            raise ToolError(f"Failed to render the {fmt} report: {exc}")
+        ext = {"html": "html", "sarif": "sarif", "json": "json", "markdown": "md"}[fmt]
+        return {
+            "format": fmt,
+            "content": content,
+            "suggested_filename": f"isitsecure-report.{ext}",
+            "next_step": (
+                f"Save this to isitsecure-report.{ext} with your editor "
+                "(the MCP does not write files)."
+            ),
+        }
+
+    @server.tool()
+    async def scan_url(url: str, min_severity: str = "medium") -> ScanJobHandle:
+        """Start a DAST (live-URL) security scan of a running app.
+
+        Use when the user wants to scan a running site/API ("scan my app at
+        http://localhost:3000", "DAST scan this URL", "test my live app"). DAST
+        takes minutes, so this returns a `job_id` immediately — then call
+        `scan_status(job_id)` to poll progress and get the result. The URL must be
+        reachable from this machine.
+        """
+        import asyncio
+
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ToolError(
+                "Provide an http(s) URL to scan, e.g. http://localhost:3000."
+            )
+        job_id = uuid4().hex[:12]
+        job = _ScanJob(status="running", progress=0.0, message=f"Starting DAST scan of {url}…")
+        _JOBS[job_id] = job
+        # Evict oldest FINISHED jobs past the cap; never orphan a running scan
+        # (its handle would vanish while the task is still going).
+        for jid in list(_JOBS):
+            if len(_JOBS) <= _JOBS_MAX:
+                break
+            if _JOBS[jid].status != "running":
+                del _JOBS[jid]
+        job.task = asyncio.create_task(_run_dast_job(job, url, min_severity))
+
+        # Safety net: if the task dies before _run_dast_job's own try/except can
+        # set a status (or is cancelled), don't leave the job stuck "running".
+        def _finalize(task: "asyncio.Task", job: "_ScanJob" = job) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None and job.status == "running":
+                job.status, job.error = "error", str(exc)
+
+        job.task.add_done_callback(_finalize)
+        return {
+            "job_id": job_id,
+            "status": "running",
+            "message": (
+                f"DAST scan of {url} started. Poll scan_status(\"{job_id}\") for "
+                "progress; the result appears when status is \"done\"."
+            ),
+        }
+
+    @server.tool()
+    async def scan_status(job_id: str) -> ScanJobStatus:
+        """Check a DAST scan job started by `scan_url`.
+
+        Returns status (running | done | error), progress (0–1), and — once done —
+        the full result (grade, findings, path_to_next_grade, …), whose `scan_id`
+        works with `explain` and `export`.
+        """
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise ToolError(f"Unknown job_id '{job_id}'. Start one with scan_url.")
+        return {
+            "job_id": job_id,
+            "status": job.status,
+            "progress": round(job.progress, 3),
+            "message": job.message,
+            "result": job.result,
+            "error": job.error,
+        }
+
+    return server
+
+
+def run_stdio() -> None:
+    """Entry point for ``isitsecure mcp`` — serve over stdio until the client exits."""
+    build_server().run(transport="stdio")

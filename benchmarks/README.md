@@ -1,0 +1,234 @@
+# isitsecure benchmark harness
+
+Repeatable **recall + false-positive** scoring against deliberately-vulnerable
+apps. Most targets spin the app up in Docker, run an isitsecure DAST scan, score
+the findings against a known ground truth, and tear the app down. One target —
+`sast-injection` — is **code-only** (no Docker): it scores the deterministic
+Semgrep taint layer against a local injection fixture (see below).
+
+```bash
+pip install -e ".[all]"          # isitsecure on PATH + browser deps
+python benchmarks/run_benchmarks.py            # default: VAmPI (both builds) + sast-injection
+python benchmarks/run_benchmarks.py juiceshop  # OWASP Juice Shop — the headline recall number
+python benchmarks/run_benchmarks.py juiceshop-writes  # + --probe-writes (mutates the target; ~72 min)
+python benchmarks/run_benchmarks.py --all      # + NodeGoat + crAPI + Juice Shop (heavy)
+python benchmarks/run_benchmarks.py crapi      # a single target
+python benchmarks/run_benchmarks.py sast-injection            # taint recall/FP, no Docker
+python benchmarks/run_benchmarks.py go-sast                   # Go recall vs real govwa (clones a pinned commit)
+python benchmarks/run_benchmarks.py --keep vampi-vulnerable   # leave it running
+python benchmarks/run_benchmarks.py juiceshop --report-dir /tmp/r  # keep the raw JSON reports
+```
+
+Docker is required for every target **except** `sast-injection` and `go-sast`,
+which instead need the `semgrep` binary (`pipx install semgrep` or
+`pip install semgrep`). `go-sast` also clones the real `govwa` app at a pinned
+commit (needs `git`; `go`+`gopls` add the route/auth half) and is opt-in — named
+explicitly or via `--all`, never in the default run.
+
+`--report-dir DIR` keeps each target's raw JSON report instead of discarding
+it. The scorecard says *how many* findings went unmatched but not *which*, and
+an unmatched finding is either a real-but-undocumented vulnerability or a false
+positive — exactly the distinction worth a look. Without the report, answering
+that means re-running a scan that can take over an hour.
+
+## What it measures
+
+For each target the scorecard reports two things — both matter:
+
+- **Recall** — of the vulnerability classes the app is known to have, how many
+  did we produce at least one finding for? (Are we catching real bugs?)
+- **False positives** — findings that must NOT appear. The cleanest signal is
+  **VAmPI's `vulnerable=0` build**: a SQLi or IDOR "finding" against the secure
+  app is a false alarm. A scanner that cries wolf is untrusted, so this number
+  should be **0**.
+- **Regressions** — a few findings the scanner catches *reliably* (e.g. the
+  error-based SQLi on Juice Shop's `GET /rest/products/search`) are flagged
+  `MUST_DETECT` in the ground truth. If the full-scan path ever drops one, the
+  harness prints a loud `⚠ REGRESSION` and **exits non-zero** — separating a
+  full-scan-path bug (a confirmed finding silently lost) from an ordinary
+  coverage gap. Guards [#1](https://github.com/jaurakunal/isitsecure/issues/1).
+
+## Targets
+
+| Target | Stack | Bring-up | Why |
+|---|---|---|---|
+| `vampi-vulnerable` | Flask REST API | single image | recall on OWASP API Top 10 |
+| `vampi-secure` | same, `vulnerable=0` | single image | **false-positive rate** |
+| `nodegoat` | Node/Express + Mongo | upstream compose (auto-cloned) | matches isitsecure's primary stack |
+| `crapi` | microservices | upstream compose (auto-cloned) | OWASP API Top 10; IDOR/BAC/auth depth |
+| `juiceshop` | Angular/Express SPA | single image | **headline recall** — scored per-challenge vs the app's own `/api/Challenges` |
+| `juiceshop-auth` | same, authenticated | single image | adds the login-gated challenges (the `~40%` number) |
+| `sast-injection` | JS/TS/Python/Java/Kotlin/Go fixtures | **none** (code-only) | **taint layer recall/FP** — deterministic SAST injection floor (#4) |
+| `go-sast` | real govwa app (pinned clone) | **none** (code-only) | **Go recall** — SQLi/XSS/dep/missing-auth class recall across the whole Go SAST path (opt-in; needs `git`, and `go`/`gopls` for the auth half) |
+
+VAmPI is a single container and runs in the default set. NodeGoat and crAPI are
+heavier (compose, mongo, several GB for crAPI) — run them individually. They are
+brought up from the projects' own compose files via a shallow clone into
+`benchmarks/_ext/` (git-ignored), so the harness always tracks their real setup.
+
+## Ground truth
+
+Expectations live in `run_benchmarks.py` as `Target.expect` (recall) and
+`Target.forbid` (false positives). Each matches findings by scanner name,
+category, and/or a title substring — coarse but honest, and easy to extend as
+detection improves. It scores at the *vulnerability-class* level (did we find a
+SQLi at all?), not exact endpoints, so it isn't brittle to app version changes.
+
+**Juice Shop is scored more precisely.** `benchmarks/score.py` grades a scan
+against the app's *full* documented challenge set (`ground_truth/juiceshop.py`,
+seeded from `/api/Challenges`): recall over the **45 DAST-detectable** challenges
+(of 113), broken down per class, with each finding required to land on the right
+endpoint. `run_benchmarks.py juiceshop` runs this end to end; you can also score a
+saved scan by hand with `python benchmarks/score.py juiceshop findings.json`.
+
+**Per-class recall deltas.** A single recall number hides a class getting worse
+while another improves. Score against an earlier scorecard (the
+`<findings>.scorecard.json` that `score.py` writes) to see exactly which classes
+moved, regressions first:
+
+```bash
+python benchmarks/score.py juiceshop new.json --previous old.scorecard.json
+#   sqli   3/3 -> 1/3  (-2)  REGRESSED
+#   xss    2/4 -> 4/4  (+2)  improved
+```
+
+Recall is counted over *distinct* matching findings per class (class-level items
+are capped by distinct endpoints), not raw request counts. The delta is
+informational and does not change the exit code; the `MUST_DETECT` gate above
+and the stability bar below are what fail a run.
+
+## Repeat runs and the stable-finding regression bar
+
+One run hides variance (probe ordering, timing, any LLM-assisted step). With
+`--repeat N` each Docker target is run N times, each on a fresh bring-up, and the
+harness reports:
+
+- **stable** findings — the same fingerprint in *every* run (safe to gate on);
+- **flaky** findings — in some runs only (reported, never gated);
+- per-run recall and wall-clock, and the recall spread across runs.
+
+```bash
+python benchmarks/run_benchmarks.py juiceshop --repeat 3                       # report only
+python benchmarks/run_benchmarks.py juiceshop --repeat 3 --baseline b.json --write-baseline  # record
+python benchmarks/run_benchmarks.py juiceshop --repeat 3 --baseline b.json     # gate; exit 1 on regression
+```
+
+A finding's **fingerprint** is `scanner | category | normalised title | location`
+(endpoint *path* with host, query string and id segments removed; or the file plus a
+short hash of the code snippet for SAST, with no line number), so line shifts,
+resource ids and volatile title text (numbers, quoted values) don't cause false churn.
+
+The **baseline** (`--baseline PATH`, optional) is a JSON file
+`{"version": 1, "targets": {"<name>": {"stable": [...], "recall": {...},
+"by_class": {...}}}}` holding the stable set recorded with `--write-baseline`.
+Gating fails (exit 1) if any baseline-stable fingerprint is no longer stable —
+either gone entirely (`LOST`) or only present in some runs (`FLAKY`); newly
+stable findings are reported, not penalised. For ground-truth targets the
+per-class deltas vs the baseline are printed too. Errored runs are excluded; if
+every run errored there is nothing to verify and the exit code is 2. Without
+`--repeat` (default 1) behaviour is unchanged, and `--baseline` requires
+`--repeat 2+`. `sast-injection` / `go-sast` are deterministic and run once.
+Baselines are **not committed to the repo**: they depend on target version and
+scan flags. Create one with `--repeat 3 --baseline ~/bench/juiceshop.json
+--write-baseline` on the pinned target, keep it somewhere stable (CI cache or
+artifact store), and pass the same path on later runs. Writing needs at least
+2 good runs and no errored runs. Per-class deltas are informational and never
+affect the exit code.
+
+Exit codes of `run_benchmarks.py` combine every gate (stability, MUST_DETECT
+regressions counted over *every* good run, SAST, Go SAST) and print every
+failure; precedence is 2 (something could not be verified: fewer than 2 good
+runs or any run errored under `--repeat`) over 1 (a detection regression) over 0. Note the harness scans with `--llm none`, so "cost" here is wall-clock;
+there is no token spend to compare.
+
+## Auth smoke (`auth_smoke.py`)
+
+A 1-2 minute guard for the login layer, to run after any change to auth or
+crawl code instead of waiting for the long authenticated benchmark:
+
+```bash
+python benchmarks/auth_smoke.py                  # brings up its own pinned Juice Shop
+python benchmarks/auth_smoke.py --keep           # leave it running
+AUTH_SMOKE_URL=http://localhost:3000 python benchmarks/auth_smoke.py --no-up
+```
+
+It drives the public `RestLoginAuthProvider` and `BrowserAuthProvider`
+(Playwright, real Angular form) against a freshly registered account and
+verifies each captured token is live via `GET /rest/user/whoami` (a dead token or
+HTML shell is a failure). No LLM or API key. Exit **0** pass, **1** a check
+failed, **2** infra error (Docker, app never ready, Playwright not installed).
+This repo has no self-signup/provisioning path, so only login is covered.
+
+It uses container name `auth_smoke_juice` and host port 3000, so it clashes with
+a standing local Juice Shop on :3000 (you get exit 2, never a wrong result);
+stop that one or set `AUTH_SMOKE_PORT`. It has **not been run live yet** — its
+logic is unit-tested with fake providers only.
+
+## SAST injection benchmark (`sast-injection`)
+
+The deterministic Semgrep taint layer (#4) has its own **code-only** scorecard,
+separate from the DAST targets. It scans a local fixture tree and scores taint
+recall + false positives — the gate for the taint layer and every future
+rule-pack change (#93/#94).
+
+```bash
+python benchmarks/run_benchmarks.py sast-injection   # via the harness (fails non-zero on any miss/FP)
+python benchmarks/sast_injection.py                  # standalone, same scorecard
+python benchmarks/sast_injection.py findings.json    # score an existing code-only scan JSON
+```
+
+The fixtures **are** the ground truth (no separate file to drift):
+
+- `fixtures/sast-injection/vulnerable/*` — each sink line tagged with a trailing
+  `EXPECT <class>` marker (`//` for JS/TS, Java, and Kotlin; `#` for Python;
+  classes: `sqli | reflected-xss | dom-xss | ssrf | path-traversal |
+  command-injection | ssti`) is a bug the taint layer must flag (recall). Covers
+  **JS/TS (#4)**, **Python (#93)**, **Java/Spring (#102)**, and
+  **Kotlin/Spring (#104)**.
+- `fixtures/sast-injection/safe/*` — benign near-misses. JS: parameterized
+  queries, constant-path writes, non-DB `.query()`, escaped output, fixed-URL
+  fetch. Python: bound/parameterized queries (including request-derived values in
+  the params tuple), a bare `text()` i18n alias, `subprocess` without
+  `shell=True`, constant-path `open()`, fixed-URL requests. Java/Kotlin:
+  `PreparedStatement`/bound `JdbcTemplate` queries, constant SQL, constant-path
+  `File`. Any injection finding here — or on an unmarked line in a vulnerable
+  file — is a **false positive**.
+
+The scorer (`sast_injection.py`) matches findings to expected bugs by file and
+line (±1, since Semgrep can report the statement head), reports per-class recall,
+and **exits non-zero unless recall is 100% and FP is 0**. It needs the `semgrep`
+binary; scoring an existing `findings.json` needs neither Docker nor semgrep.
+This is an *independent* fixture (not `test-app`, which the JS rules were tuned
+on), so it's a genuine second data point.
+
+## Authenticated cross-user IDOR (BOLA)
+
+Unauthenticated scanning can't tell a *public* id-bearing endpoint from a
+broken-access one, so url-only IDOR is inherently false-positive-prone. Real
+object-level authorization is tested with **two users**:
+
+```bash
+isitsecure scan http://localhost:5001 --mode authenticated --auth-provider token \
+  --auth-email alice --auth-password pw \
+  --auth-email-b bob   --auth-password-b pw
+```
+
+For each id-bearing endpoint the scanner substitutes user A's own identifier
+and checks whether user B (a *different* logged-in user) can reach it while an
+**anonymous** request cannot — that anonymous probe is the false-positive
+guard, so intentionally-public endpoints are not reported.
+
+> Note: VAmPI exposes a `/createdb` endpoint that resets its database, which a
+> full scan can trigger and wipe your test users mid-run. Re-register the users
+> immediately before scanning, or use a target that doesn't self-reset.
+
+## Adding a target
+
+Append a `Target(...)` to `TARGETS`: the docker `up_cmd`/`down_cmd`, the URL to
+scan, and the `expect`/`forbid` signatures for that app's known issues. For an
+app with a full documented challenge list, set `ground_truth="<app>"` and add a
+builder under `ground_truth/` instead — the harness then uses the per-challenge
+scorer (recall %, per class, endpoint-verified) rather than expect/forbid.
+
+> These are intentionally vulnerable apps — only run them locally, never expose
+> the ports to a network.

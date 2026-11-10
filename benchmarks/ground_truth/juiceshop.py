@@ -1,0 +1,143 @@
+"""Ground truth for OWASP Juice Shop v20.1.1.
+
+Seeded from the app's own `/api/Challenges` (113 challenges, saved in
+`juiceshop_challenges.json`) and annotated per challenge:
+
+- DETECTABLE maps each challenge our DAST can find *in principle* to its
+  vulnerability class and (where known) the vulnerable endpoint. These form the
+  recall denominator.
+- Every other challenge is marked out-of-scope for DAST (crypto, CTF mechanics,
+  deep business logic, LLM prompt injection, vulnerable-dependency/SAST items)
+  and is reported separately, not counted against recall.
+
+Endpoints are substrings matched against a finding's `endpoint_url`.
+"""
+
+from __future__ import annotations
+
+import json
+import pathlib
+
+from dataclasses import replace
+
+from .schema import SIGNATURES, GroundTruthItem
+
+_HERE = pathlib.Path(__file__).parent
+_CHALLENGES = _HERE / "juiceshop_challenges.json"
+
+# key -> (vuln_class, endpoint_substring | None, auth_required)
+DETECTABLE: dict[str, tuple[str, str | None, bool]] = {
+    # --- Injection: SQLi ---
+    "loginAdminChallenge": ("sqli", "user/login", False),
+    "loginBenderChallenge": ("sqli", "user/login", False),
+    "loginJimChallenge": ("sqli", "user/login", False),
+    "ephemeralAccountantChallenge": ("sqli", "user/login", False),
+    "unionSqlInjectionChallenge": ("sqli", "products/search", False),
+    "dbSchemaChallenge": ("sqli", "products/search", False),
+    "christmasSpecialChallenge": ("sqli", "products/search", False),
+    # --- Injection: NoSQL ---
+    "noSqlOrdersChallenge": ("nosql", "track-order", False),
+    "noSqlReviewsChallenge": ("nosql", "products", True),
+    "noSqlCommandChallenge": ("nosql", "products", True),
+    # --- Injection: SSTI ---
+    "sstiChallenge": ("ssti", None, True),
+    # --- XSS ---
+    "reflectedXssChallenge": ("xss", None, False),
+    "restfulXssChallenge": ("xss", "Products", True),
+    "localXssChallenge": ("xss", None, False),
+    "persistedXssFeedbackChallenge": ("xss", "Feedback", False),
+    "persistedXssUserChallenge": ("xss", "User", True),
+    "httpHeaderXssChallenge": ("xss", None, False),
+    "usernameXssChallenge": ("xss", None, True),
+    # --- Broken Access Control ---
+    "basketAccessChallenge": ("idor", "rest/basket/", True),
+    "basketManipulateChallenge": ("idor", "BasketItem", True),
+    "csrfChallenge": ("csrf", None, True),
+    "ssrfChallenge": ("ssrf", None, True),
+    "forgedFeedbackChallenge": ("idor", "Feedback", True, "Cross-user"),
+    "forgedReviewChallenge": ("idor", "products/reviews", True),
+    # "Five-Star Feedback" = delete feedback you do not own (BOLA delete),
+    # not mass assignment. Auth-required; detected by the mutation-DELETE probe.
+    "feedbackChallenge": ("idor", "Feedback", True, "deletion"),
+    "changeProductChallenge": ("idor", "api/Products/", True),
+    # --- Security Misconfiguration ---
+    "errorHandlingChallenge": ("info_disclosure", None, False),
+    "deprecatedInterfaceChallenge": ("file_upload", "file-upload", False),
+    "svgInjectionChallenge": ("ssrf", "image/url", True),
+    # --- Unvalidated Redirects ---
+    "redirectChallenge": ("open_redirect", "redirect", False),
+    "redirectCryptoCurrencyChallenge": ("open_redirect", "redirect", False),
+    # --- XXE ---
+    "xxeFileDisclosureChallenge": ("xxe", "file-upload", True),
+    "xxeDosChallenge": ("xxe", "file-upload", True),
+    # --- Sensitive Data Exposure (exposed files / data leaks) ---
+    "directoryListingChallenge": ("exposed_data", None, False),
+    "forgottenBackupChallenge": ("exposed_data", None, False),
+    "forgottenDevBackupChallenge": ("exposed_data", None, False),
+    "exposedCredentialsChallenge": ("exposed_data", None, False),
+    "leakedApiKeyChallenge": ("exposed_data", None, False),
+    "passwordHashLeakChallenge": ("info_disclosure", None, True),
+    # --- Broken Authentication ---
+    "weakPasswordChallenge": ("auth", "user/login", False),
+    # --- Broken Anti Automation ---
+    "captchaBypassChallenge": ("rate_limit", None, False),
+    # --- Improper Input Validation (file upload / mass assignment) ---
+    "uploadSizeChallenge": ("file_upload", "file-upload", False),
+    "uploadTypeChallenge": ("file_upload", "file-upload", False),
+    "nullByteChallenge": ("file_upload", "file-upload", False),
+    "registerAdminChallenge": ("mass_assignment", "User", False),
+}
+
+# Findings the full scan MUST surface — the scanner confirms them reliably and
+# the endpoint is always discovered, so their absence is a full-scan-path
+# REGRESSION, not a coverage gap. Guards issue #1 (a confirmed injection finding
+# silently dropped between the standalone scanner and the full scan).
+MUST_DETECT: set[str] = {
+    "unionSqlInjectionChallenge",   # error-based SQLi on GET /rest/products/search
+}
+
+# Fallback class label for out-of-scope challenges (for the report breakdown).
+_CATEGORY_CLASS = {
+    "Injection": "injection", "XSS": "xss",
+    "Broken Access Control": "access_control",
+    "Sensitive Data Exposure": "info_disclosure",
+    "Broken Authentication": "auth", "Vulnerable Components": "vulnerable_dependency",
+    "Cryptographic Issues": "crypto", "Insecure Deserialization": "deserialization",
+    "Improper Input Validation": "input_validation",
+    "Broken Anti Automation": "anti_automation",
+    "Security Misconfiguration": "misconfig", "Observability Failures": "observability",
+    "Security through Obscurity": "obscurity", "Miscellaneous": "misc",
+    "Unvalidated Redirects": "open_redirect", "XXE": "xxe",
+}
+
+
+def build_ground_truth() -> list[GroundTruthItem]:
+    challenges = json.loads(_CHALLENGES.read_text())
+    items: list[GroundTruthItem] = []
+    for c in challenges:
+        key = c["key"]
+        if key in DETECTABLE:
+            spec = DETECTABLE[key]
+            vuln_class, endpoint, auth = spec[0], spec[1], spec[2]
+            # Optional 4th element: a title discriminator, for when two
+            # challenges of the same class live on the same endpoint and must
+            # be told apart by their finding (e.g. the two /api/Feedbacks idor
+            # challenges — a forged POST vs an unauthorized DELETE).
+            title = spec[3] if len(spec) > 3 else None
+            sig = SIGNATURES.get(vuln_class)
+            if title and sig is not None:
+                sig = replace(sig, title_contains=title)
+            items.append(GroundTruthItem(
+                id=key, name=c["name"], category=c["category"],
+                vuln_class=vuln_class, dast_detectable=True,
+                signature=sig,
+                endpoint_contains=endpoint, auth_required=auth,
+                regression_critical=key in MUST_DETECT,
+            ))
+        else:
+            items.append(GroundTruthItem(
+                id=key, name=c["name"], category=c["category"],
+                vuln_class=_CATEGORY_CLASS.get(c["category"], "other"),
+                dast_detectable=False,
+            ))
+    return items

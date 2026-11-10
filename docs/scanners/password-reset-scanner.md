@@ -1,0 +1,39 @@
+# Password Reset Scanner
+
+**Type:** DAST | **Severity:** Medium to Critical | **Category:** Auth Weakness
+
+## What It Does
+
+Tests password reset flows for three issues:
+
+1. **Email enumeration** — sends reset requests for valid and invalid emails. The status codes differ, or the body lengths differ by more than 20 characters (Medium). Different responses reveal which accounts exist.
+2. **Rate limiting bypass** — sends 5 sequential reset requests. It reports only when all 5 are accepted (200, 201, 202 or 204) and no 429 appears (Medium). No rate limit means an attacker can flood a user's inbox or brute-force tokens.
+3. **Token leakage in response** — checks if the reset token appears in the HTTP response body (it should only be sent via email). It matches a JSON `token`, `reset_token`, or a `link` carrying `token=`, with a value of 20 or more characters (Critical).
+
+**Authenticated scans (#119):** on an authenticated deep scan the scanner carries the captured session, so a reset flow that sits behind the login wall (e.g. an in-app "change password") is reachable. The three tests only vary the request body/email, so the session applies uniformly without affecting their logic.
+
+## Why It Matters
+
+Password reset is often the weakest link in authentication:
+
+- **Account takeover** — if the reset token is predictable or leaked in the response, attackers can reset any account's password
+- **Account enumeration** — different responses for "email found" vs "not found" let attackers build a list of valid accounts
+- **Inbox flooding** — without rate limiting, attackers trigger thousands of reset emails, causing DoS for the user and overwhelming email infrastructure
+
+## Real-World Breaches
+
+**Snapchat (2014)** — The password reset flow allowed enumeration and confirmation of phone numbers linked to accounts, enabling targeted attacks.
+
+## How to Fix
+
+```typescript
+// GOOD: Same response regardless of email validity
+return NextResponse.json({ message: "If an account exists, a reset link was sent." })
+// Never reveal whether the email exists
+
+// GOOD: Rate limit reset requests
+// GOOD: Never return the token in the HTTP response
+// Send it via email only:
+await sendEmail(email, `Reset: https://app.com/reset?token=${token}`)
+return NextResponse.json({ message: "Check your email" })
+```

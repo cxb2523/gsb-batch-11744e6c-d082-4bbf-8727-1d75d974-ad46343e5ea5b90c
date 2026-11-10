@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+# Local isitsecure config (holds the LLM API key) — the real file lives in
+# $HOME/.isitsecure/, but never let a copy be committed from inside the repo.
+.isitsecure/
+config.toml
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Playwright browsers (installed at runtime)
+playwright-browsers/
+
+# Node
+node_modules/
+.next/
+out/
+next-env.d.ts
+package-lock.json
+
+# Scan data (user-generated)
+*.scan.json
+
+# SQLite local storage
+*.db
+*.db-journal
+
+# Default scan output artifacts
+isitsecure-report.html
+isitsecure-results.sarif
+isitsecure-fixes.md
+isitsecure-badge.svg
+
+# Local scratch space — live-target credentials, run scripts, throwaway artifacts.
+# Nothing in here is ever committed.
+scratchpad/

@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "isitsecure"
+version = "0.32.5"
+description = "AI-powered security scanner for modern web apps. SAST + DAST + LLM review in one scan."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "Kunal Jaura", email = "kunaljaura@gmail.com" },
+]
+keywords = ["security", "scanner", "sast", "dast", "llm", "ai", "web-security", "penetration-testing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    "pydantic>=2.13.4,<3.0",
+    "httpx>=0.28.1",
+    "typer>=0.26.8",
+    "rich>=15.0.0",
+    "uvicorn>=0.51.0",
+    "fastapi>=0.139.0",
+]
+
+[project.optional-dependencies]
+# Browser-based DAST (authenticated crawl, DOM XSS)
+browser = [
+    "playwright>=1.61.0",
+]
+# OOB blind vulnerability detection
+oob = [
+    "cryptography>=49.0.0",
+]
+# LLM-powered code review, triage, business logic analysis
+llm = [
+    "anthropic>=0.116.0",
+    "google-genai>=2.11.0",
+]
+# Local MCP server (`isitsecure mcp`) for AI coding tools.
+# Pinned <2: mcp 2.0.0 removed `mcp.server.fastmcp` (breaking); we use the 1.x
+# FastMCP API. Revisit for a 2.x migration separately.
+mcp = [
+    "mcp>=1.28.1,<2",
+]
+# Deterministic taint/injection SAST via Semgrep (#4). Kept SEPARATE from [all]:
+# semgrep pins a heavy, tightly-constrained dependency tree (rich/click/boltons/
+# colorama) that cannot co-resolve with isitsecure's [all] stack. The analyzer
+# only needs the `semgrep` binary on PATH, so install it in isolation (this extra,
+# `pipx install semgrep`, brew, …); it no-ops gracefully when the binary is absent.
+taint = [
+    "semgrep>=1.100,<2",
+]
+# Everything (except [taint] — see the note above; semgrep won't co-resolve here)
+all = [
+    "isitsecure[browser,oob,llm,mcp]",
+]
+# Development
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "respx>=0.21",
+    "ruff>=0.15.22",
+]
+
+[project.scripts]
+isitsecure = "isitsecure.cli:app"
+
+[project.urls]
+Homepage = "https://isitsecure.ai"
+Repository = "https://github.com/jaurakunal/isitsecure"
+Issues = "https://github.com/jaurakunal/isitsecure/issues"
+Documentation = "https://github.com/jaurakunal/isitsecure/tree/main/docs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["isitsecure"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "S", "B", "UP"]
+ignore = ["S101"]  # assert in tests is fine
