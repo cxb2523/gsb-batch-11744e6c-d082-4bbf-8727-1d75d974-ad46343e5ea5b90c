@@ -1,0 +1,189 @@
+#tvbox-root{
+  --p:#6750A4;--on-p:#fff;--p-c:#EADDFF;--on-p-c:#21005D;
+  --s:#625B71;--on-s:#fff;--s-c:#E8DEF8;--on-s-c:#1D192B;
+  --sf:#FEF7FF;--sf-v:#E7E0EC;--on-sf:#1D1B20;--on-sf-v:#49454F;
+  --ol:#79747E;--ol-v:#CAC4D0;--e:#B3261E;--e-c:#F9DEDC;
+  --sp:cubic-bezier(.2,.8,.2,1);
+  position:relative;height:100%;min-height:0;font-family:"MiSans","PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  color:var(--on-sf);background:var(--sf);-webkit-tap-highlight-color:transparent;
+}
+@media(prefers-color-scheme:dark){
+  #tvbox-root{--p:#D0BCFF;--on-p:#381E72;--p-c:#4F378B;--on-p-c:#EADDFF;--s:#CCC2DC;--on-s:#332D41;--s-c:#4A4458;--on-s-c:#E8DEF8;--sf:#141218;--sf-v:#49454F;--on-sf:#E6E0E9;--on-sf-v:#CAC4D0;--ol:#938F99;--ol-v:#49454F;--e:#F2B8B5;--e-c:#8C1D18}
+}
+#tvbox-root *{box-sizing:border-box;margin:0;padding:0}
+#tvbox-root svg{display:block;width:22px;height:22px;flex-shrink:0}
+#tvbox-root button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+#tvbox-root .app{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden}
+#tvbox-root .top{height:56px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 18px}
+#tvbox-root .brand{font-size:19px;font-weight:700;letter-spacing:.3px}
+#tvbox-root .icon-btn{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--on-sf-v);transition:background .15s,transform .15s}
+#tvbox-root .icon-btn:hover{background:var(--sf-v)}
+#tvbox-root .icon-btn:active{transform:scale(.92)}
+#tvbox-root .main{flex:1;overflow-y:auto;overflow-x:hidden;padding:0 14px 84px;scroll-behavior:smooth}
+#tvbox-root .main::-webkit-scrollbar{width:4px}
+#tvbox-root .main::-webkit-scrollbar-thumb{background:var(--ol-v);border-radius:4px}
+#tvbox-root .page{display:none}
+#tvbox-root .page.on{display:block;animation:fadeUp .28s var(--sp)}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+#tvbox-root .sec{margin:14px 0}
+#tvbox-root .sec-h{display:flex;align-items:center;justify-content:space-between;margin:0 2px 10px}
+#tvbox-root .sec-h h2{font-size:16px;font-weight:600}
+#tvbox-root .link-btn{font-size:13px;color:var(--p);padding:4px 6px;border-radius:8px}
+#tvbox-root .link-btn:hover{background:var(--p-c);color:var(--on-p-c)}
+#tvbox-root .hscroll{overflow-x:auto;margin:0 -14px;padding:0 14px 4px;scrollbar-width:none}
+#tvbox-root .hscroll::-webkit-scrollbar{display:none}
+#tvbox-root .hs-list{display:flex;gap:10px}
+#tvbox-root .hs-list .card{flex:0 0 108px}
+#tvbox-root .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:12px 10px}
+#tvbox-root .card{cursor:pointer;position:relative}
+#tvbox-root .poster{position:relative;border-radius:12px;overflow:hidden;background:var(--ph,#888);aspect-ratio:2/3;display:flex;align-items:center;justify-content:center}
+#tvbox-root .poster img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;user-select:none;-webkit-user-drag:none}
+#tvbox-root .poster-ph{font-size:22px;font-weight:700;color:rgba(255,255,255,.9);letter-spacing:1px}
+#tvbox-root .card-lg .poster{aspect-ratio:2/3}
+#tvbox-root .card-body{padding:6px 2px 0}
+#tvbox-root .card-name{font-size:13px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tvbox-root .card-meta{font-size:11px;color:var(--on-sf-v);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tvbox-root .card:active{transform:scale(.97)}
+#tvbox-root .card:focus-visible{outline:2px solid var(--p);outline-offset:2px;border-radius:12px}
+#tvbox-root .skel .poster{background:var(--sf-v)}
+#tvbox-root .skel-line{height:11px;border-radius:6px;background:var(--sf-v);margin-top:8px}
+#tvbox-root .skel-line.short{width:60%}
+#tvbox-root .banner{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -14px;padding:0 14px 4px;scrollbar-width:none}
+#tvbox-root .banner::-webkit-scrollbar{display:none}
+#tvbox-root .hb{position:relative;flex:0 0 86%;max-width:520px;aspect-ratio:16/9;border-radius:14px;overflow:hidden;scroll-snap-align:start;background:var(--sf-v);cursor:pointer}
+#tvbox-root .hb-poster{position:absolute;inset:0}
+#tvbox-root .hb-poster img{width:100%;height:100%;object-fit:cover}
+#tvbox-root .hb-poster .poster-ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px}
+#tvbox-root .hb-mask{position:absolute;inset:0;background:linear-gradient(180deg,transparent 38%,rgba(0,0,0,.78))}
+#tvbox-root .hb-info{position:absolute;left:14px;right:14px;bottom:12px;color:#fff}
+#tvbox-root .hb-tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:6px;background:rgba(0,0,0,.5);margin-bottom:5px}
+#tvbox-root .hb-name{font-size:16px;font-weight:700;line-height:1.3;text-shadow:0 1px 6px rgba(0,0,0,.5)}
+#tvbox-root .hb-meta{font-size:11.5px;opacity:.85;margin-top:2px}
+#tvbox-root .empty{text-align:center;padding:56px 0;color:var(--on-sf-v)}
+#tvbox-root .empty-sub{font-size:12px;margin-top:6px;opacity:.8}
+#tvbox-root .tabs{position:absolute;left:0;right:0;bottom:0;height:64px;display:flex;background:var(--sf);border-top:1px solid var(--ol-v);z-index:5}
+#tvbox-root .tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--on-sf-v);font-size:11px;transition:color .18s}
+#tvbox-root .tab.on{color:var(--p);font-weight:600}
+#tvbox-root .search-box{display:flex;gap:8px;margin:10px 0 14px}
+#tvbox-root .search-box input{flex:1;min-width:0;height:46px;padding:0 14px;border-radius:12px;border:1px solid var(--ol-v);background:var(--sf-v);color:var(--on-sf);font:inherit;font-size:14px;outline:none}
+#tvbox-root .search-box input:focus{border-color:var(--p)}
+#tvbox-root .btn{height:46px;padding:0 18px;border-radius:12px;font-size:14px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:transform .12s,background .15s}
+#tvbox-root .btn:active{transform:scale(.97)}
+#tvbox-root .btn.primary{background:var(--p);color:var(--on-p)}
+#tvbox-root .btn.ghost{border:1px solid var(--ol-v)}
+#tvbox-root .more{width:100%;height:44px;margin:16px 0 8px;border-radius:12px;border:1px solid var(--ol-v);color:var(--on-sf-v);font-size:13px}
+#tvbox-root .theme-row{display:flex;gap:12px;padding:4px 2px}
+#tvbox-root .theme-option{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid transparent;transition:border-color .15s}
+#tvbox-root .theme-option i{width:26px;height:26px;border-radius:50%;display:block}
+#tvbox-root .theme-option.on{border-color:var(--p)}
+#tvbox-root .rows{display:flex;flex-direction:column;border-radius:14px;background:var(--sf-v);overflow:hidden}
+#tvbox-root .row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-bottom:1px solid var(--ol-v)}
+#tvbox-root .row:last-child{border-bottom:none}
+#tvbox-root .row-main{min-width:0;flex:1}
+#tvbox-root .row-t{font-size:14px}
+#tvbox-root .row-s{font-size:11.5px;color:var(--on-sf-v);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tvbox-root .tag{display:inline-block;font-size:10px;padding:1px 5px;border-radius:5px;background:var(--p-c);color:var(--on-p-c);margin-left:6px}
+#tvbox-root .switch{width:46px;height:26px;border-radius:13px;background:var(--ol-v);position:relative;flex-shrink:0;transition:background .2s}
+#tvbox-root .switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .2s var(--sp)}
+#tvbox-root .switch.on{background:var(--p)}
+#tvbox-root .switch.on::after{transform:translateX(20px)}
+#tvbox-root .seg{display:flex;gap:8px;margin-bottom:10px}
+#tvbox-root .seg-btn{flex:1;height:38px;border-radius:10px;border:1px solid var(--ol-v);font-size:13px;color:var(--on-sf-v)}
+#tvbox-root .seg-btn.on{background:var(--p);border-color:var(--p);color:var(--on-p);font-weight:600}
+#tvbox-root .text-input{width:100%;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--ol-v);background:var(--sf-v);color:var(--on-sf);font:inherit;font-size:13px;outline:none}
+#tvbox-root .text-input:focus{border-color:var(--p)}
+#tvbox-root .hint{font-size:11.5px;color:var(--on-sf-v);margin-top:8px;line-height:1.6}
+
+/* ---------- 播放器 ---------- */
+#tvbox-root .player{position:absolute;inset:0;background:#000;color:#fff;display:flex;flex-direction:column;z-index:20;opacity:0;pointer-events:none;transition:opacity .2s}
+#tvbox-root .player.open{opacity:1;pointer-events:auto}
+#tvbox-root .pl-top{height:52px;display:flex;align-items:center;gap:8px;padding:0 6px;position:absolute;top:0;left:0;right:0;z-index:3;background:linear-gradient(180deg,rgba(0,0,0,.6),transparent);opacity:0;transition:opacity .2s}
+#tvbox-root .pl-top .icon-btn{color:#fff}
+#tvbox-root .pl-title{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tvbox-root .pl-stage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;min-height:0;background:#000}
+#tvbox-root .pl-stage video{width:100%;height:100%;object-fit:contain;background:#000}
+#tvbox-root .player[data-ratio="16:9"] video{object-fit:fill}
+#tvbox-root .player[data-ratio="4:3"] video{object-fit:contain;width:auto;height:100%}
+#tvbox-root .player[data-ratio="fill"] video{object-fit:cover}
+#tvbox-root .player[data-ratio="fit"] video{object-fit:scale-down}
+#tvbox-root .pl-overlay{position:absolute;inset:0;pointer-events:none}
+#tvbox-root .pl-overlay .btn,#tvbox-root .pl-overlay .pl-error{pointer-events:auto}
+#tvbox-root .pl-loading,#tvbox-root .pl-error{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-size:13px;color:#ccc;background:#000}
+#tvbox-root .pl-error-actions{display:flex;gap:10px}
+#tvbox-root .pl-error .btn{height:36px;color:#fff;border-color:rgba(255,255,255,.4)}
+#tvbox-root .spinner{width:26px;height:26px;border-radius:50%;border:2.5px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#tvbox-root .pl-panel{flex-shrink:0;max-height:42%;overflow-y:auto;padding:8px 12px 10px;background:rgba(20,20,20,.96);display:none}
+#tvbox-root .player.show-ctrl .pl-panel{display:block}
+#tvbox-root .line-tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none}
+#tvbox-root .line-tabs::-webkit-scrollbar{display:none}
+#tvbox-root .line{flex:0 0 auto;padding:6px 13px;border-radius:999px;border:1px solid rgba(255,255,255,.28);font-size:12.5px;color:#ddd}
+#tvbox-root .line.on{background:var(--p);border-color:var(--p);color:var(--on-p);font-weight:600}
+#tvbox-root .ep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:7px}
+#tvbox-root .ep{padding:8px 4px;border-radius:8px;border:1px solid rgba(255,255,255,.2);font-size:12.5px;color:#ddd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tvbox-root .ep.on{background:var(--p);border-color:var(--p);color:var(--on-p);font-weight:600}
+#tvbox-root .pl-bar{height:56px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 10px;background:linear-gradient(0deg,rgba(0,0,0,.75),transparent);opacity:0;transition:opacity .2s}
+#tvbox-root .player.show-ctrl .pl-bar{opacity:1}
+#tvbox-root .pl-bar .icon-btn{color:#fff;width:34px;height:34px}
+#tvbox-root .pl-bar .t{font-size:11.5px;color:#ddd;min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
+#tvbox-root .seek{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.25);position:relative;cursor:pointer;touch-action:none}
+#tvbox-root .seek i{position:absolute;left:0;top:0;bottom:0;width:var(--p,0%);border-radius:2px;background:var(--p)}
+#tvbox-root .seek b{position:absolute;top:50%;left:var(--p,0%);width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+#tvbox-root .chip{height:30px;padding:0 11px;border-radius:999px;border:1px solid rgba(255,255,255,.3);font-size:12px;color:#eee}
+#tvbox-root .ad-tip{position:absolute;left:50%;bottom:72px;transform:translateX(-50%) translateY(8px);background:rgba(0,0,0,.82);color:#fff;font-size:12.5px;padding:9px 14px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;white-space:nowrap}
+#tvbox-root .ad-tip.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+#tvbox-root .ad-tip button{color:var(--p);margin-left:10px;font-weight:600}
+
+/* ---------- 提示 / 弹层 ---------- */
+#tvbox-root .toast{position:absolute;left:50%;bottom:86px;transform:translateX(-50%) translateY(10px);background:rgba(30,30,30,.92);color:#fff;font-size:13px;padding:10px 16px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:60;max-width:80%}
+#tvbox-root .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#tvbox-root .sheet-mask{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;z-index:50;opacity:0;transition:opacity .2s}
+#tvbox-root .sheet-mask.in{opacity:1}
+#tvbox-root .sheet{width:100%;background:var(--sf);color:var(--on-sf);border-radius:20px 20px 0 0;padding:6px 0 14px;transform:translateY(16px);transition:transform .22s var(--sp)}
+#tvbox-root .sheet-mask.in .sheet{transform:none}
+#tvbox-root .sheet-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px 20px}
+#tvbox-root .sheet-title{font-size:15px;font-weight:600}
+#tvbox-root .sheet-body{padding:6px 20px 10px}
+#tvbox-root .sheet-text{font-size:13.5px;line-height:1.6;color:var(--on-sf-v)}
+#tvbox-root .sheet-actions{display:flex;gap:10px;padding:0 20px}
+#tvbox-root .sheet-actions .btn{flex:1;height:44px}
+#tvbox-root .opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:8px}
+#tvbox-root .opt{height:40px;border-radius:10px;border:1px solid var(--ol-v);font-size:13px}
+#tvbox-root .opt.on{background:var(--p);border-color:var(--p);color:var(--on-p);font-weight:600}
+#tvbox-root .num-row{display:flex;align-items:center;justify-content:center;gap:18px;padding:12px 0}
+#tvbox-root .num{font-size:20px;font-weight:700;min-width:96px;text-align:center}
+#tvbox-root .step{width:48px;height:40px;border-radius:10px;border:1px solid var(--ol-v);font-size:13px}
+@media(max-width:380px){
+  #tvbox-root .grid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
+  #tvbox-root .hs-list .card{flex-basis:96px}
+}
+
+/* ---------- 一起看 ---------- */
+#tvbox-root .wt-btn{position:relative}
+#tvbox-root .wt-btn b{position:absolute;top:2px;right:2px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:#e5484d;color:#fff;font-size:10px;font-weight:600;line-height:15px;display:none}
+#tvbox-root .wt-btn b:not(:empty){display:block}
+#tvbox-root .wt-panel{position:absolute;top:0;right:0;bottom:0;width:320px;max-width:88%;background:rgba(18,18,18,.97);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .26s var(--sp);z-index:6;border-left:1px solid rgba(255,255,255,.12)}
+#tvbox-root .wt-panel.open{transform:none}
+#tvbox-root .wt-head{height:48px;display:flex;align-items:center;gap:6px;padding:0 4px 0 14px;border-bottom:1px solid rgba(255,255,255,.1);color:#eee;font-size:13px}
+#tvbox-root .wt-title{flex:1;font-weight:600}
+#tvbox-root .wt-title b{color:#9b8cff;font-weight:600;letter-spacing:.4px}
+#tvbox-root .wt-online{font-size:11.5px;color:#9aa0a6}
+#tvbox-root .wt-head .icon-btn{color:#ddd;width:34px;height:34px}
+#tvbox-root .wt-list{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+#tvbox-root .wt-list::-webkit-scrollbar{width:4px}
+#tvbox-root .wt-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:2px}
+#tvbox-root .wt-empty{margin:auto;color:#777;font-size:12.5px}
+#tvbox-root .wt-msg{max-width:86%;align-self:flex-start}
+#tvbox-root .wt-msg.mine{align-self:flex-end;text-align:right}
+#tvbox-root .wt-nick{font-size:10.5px;color:#888;margin-bottom:2px}
+#tvbox-root .wt-text{display:inline-block;padding:7px 11px;border-radius:10px;background:rgba(255,255,255,.1);color:#eee;font-size:13px;line-height:1.45;text-align:left;word-break:break-word}
+#tvbox-root .wt-msg.mine .wt-text{background:var(--p);color:var(--on-p)}
+#tvbox-root .wt-sync{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;font-size:11.5px;color:#bbb;background:rgba(255,255,255,.06)}
+#tvbox-root .wt-sync .btn{height:30px;padding:0 12px;font-size:12px}
+#tvbox-root .wt-input{display:flex;gap:6px;padding:8px 10px;border-top:1px solid rgba(255,255,255,.1)}
+#tvbox-root .wt-input input{flex:1;min-width:0;height:36px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#eee;font:inherit;font-size:13px;outline:none}
+#tvbox-root .wt-input input:focus{border-color:var(--p)}
+#tvbox-root .wt-send,#tvbox-root .wt-sync-btn{height:36px;padding:0 12px;border-radius:8px;font-size:12.5px}
+#tvbox-root .wt-send{background:var(--p);color:var(--on-p);font-weight:600}
+#tvbox-root .wt-sync-btn{border:1px solid rgba(255,255,255,.2);color:#ddd}
+@media(max-width:520px){ #tvbox-root .wt-panel{width:100%;max-width:100%} }
