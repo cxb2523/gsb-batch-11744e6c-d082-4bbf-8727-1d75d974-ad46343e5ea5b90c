@@ -1,0 +1,280 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  # Weekly, so CI also runs when nothing is committed: the image installs ffmpeg and
+  # libsndfile from Debian without version pins, and the audits query advisory databases
+  # that change over time.
+  schedule:
+    - cron: "0 6 * * 1"
+
+# Least privilege, declared here rather than inherited from the repository default, which
+# this file cannot see. No job writes to the repository; publish alone adds packages: write.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs because a tag can be moved to
+# different code after review; the comment records the release the SHA was taken from.
+# Each SHA was resolved from its tag and confirmed as a signed commit when pinned.
+
+# Each job stops after 60 minutes instead of GitHub's 6-hour default. In the 30 runs to
+# 2026-10-27, jobs usually took 3 minutes or less, and the slowest took 43, nearly all
+# of it in the backend's apt download. Every job downloads packages or a saved image, so
+# each gets the same limit.
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # The token is not persisted into .git/config, so dependency install scripts that
+      # run in later steps cannot read it. No step here pushes or fetches after checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # uv is pinned with its checksum. This action release only embeds checksums up to
+      # 0.12.17, so without the explicit value it would verify 0.12.23 against a manifest
+      # fetched over the network on every run. Pinning moves the expected bytes into
+      # reviewed source. The value matches the release asset and its signed SLSA
+      # provenance from astral-sh/uv. Changing the version means changing the checksum
+      # alongside it. The value is a public artifact digest, so the secrets scan is
+      # exempted on that one line only.
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          checksum: "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6" # pragma: allowlist secret
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsndfile1 ffmpeg
+
+      - name: Install project dependencies
+        run: uv sync --frozen --all-groups --all-extras
+
+      # One tracked definition of the gate, invoked identically here and locally, so
+      # local green and CI green cannot drift. Adding a check means editing the script,
+      # not two places. See scripts/gate_python.sh for what runs and why.
+      - name: Gate (lint, types, security, audit, tests, secrets)
+        run: scripts/gate_python.sh
+
+  # The backend job tests against Ubuntu's ffmpeg; the image ships Debian's. This job
+  # runs the backend tests in the Dockerfile's test stage, against the system packages
+  # and locked dependencies the image installs plus the test group, with networking off,
+  # then builds the runtime stage with the published checkpoint and checks that it serves.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the test stage
+        run: docker build --pull --target test -t harmonyrestorer:test .
+
+      - name: Backend tests in the image
+        run: docker run --rm --network none harmonyrestorer:test
+
+      # The checkpoint is a release asset, not a committed file
+      # (docs/adr/008-checkpoint-release.md). The script checks its digest before moving
+      # it into place; the image checks it again at startup, which the last step relies on.
+      - name: Fetch the checkpoint
+        run: python3 scripts/fetch_checkpoint.py
+
+      - name: Build the runtime stage
+        run: docker build --target runtime -t harmonyrestorer:runtime .
+
+      # The compiler toolchain belongs only in the build stages, so this fails if any of
+      # these tools is on the PATH of either image built from base, as they were when
+      # build-essential was installed in the stage both were built from.
+      - name: No compiler tools on the test or runtime image's PATH
+        run: |
+          for image in harmonyrestorer:test harmonyrestorer:runtime; do
+            docker run --rm --network none --entrypoint sh "$image" -c \
+              'for t in gcc cc g++ make as ld cpp; do
+              if command -v "$t" >/dev/null; then echo "found $t in $0"; exit 1; fi; done' "$image"
+          done
+
+      # /health, then one file through the API, in the runtime image with networking off
+      - name: Runtime image serves
+        run: scripts/check_runtime_image.sh harmonyrestorer:runtime
+
+      # On pushes to main only, hands the runtime image that passed the checks above to the
+      # publish job, so the image pushed is this build and not a rebuild with newer Debian
+      # packages. pipefail, so a failed docker save fails the step instead of uploading a
+      # truncated archive.
+      - name: Save the tested runtime image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -o pipefail
+          docker image inspect --format '{{.Id}}' harmonyrestorer:runtime > runtime-image-id
+          docker save harmonyrestorer:runtime | gzip -1 > runtime-image.tar.gz
+
+      - name: Upload the tested runtime image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runtime-image
+          path: |
+            runtime-image.tar.gz
+            runtime-image-id
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  # Pushes the runtime image that passed the image job's checks, only on pushes to main and
+  # only when all three jobs succeeded; the results are checked by name so a job skipped
+  # later by its own condition cannot count as a pass. It is the only job that can write
+  # packages, and it checks out no code and runs none of the project's. A deploy should
+  # use its amd64-digest output, not the tag, as the deploy job below does.
+  publish:
+    needs: [backend, image, frontend]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.backend.result == 'success' && needs.image.result == 'success' &&
+      needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      packages: write
+    outputs:
+      amd64-digest: ${{ steps.push.outputs.amd64-digest }}
+    env:
+      IMAGE: ghcr.io/jacob7choi-xyz/harmonyrestorer-backend
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: runtime-image
+
+      # Fails unless the loaded image has the ID recorded before it was saved
+      - name: Load the tested image
+        run: |
+          docker load < runtime-image.tar.gz
+          tested="$(cat runtime-image-id)"
+          loaded="$(docker image inspect --format '{{.Id}}' harmonyrestorer:runtime)"
+          if [ "$loaded" != "$tested" ]; then
+            echo "loaded image $loaded is not the tested image $tested"
+            exit 1
+          fi
+
+      # The token goes to docker on stdin, never on the command line. The digest is read
+      # from the push output, and the step fails if none is found. For 531b34e that digest
+      # named an index holding the linux/amd64 image and an attestation. ADR 009 has
+      # deploys use the linux/amd64 image's digest, not the index's (decision 11), and
+      # records that a Lambda container image must target one architecture; whether
+      # Lambda refuses an index digest was not tested. So the step also reports the
+      # linux/amd64 manifest's digest. From an index it fails unless exactly one is found;
+      # a single manifest's digest is passed on as it is, without a platform check.
+      - name: Push to the GitHub Container Registry
+        id: push
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.repository_owner }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -o pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          docker tag harmonyrestorer:runtime "$IMAGE:$COMMIT"
+          docker push "$IMAGE:$COMMIT" | tee push.log
+          digest="$(grep -o 'digest: sha256:[0-9a-f]\{64\}' push.log | cut -d' ' -f2)"
+          if [ -z "$digest" ]; then
+            echo "no digest found in the push output"
+            exit 1
+          fi
+          echo "Pushed $IMAGE@$digest (tag $COMMIT)" | tee -a "$GITHUB_STEP_SUMMARY"
+          amd64="$(docker buildx imagetools inspect --raw "$IMAGE@$digest" | jq -r --arg d "$digest" \
+            'if .manifests then [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")]
+             | if length == 1 then .[0].digest else empty end else $d end')"
+          if [ -z "$amd64" ]; then
+            echo "no single linux/amd64 manifest in $IMAGE@$digest"
+            exit 1
+          fi
+          echo "linux/amd64 image: $IMAGE@$amd64" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "amd64-digest=$amd64" >> "$GITHUB_OUTPUT"
+
+      - name: Log out of the registry
+        if: always()
+        run: docker logout ghcr.io
+
+  # Deploys the published image to the Lambda function once a reviewer approves the run in
+  # the aws-backend environment (docs/adr/009-pay-per-use-hosting.md, decisions 11 and 12).
+  # It signs in to AWS with GitHub's OIDC token, so no AWS key is stored. The role trusts
+  # only this repository's aws-backend environment. It can get an ECR sign-in token (granted
+  # on *, as in AWS's example), push to the one ECR repository, and deploy, warm and alias
+  # the one function (docs/aws-stage-1-runbook.md). Runs of this job share a concurrency
+  # group, so two of them do not deploy at the same time; how the group treats a run still
+  # waiting for approval was not checked. Changes made outside this job, by hand or by the
+  # kill switch, are not part of the group.
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: aws-backend
+    concurrency:
+      group: deploy-aws-backend
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GHCR_IMAGE: ghcr.io/jacob7choi-xyz/harmonyrestorer-backend
+      DIGEST: ${{ needs.publish.outputs.amd64-digest }}
+      COMMIT: ${{ github.sha }}
+      FUNCTION: harmonyrestorer-backend
+      REPO: harmonyrestorer-backend
+      ALIAS: live
+      BACKEND_URL: https://wn4ntjcy4njzvwene2eawrpgzq0eafxs.lambda-url.us-east-1.on.aws
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The account ID is in the role ARN and the registry host. The ARN is an environment
+      # secret because the log lists a step's inputs at the start of the step, and the first
+      # deploy (run 42508482434) read it from a variable, which that line showed unmasked.
+      # GitHub's documentation says secrets are masked in logs. The action masks the ID in
+      # its own output only when told to, since it does not by default.
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+          mask-aws-account-id: true
+
+      - name: Deploy, warm, smoke test
+        run: scripts/deploy_lambda.sh
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      # One tracked definition of the gate, invoked identically here and locally. See
+      # scripts/gate_frontend.sh for what runs and why.
+      - name: Gate (lint, types, audit, build, tests)
+        working-directory: .
+        run: scripts/gate_frontend.sh

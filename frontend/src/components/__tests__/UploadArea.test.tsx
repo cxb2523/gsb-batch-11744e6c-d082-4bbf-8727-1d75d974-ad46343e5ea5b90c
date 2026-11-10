@@ -1,0 +1,135 @@
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, fireEvent, act } from '@testing-library/react'
+import { UploadArea } from '../UploadArea'
+import { MAX_UPLOAD_BYTES } from '../../config'
+
+describe('UploadArea', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('renders upload prompt when no file selected', () => {
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={false} currentFile={null} />)
+    expect(screen.getByText(/restore your audio/i)).toBeInTheDocument()
+    expect(screen.getByText(/drop a file anywhere/i)).toBeInTheDocument()
+  })
+
+  it('shows file name when file is selected', () => {
+    const file = new File(['data'], 'my_song.wav', { type: 'audio/wav' })
+    Object.defineProperty(file, 'size', { value: 1024 * 1024 })
+
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={false} currentFile={file} />)
+    expect(screen.getByText('my_song.wav')).toBeInTheDocument()
+  })
+
+  it('shows file size when file is selected', () => {
+    const file = new File(['data'], 'track.wav', { type: 'audio/wav' })
+    Object.defineProperty(file, 'size', { value: 2 * 1024 * 1024 })
+
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={false} currentFile={file} />)
+    expect(screen.getByText('2.00 MB')).toBeInTheDocument()
+  })
+
+  it('shows error for non-audio file', async () => {
+    const onFileSelect = vi.fn()
+    render(<UploadArea onFileSelect={onFileSelect} isProcessing={false} currentFile={null} />)
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const textFile = new File(['hello'], 'readme.txt', { type: 'text/plain' })
+
+    fireEvent.change(input, { target: { files: [textFile] } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/please select an audio file/i)).toBeInTheDocument()
+    })
+    expect(onFileSelect).not.toHaveBeenCalled()
+  })
+
+  it('shows error for oversized file', async () => {
+    const onFileSelect = vi.fn()
+    render(<UploadArea onFileSelect={onFileSelect} isProcessing={false} currentFile={null} />)
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const bigFile = new File(['x'], 'big.wav', { type: 'audio/wav' })
+    Object.defineProperty(bigFile, 'size', { value: MAX_UPLOAD_BYTES + 1 })
+
+    fireEvent.change(input, { target: { files: [bigFile] } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText(/file too large/i)).toBeInTheDocument()
+    })
+    expect(onFileSelect).not.toHaveBeenCalled()
+  })
+
+  it('disables input when processing', () => {
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={true} currentFile={null} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input.disabled).toBe(true)
+  })
+
+  it('has correct aria-label when no file selected', () => {
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={false} currentFile={null} />)
+    const area = screen.getByRole('button')
+    expect(area).toHaveAttribute('aria-label', 'Upload audio file')
+  })
+
+  it('has correct aria-label when file is selected', () => {
+    const file = new File(['data'], 'song.wav', { type: 'audio/wav' })
+    render(<UploadArea onFileSelect={vi.fn()} isProcessing={false} currentFile={file} />)
+    const area = screen.getByRole('button')
+    expect(area).toHaveAttribute('aria-label', 'Selected: song.wav. Press to change file.')
+  })
+
+  it('calls onFileSelect for valid audio file', async () => {
+    vi.useFakeTimers()
+    const onFileSelect = vi.fn()
+
+    render(<UploadArea onFileSelect={onFileSelect} isProcessing={false} currentFile={null} />)
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const audioFile = new File(['audio'], 'song.wav', { type: 'audio/wav' })
+    Object.defineProperty(audioFile, 'size', { value: 1024 })
+    fireEvent.change(input, { target: { files: [audioFile] } })
+
+    // Duration check creates an Audio element. In jsdom, loadedmetadata won't fire,
+    // so the 5s timeout resolves true, allowing onFileSelect to be called.
+    await vi.advanceTimersByTimeAsync(5100)
+
+    expect(onFileSelect).toHaveBeenCalledWith(audioFile)
+  })
+
+  it('does not select an earlier file once a newer pick is refused', async () => {
+    vi.useFakeTimers()
+    const onFileSelect = vi.fn()
+    render(<UploadArea onFileSelect={onFileSelect} isProcessing={false} currentFile={null} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const earlier = new File(['audio'], 'earlier.wav', { type: 'audio/wav' })
+
+    // jsdom never loads the metadata, so the earlier check waits out its 5 s timeout
+    fireEvent.change(input, { target: { files: [earlier] } })
+    fireEvent.drop(screen.getByRole('button'), {
+      dataTransfer: { files: [new File(['x'], 'notes.txt', { type: 'text/plain' })] },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5100)
+    })
+
+    expect(screen.getByText(/please select an audio file/i)).toBeInTheDocument()
+    expect(onFileSelect).not.toHaveBeenCalled()
+  })
+
+  it('does not select a file whose check is still pending when it unmounts', async () => {
+    vi.useFakeTimers()
+    const onFileSelect = vi.fn()
+    const { unmount } = render(
+      <UploadArea onFileSelect={onFileSelect} isProcessing={false} currentFile={null} />,
+    )
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['audio'], 'a.wav', { type: 'audio/wav' })] } })
+
+    unmount()
+    await vi.advanceTimersByTimeAsync(5100)
+
+    expect(onFileSelect).not.toHaveBeenCalled()
+  })
+})

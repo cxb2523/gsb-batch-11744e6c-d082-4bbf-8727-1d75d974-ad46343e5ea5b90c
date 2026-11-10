@@ -1,0 +1,63 @@
+# Git
+.git
+.gitmodules
+
+# Python. A pattern without **/ matches only at the root of the build context, so the
+# caches that tools write inside backend/ need the **/ form.
+**/__pycache__
+**/*.pyc
+*.pyo
+.venv
+.conda
+*.egg-info
+
+# Node
+node_modules
+frontend/node_modules
+frontend/dist
+
+# Local env files can hold secrets; only the value-free examples enter the build context
+**/.env
+**/.env.*
+!**/.env.example
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Data
+*.wav
+*.mp3
+*.flac
+*.m4a
+uploads/
+processed/
+backend/uploads/
+backend/processed/
+
+# Models (training artifacts excluded; production checkpoint baked into image)
+*.pth
+*.ckpt
+*.onnx
+checkpoints/
+!checkpoints/
+!checkpoints/final.pt
+weights/
+
+# External tools (not needed — we use audio-separator pip package)
+external_tools/
+
+# Misc
+wandb/
+mlruns/
+**/.pytest_cache
+**/.mypy_cache
+**/.coverage
+docs/
+data/
+samples/
+CLAUDE.md
+AGENTS.md
+**/.claude

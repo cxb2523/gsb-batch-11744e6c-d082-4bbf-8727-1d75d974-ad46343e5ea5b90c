@@ -1,0 +1,63 @@
+# Security Policy
+
+## Supported Versions
+
+Only the current `main` branch is actively maintained. No prior releases are supported.
+
+| Version | Supported |
+|---------|-----------|
+| main    | Yes       |
+
+## Reporting a Vulnerability
+
+Please do not open a public GitHub issue for security vulnerabilities.
+
+Report vulnerabilities via one of the following:
+
+- **GitHub private advisory**: use the "Report a vulnerability" button on the [Security tab](https://github.com/jacob7choi-xyz/harmonyrestorer-v1/security/advisories/new)
+- **Email**: jacob77choi@gmail.com
+
+Include a description of the issue, steps to reproduce, and potential impact. Expect an acknowledgment within 72 hours. A resolution timeline will be provided within 14 days of confirmation.
+
+## Scope
+
+In scope:
+
+- Backend API (file upload, job processing, download endpoints)
+- File validation logic (magic byte checks, size and duration limits) and upload decoding with ffmpeg
+- Job management and file handling
+- Dependency supply chain (pyproject.toml, uv.lock, package-lock.json)
+
+Out of scope:
+
+- The hosted frontend code for this project is in scope; platform-level issues with Vercel itself are out of scope and should be reported to Vercel directly
+- The GCP training infrastructure (decommissioned after model training)
+- Large-scale DoS attacks that exceed the documented rate limits and resource controls
+
+## Supply Chain
+
+### Python dependencies
+
+Dependencies are managed with [uv](https://github.com/astral-sh/uv) and pinned via a committed `uv.lock`. The Python gate, `scripts/gate_python.sh`, runs identically in CI and locally. It checks that the lock is current and that the environment matches it, then audits the locked population with pip-audit.
+
+The backend image installs from the same lock with `uv sync --frozen` rather than resolving versions at build time, so the application environment (`/app/.venv`) is built from the population the gate audits and tests. uv installs each package from the URL and hash the lock records. The base image's own system Python packages, such as its `pip`, sit outside that environment and outside the gate's audit. `diffq` has no wheel for the production platform, so it is compiled from its source distribution against the locked Cython and setuptools instead of build dependencies fetched during the build.
+
+**PyTorch index**: `torch` is sourced from the official PyTorch CPU wheel index (`https://download.pytorch.org/whl/cpu`) via `[tool.uv.sources]` in `pyproject.toml`. The index is marked `explicit`, so only `torch` resolves from it, which keeps torch itself on its CPU build. `torchvision`, which `audio-separator` pulls in through `onnx2torch`, still resolves from PyPI as a CUDA-linked build. In images built from this Dockerfile on 2026-10-16, its compiled extension did not load (`libcudart.so.13` is absent), so `import torchvision` failed there. No tracked code imports torchvision, and the OpGAN path and the UVR-DeNoise path ran without it.
+
+**UVR model files**: these are not Python packages and sit outside `uv.lock` and the image. When `DENOISER_ENGINE=uvr`, audio-separator downloads `UVR-DeNoise.pth` on the first UVR job from the `TRvlvr/model_repo` GitHub releases, or from the `nomadkaraoke/python-audio-separator` releases if the first request returns a status other than 200, and a model list and model parameter files from `raw.githubusercontent.com`, into `/tmp/audio-separator-models/` in the container, which is audio-separator's default because the app passes no `model_file_dir` and nothing in the repository sets `AUDIO_SEPARATOR_MODEL_DIR`. audio-separator writes whatever a successful response returns without checking it against a hash, and it reuses a file already present by path alone. It writes the response straight to the final path, so, read from its code, an interrupted transfer could leave a partial file there that a later run would reuse. Its VR loader calls `torch.load` without `weights_only`, which in the locked torch 2.14.1 resolves to `weights_only=True` unless `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD` is set; nothing in the repository sets it. `UVR_MODEL_NAME` is limited to `UVR-DeNoise.pth` in `backend/app/config.py`, which keeps MDX and Demucs model names out; the Demucs loader calls `torch.load` with `weights_only=False`. That check limits the name only. audio-separator decides the architecture from the downloaded model list, and in the copy fetched on 2026-10-16 `UVR-DeNoise.pth` is listed as a VR model under a name without "VIP", which is what selects the `TRvlvr/model_repo` source over a VIP repository. `scripts/deploy_backend.sh` does not list `DENOISER_ENGINE` in `--set-env-vars`, the Lambda function's environment does not set it either (`docs/aws-stage-1-runbook.md`, step 6), and the default engine, OpGAN, does not download these files.
+
+**OpGAN checkpoint**: `checkpoints/final.pt` is not in the repository. It is published as an asset of the immutable GitHub release `opgan-checkpoint-v1`, and `scripts/fetch_checkpoint.py` downloads it and checks its SHA-256 before moving it into place (`docs/adr/008-checkpoint-release.md`). It is copied into the runtime image when it is built (`Dockerfile:83`). The OpGAN service reads the file once, compares its SHA-256 with `OPGAN_CHECKPOINT_SHA256` in `backend/app/config.py`, and passes the same bytes to `torch.load(..., weights_only=True)`. On a mismatch it logs both digests, loads nothing, and the job fails. With the OpGAN engine, the app also checks the file once at startup, and `/health` returns 503 if that check did not pass. The checkpoint field in `/health` reflects only that startup result. CI builds the runtime image with the published file and requires `/health` to return 200 and one upload to complete in it (`scripts/check_runtime_image.sh`). `dataset/infer.py:57` and `dataset/train.py:308` load checkpoints without this check (`docs/adr/007-checkpoint-digest.md`).
+
+**System packages**: ffmpeg and libsndfile are installed from the Debian archive of the `python:3.11-slim` base image, which is referenced by tag, and neither is version-pinned (`Dockerfile:61`). Every upload is decoded by ffmpeg, so its parsers see untrusted bytes. The decode pins the demuxer from the validated format, allows only the file protocol, passes the MP4 demuxer's external-reference options as off, and caps the output by length and size (`docs/adr/006-input-decoding.md`). The ffmpeg version in use is logged at startup. The CI `image` job builds the Dockerfile's test and runtime stages, both built from the `base` stage that installs them, runs the backend tests in the test stage, and starts the runtime stage and sends one upload through it, on pushes to `main` or `develop`, on pull requests to `main`, and on a weekly schedule that the workflow ties to these packages being unpinned (`.github/workflows/ci.yml:3-12`). `scripts/deploy_backend.sh`, the deferred Cloud Run deploy, builds its own image, so an image it deploys can differ from the tested one. On pushes to `main`, once all three CI jobs have succeeded, the `publish` job pushes the runtime image that passed the `image` job's checks to the GitHub Container Registry, tagged with the commit SHA. The package can be pulled without credentials. Besides the base image and its Debian packages, the image holds the tracked `backend/app/` files, the released checkpoint, and dependencies installed from `uv.lock`. Since 2026-11-08, after a reviewer approves, the `deploy` job copies that image to ECR by its linux/amd64 digest and deploys it to the Lambda function (`docs/aws-stage-1-runbook.md`, step 11).
+
+**Waived advisories**: none. The gate fails on any advisory pip-audit reports for the locked population.
+
+### JavaScript dependencies
+
+Frontend dependencies are audited with `npm audit --audit-level=high` in `scripts/gate_frontend.sh`, which CI runs and which can be run locally. The `package-lock.json` is committed and updated as part of any dependency change.
+
+## Dependency Update Policy
+
+- Python: packages are upgraded by name with `uv lock --upgrade-package <name>`; `uv.lock` committed after review. A blanket `uv lock --upgrade` is avoided because the benchmark protocol pins exact versions of numpy, soundfile, librosa, and soxr, and `load_protocol` refuses to run when they differ. In a test on 2026-10-08, a blanket upgrade moved librosa from 0.11.0 to 1.0.0 for Python 3.12 and later
+- JavaScript: `npm audit fix` run when vulnerabilities are reported; `package-lock.json` committed after review
+- CVE ignores are re-evaluated on each update cycle and removed as soon as a patched version is available and tested

@@ -1,0 +1,148 @@
+[project]
+name = "harmonyrestorer"
+version = "1.0.0"
+description = "AI-powered audio restoration and enhancement"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Jacob J. Choi"}
+]
+requires-python = ">=3.11"
+
+dependencies = [
+    # FastAPI Stack
+    "fastapi~=0.136.0",
+    "uvicorn[standard]~=0.46.0",
+    "python-multipart~=0.0.26",
+
+    # Audio Processing
+    "audio-separator[cpu]~=0.44.0",
+    "librosa>=0.11.0",
+
+    # Config & Utilities
+    "pydantic~=2.13.0",
+    "python-dotenv~=1.2.0",
+    "psutil~=7.2.0",
+]
+
+[project.optional-dependencies]
+dataset = [
+    "internetarchive>=5.0.0",
+    "numpy>=1.24.0,<2.4",
+    "soundfile>=0.13.0",
+    "scipy>=1.10.0",
+    "torch>=2.0.0",
+]
+eval = [
+    "pesq>=0.0.4",
+    "pystoi>=0.4.0",
+]
+
+[dependency-groups]
+lint = [
+    "ruff>=0.15.0",
+    "mypy>=1.20.0",
+    "bandit>=1.9.0",
+    "pip-audit>=2.7.0",
+    "detect-secrets>=1.5.0",
+]
+test = [
+    "httpx>=0.28.0",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-mock>=3.15.0",
+]
+dev = [
+    {include-group = "lint"},
+    {include-group = "test"},
+]
+
+[project.urls]
+Repository = "https://github.com/jacob7choi-xyz/harmonyrestorer-v1"
+
+[tool.uv]
+# packaging 26.2 is the newest release and the advisory service has no record of it, so
+# pip-audit omits it from its report entirely rather than reporting it as skipped. 26.1
+# is covered normally and carries no known advisories. Constrained for auditability
+# rather than because 26.2 is suspect: a version the scanner can examine yields more
+# assurance than the newest version plus a bespoke exception to work around it.
+#
+# This is a scanner-compatibility constraint, not a security judgement, so it should not
+# outlive its cause. Removal trigger, retry whenever dependencies are next revisited:
+#
+#   echo 'packaging==26.2' > /tmp/p.txt
+#   uv run pip-audit -r /tmp/p.txt --no-deps --format json
+#
+# Drop this constraint once the newest release appears as a reported dependency instead
+# of being omitted. An upper bound rather than a pin: it excludes the one identity the
+# scanner cannot report, the lock fixes the concrete version, and the audit checks
+# whatever the synchronised environment actually holds.
+constraint-dependencies = ["packaging<26.2"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "dataset*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.json"]
+
+[tool.uv.sources]
+torch = [
+    {index = "pytorch-cpu"},
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# ============================================================================
+# Tool Configurations
+# ============================================================================
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+explicit_package_bases = true
+mypy_path = "backend"
+exclude = ["external_tools", "tests"]
+
+[[tool.mypy.overrides]]
+module = "app.models.*"
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+module = "dataset.*"
+warn_return_any = false
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests", "dataset/tests", "benchmark/tests", "scripts/tests", "ops/kill_switch/tests"]
+pythonpath = ["backend", "."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+norecursedirs = ["external_tools", "node_modules", ".git"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.coverage.run]
+source = ["backend"]
+omit = ["*/tests/*", "external_tools/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

@@ -1,0 +1,46 @@
+"""Pydantic request/response models."""
+
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, Field
+
+
+class JobStatusEnum(StrEnum):
+    """Valid states for a processing job."""
+
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class JobStatus(BaseModel):
+    """Processing job status returned by status/download endpoints."""
+
+    job_id: str
+    status: JobStatusEnum
+    progress: int = Field(ge=-1, le=100)
+    message: str
+    created_at: datetime
+    completed_at: datetime | None = None
+    download_url: str | None = None
+    processing_time: float | None = None
+    client_ip: str = Field(
+        default="",
+        exclude=True,
+        description="Internal-only client IP used for per-client job caps.",
+    )
+    download_stem: str = Field(
+        default="audio",
+        exclude=True,
+        description="Internal-only sanitized stem for the download filename.",
+    )
+
+
+class DenoiseUploadResponse(BaseModel):
+    """Response returned when an audio file is uploaded for denoising."""
+
+    job_id: str
+    status: JobStatusEnum
+    message: str

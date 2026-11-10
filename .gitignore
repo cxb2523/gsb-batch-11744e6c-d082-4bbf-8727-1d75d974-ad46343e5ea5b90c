@@ -1,0 +1,105 @@
+# Enterprise Standards - Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.conda/
+env/
+
+# Enterprise Standards - Build Artifacts
+dist/
+build/
+*.egg-info/
+.coverage
+.pytest_cache/
+.tox/
+
+# Enterprise Standards - Environment & Secrets
+.env*
+!.env.example
+config.local.*
+secrets/
+
+# Enterprise Standards - IDE/OS
+.vscode/
+.idea/
+.DS_Store
+CLAUDE.md
+AGENTS.md
+.claude/
+*.swp
+*.swo
+Thumbs.db
+
+# Enterprise Standards - Temporary & Logs
+*.log
+*.tmp
+*.temp
+.cache/
+.sass-cache/
+
+# Enterprise Standards - AI/ML Artifacts
+*.pkl
+*.joblib
+wandb/
+mlruns/
+.neptune/
+
+# Enterprise Standards - Audio Processing
+*.wav
+*.mp3
+*.flac
+*.m4a
+uploads/
+processed/
+temp/
+
+# Frontend Specific
+frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/.nuxt/
+
+# Backend Specific  
+backend/uploads/
+backend/processed/
+backend/logs/
+backend/venv/
+
+# PyTorch / TensorFlow / ONNX Models
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.pb
+*.h5
+*.tflite
+
+# Hugging Face cache
+.huggingface/
+transformers_cache/
+datasets_cache/
+
+# Checkpoint directories
+checkpoints/
+weights/
+/models/
+
+# Benchmark artifacts. The README links the clips in samples/opgan and samples/uvr, so
+# those two folders are tracked; the rest of samples/ stays out.
+samples/*
+!samples/opgan/
+!samples/uvr/
+!samples/opgan/*.wav
+!samples/uvr/*.wav
+metrics/
+
+# Training data (downloaded/generated audio)
+data/
+
+# Demo audio bundled with the frontend (exception to the *.wav rule above)
+!frontend/public/sample-noisy.wav
+!frontend/public/sample-restored.wav
+.vercel

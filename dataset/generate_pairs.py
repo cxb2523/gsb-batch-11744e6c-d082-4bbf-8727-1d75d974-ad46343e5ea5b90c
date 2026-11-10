@@ -1,0 +1,233 @@
+"""Generate paired noisy/clean training data.
+
+Takes clean audio frames and applies randomized analog degradation to
+create paired training examples for the OpGAN denoiser.
+
+Usage:
+    python -m dataset.generate_pairs data/clean_frames/ --output data/pairs/
+    python -m dataset.generate_pairs data/clean_frames/ --output data/pairs/ --variants 10
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import logging
+import os
+import tempfile
+from pathlib import Path
+
+import soundfile as sf
+
+from dataset.noise import random_degradation
+
+logger = logging.getLogger(__name__)
+
+
+def generate_pairs(
+    clean_dir: Path,
+    output_dir: Path,
+    variants_per_frame: int = 5,
+    snr_range: tuple[float, float] = (5.0, 30.0),
+    sr: int = 16_000,
+    base_seed: int | None = None,
+) -> int:
+    """Generate noisy/clean paired training data.
+
+    For each clean frame, generates N noisy variants with randomized
+    analog degradation. Saves pairs as:
+        output_dir/
+            clean/frame_name.wav
+            noisy/frame_name__v00.wav
+            noisy/frame_name__v01.wav
+            ...
+            metadata/frame_name__v0.json  (degradation params)
+
+    Args:
+        clean_dir: Directory containing clean .wav frames.
+        output_dir: Output directory for paired data.
+        variants_per_frame: Number of noisy variants per clean frame.
+        snr_range: Min/max SNR in dB for tape hiss.
+        sr: Expected sample rate of clean frames.
+        base_seed: Base seed for reproducible noise generation. Each
+            variant gets seed = base_seed + pair_index. None = random.
+
+    Returns:
+        Total number of pairs generated.
+    """
+    clean_out = output_dir / "clean"
+    noisy_out = output_dir / "noisy"
+    meta_out = output_dir / "metadata"
+
+    clean_out.mkdir(parents=True, exist_ok=True)
+    noisy_out.mkdir(parents=True, exist_ok=True)
+    meta_out.mkdir(parents=True, exist_ok=True)
+
+    clean_files = sorted(clean_dir.glob("*.wav"))
+
+    if not clean_files:
+        logger.warning("No .wav files found in %s", clean_dir)
+        return 0
+
+    logger.info(
+        "Generating %d variants for %d clean frames (= %d pairs)",
+        variants_per_frame,
+        len(clean_files),
+        variants_per_frame * len(clean_files),
+    )
+
+    total_pairs = 0
+
+    for clean_path in clean_files:
+        try:
+            clean_audio, file_sr = sf.read(clean_path, dtype="float32")
+        except Exception as e:
+            logger.warning("Failed to read %s: %s", clean_path.name, e)
+            continue
+
+        if file_sr != sr:
+            logger.warning(
+                "Skipping %s: expected %d Hz, got %d Hz",
+                clean_path.name,
+                sr,
+                file_sr,
+            )
+            continue
+
+        stem = clean_path.stem
+
+        # Copy clean frame to output
+        clean_dest = clean_out / clean_path.name
+        if not clean_dest.exists():
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{clean_path.stem}.", suffix=".wav.tmp", dir=clean_out
+            )
+            os.close(tmp_fd)
+            try:
+                sf.write(tmp_path, clean_audio, sr, format="WAV", subtype="FLOAT")
+                Path(tmp_path).replace(clean_dest)
+            except BaseException:  # broad: catches Ctrl+C so temp file is removed before re-raising
+                Path(tmp_path).unlink(missing_ok=True)
+                raise
+
+        # Generate noisy variants
+        for v in range(variants_per_frame):
+            variant_seed = (base_seed + total_pairs) if base_seed is not None else None
+
+            noisy_audio, params = random_degradation(
+                clean_audio,
+                sr,
+                snr_range=snr_range,
+                seed=variant_seed,
+            )
+
+            variant_name = f"{stem}__v{v:02d}"
+            noisy_path = noisy_out / f"{variant_name}.wav"
+            meta_path = meta_out / f"{variant_name}.json"
+
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{variant_name}.", suffix=".wav.tmp", dir=noisy_out
+            )
+            os.close(tmp_fd)
+            try:
+                sf.write(tmp_path, noisy_audio, sr, format="WAV", subtype="FLOAT")
+                Path(tmp_path).replace(noisy_path)
+            except BaseException:  # broad: catches Ctrl+C so temp file is removed before re-raising
+                Path(tmp_path).unlink(missing_ok=True)
+                raise
+
+            # Save degradation params for reproducibility
+            meta = {
+                "clean_frame": clean_path.name,
+                "variant": v,
+                "seed": variant_seed,
+                "params": dataclasses.asdict(params),
+            }
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f".{variant_name}.", suffix=".json.tmp", dir=meta_out
+            )
+            os.close(tmp_fd)
+            try:
+                with open(tmp_path, "w") as f:
+                    json.dump(meta, f, indent=2)
+                Path(tmp_path).replace(meta_path)
+            except OSError as e:
+                Path(tmp_path).unlink(missing_ok=True)
+                noisy_path.unlink(missing_ok=True)
+                logger.error("Failed to write metadata for %s: %s", variant_name, e)
+                raise
+
+            total_pairs += 1
+
+            if total_pairs % 500 == 0:
+                logger.info("Generated %d pairs so far...", total_pairs)
+
+    logger.info("Done: %d total pairs in %s", total_pairs, output_dir)
+    return total_pairs
+
+
+def main() -> None:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(description="Generate paired noisy/clean training data.")
+    parser.add_argument(
+        "clean_dir",
+        type=Path,
+        help="Directory containing clean .wav frames",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/pairs"),
+        help="Output directory for paired data (default: data/pairs/)",
+    )
+    parser.add_argument(
+        "--variants",
+        type=int,
+        default=5,
+        help="Number of noisy variants per clean frame (default: 5)",
+    )
+    parser.add_argument(
+        "--snr-min",
+        type=float,
+        default=5.0,
+        help="Minimum SNR in dB (default: 5.0 = heavy noise)",
+    )
+    parser.add_argument(
+        "--snr-max",
+        type=float,
+        default=30.0,
+        help="Maximum SNR in dB (default: 30.0 = mild noise)",
+    )
+    parser.add_argument(
+        "--sr",
+        type=int,
+        default=16_000,
+        help="Expected sample rate (default: 16000)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Base seed for reproducible noise generation (default: random)",
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    generate_pairs(
+        args.clean_dir,
+        args.output,
+        variants_per_frame=args.variants,
+        snr_range=(args.snr_min, args.snr_max),
+        sr=args.sr,
+        base_seed=args.seed,
+    )
+
+
+if __name__ == "__main__":
+    main()

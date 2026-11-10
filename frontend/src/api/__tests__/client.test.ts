@@ -1,0 +1,551 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { uploadAudio, getJobStatus, getDownloadUrl, pollUntilDone, HttpError } from '../client'
+
+vi.stubEnv('VITE_API_URL', '/api/v1')
+
+function mockFetchResponse(data: unknown, ok = true, status = 200): void {
+  globalThis.fetch = vi.fn().mockResolvedValueOnce({
+    ok,
+    status,
+    json: () => Promise.resolve(data),
+  })
+}
+
+describe('uploadAudio', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('sends file as FormData and returns response', async () => {
+    const mockResponse = { job_id: 'abc-123', status: 'queued', message: 'Uploaded' }
+    mockFetchResponse(mockResponse)
+
+    const file = new File(['audio data'], 'test.wav', { type: 'audio/wav' })
+    const result = await uploadAudio(file)
+
+    expect(result).toEqual(mockResponse)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/denoise'),
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('throws on non-ok response', async () => {
+    mockFetchResponse({ detail: 'File too large' }, false, 413)
+
+    const file = new File(['data'], 'test.wav', { type: 'audio/wav' })
+    await expect(uploadAudio(file)).rejects.toThrow('File too large')
+  })
+
+  it('throws generic message when error response has no detail', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.reject(new Error('parse error')),
+    })
+
+    const file = new File(['data'], 'test.wav', { type: 'audio/wav' })
+    await expect(uploadAudio(file)).rejects.toThrow('Upload failed')
+  })
+
+  it('falls back to status code when detail field is missing', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({}),
+    })
+
+    const file = new File(['data'], 'test.wav', { type: 'audio/wav' })
+    await expect(uploadAudio(file)).rejects.toThrow('Upload failed (422)')
+  })
+
+  it('passes AbortSignal to fetch', async () => {
+    const mockResponse = { job_id: 'abc', status: 'queued', message: 'ok' }
+    mockFetchResponse(mockResponse)
+
+    const controller = new AbortController()
+    const file = new File(['data'], 'test.wav', { type: 'audio/wav' })
+    await uploadAudio(file, controller.signal)
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+})
+
+describe('getJobStatus', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('fetches status for given job ID', async () => {
+    const mockStatus = {
+      job_id: 'abc-123',
+      status: 'processing',
+      progress: 50,
+      message: 'Processing...',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+    mockFetchResponse(mockStatus)
+
+    const result = await getJobStatus('abc-123')
+    expect(result).toEqual(mockStatus)
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/status/abc-123'),
+      expect.any(Object),
+    )
+  })
+
+  it('throws on non-ok response', async () => {
+    mockFetchResponse({ detail: 'Not found' }, false, 404)
+    await expect(getJobStatus('bad-id')).rejects.toThrow('Not found')
+  })
+
+  it('falls back to status code when detail field is missing', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: () => Promise.resolve({}),
+    })
+    await expect(getJobStatus('abc')).rejects.toThrow('Status check failed (502)')
+  })
+
+  it('throws an HttpError that carries the response status', async () => {
+    mockFetchResponse({ detail: 'Too many requests' }, false, 429)
+    const error = await getJobStatus('abc').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(HttpError)
+    expect((error as HttpError).status).toBe(429)
+    expect((error as HttpError).message).toBe('Too many requests')
+  })
+
+  it('passes AbortSignal to fetch', async () => {
+    const mockStatus = {
+      job_id: 'abc',
+      status: 'processing',
+      progress: 0,
+      message: 'Working',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+    mockFetchResponse(mockStatus)
+
+    const controller = new AbortController()
+    await getJobStatus('abc', controller.signal)
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+})
+
+describe('getDownloadUrl', () => {
+  it('returns correct download URL with default wav format', () => {
+    const url = getDownloadUrl('abc-123')
+    expect(url).toContain('/download/abc-123?format=wav')
+  })
+
+  it('includes the requested format', () => {
+    const url = getDownloadUrl('abc-123', 'mp3')
+    expect(url).toContain('/download/abc-123?format=mp3')
+  })
+})
+
+describe('pollUntilDone', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('resolves when status is completed', async () => {
+    const completedStatus = {
+      job_id: 'abc',
+      status: 'completed' as const,
+      progress: 100,
+      message: 'Done',
+      completed_at: '2026-01-01',
+      download_url: '/download/abc',
+      processing_time: 5.0,
+    }
+    mockFetchResponse(completedStatus)
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const result = await promise
+
+    expect(result).toEqual(completedStatus)
+    expect(onUpdate).toHaveBeenCalledWith(completedStatus)
+  })
+
+  it('rejects when status is failed', async () => {
+    const failedStatus = {
+      job_id: 'abc',
+      status: 'failed' as const,
+      progress: 0,
+      message: 'Processing error',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+    mockFetchResponse(failedStatus)
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+
+    // Attach the catch handler before advancing timers to avoid unhandled rejection
+    const rejection = promise.catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('Processing error')
+  })
+
+  it('polls multiple times before completing', async () => {
+    const processingStatus = {
+      job_id: 'abc',
+      status: 'processing' as const,
+      progress: 50,
+      message: 'Working...',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+    const completedStatus = {
+      job_id: 'abc',
+      status: 'completed' as const,
+      progress: 100,
+      message: 'Done',
+      completed_at: '2026-01-01',
+      download_url: '/download/abc',
+      processing_time: 5.0,
+    }
+
+    // First call returns processing, second returns completed
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(processingStatus) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(completedStatus) })
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+
+    // First poll: processing
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onUpdate).toHaveBeenCalledWith(processingStatus)
+
+    // Second poll after interval
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result).toEqual(completedStatus)
+    expect(onUpdate).toHaveBeenCalledTimes(2)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects on network error during polling', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+    const rejection = promise.catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error.message).toBe('Failed to fetch')
+  })
+
+  it('rejects when aborted mid-poll', async () => {
+    const controller = new AbortController()
+    const abortError = new DOMException('The operation was aborted', 'AbortError')
+    globalThis.fetch = vi.fn().mockRejectedValueOnce(abortError)
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate, controller.signal)
+    const rejection = promise.catch((e: unknown) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as DOMException).name).toBe('AbortError')
+  })
+
+  it('rejects when aborted between polls', async () => {
+    const processingStatus = {
+      job_id: 'abc',
+      status: 'processing' as const,
+      progress: 50,
+      message: 'Working...',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+
+    // First poll succeeds with processing, second never happens (aborted)
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(processingStatus) })
+
+    const controller = new AbortController()
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate, controller.signal)
+    const rejection = promise.catch((e: unknown) => e)
+
+    // First poll completes: status is processing, setTimeout scheduled
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onUpdate).toHaveBeenCalledWith(processingStatus)
+
+    // Abort before the next poll fires
+    controller.abort()
+
+    await vi.advanceTimersByTimeAsync(1500)
+    const error = await rejection
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as DOMException).name).toBe('AbortError')
+  })
+
+  it('rejects when onUpdate callback throws on completed', async () => {
+    const completedStatus = {
+      job_id: 'abc',
+      status: 'completed' as const,
+      progress: 100,
+      message: 'Done',
+      completed_at: '2026-01-01',
+      download_url: '/download/abc',
+      processing_time: 5.0,
+    }
+    mockFetchResponse(completedStatus)
+
+    const onUpdate = vi.fn().mockImplementation(() => {
+      throw new Error('render crashed')
+    })
+    const promise = pollUntilDone('abc', onUpdate)
+    const rejection = promise.catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('render crashed')
+  })
+
+  it('rejects when onUpdate throws mid-sequence and stops polling', async () => {
+    const processingStatus = {
+      job_id: 'abc',
+      status: 'processing' as const,
+      progress: 50,
+      message: 'Working...',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(processingStatus) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(processingStatus) })
+
+    const onUpdate = vi.fn().mockImplementation(() => {
+      throw new Error('state update failed')
+    })
+    const promise = pollUntilDone('abc', onUpdate)
+    const rejection = promise.catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error.message).toBe('state update failed')
+    // Should not have scheduled a second poll
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects after MAX_POLL_DURATION timeout', async () => {
+    const processingStatus = {
+      job_id: 'abc',
+      status: 'processing' as const,
+      progress: 50,
+      message: 'Working...',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(processingStatus),
+    })
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+    const rejection = promise.catch((e: Error) => e)
+
+    // Advance past the 5-minute timeout (300,000ms)
+    await vi.advanceTimersByTimeAsync(301_500)
+    const error = await rejection
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('Processing timed out')
+  })
+
+  it('rejects on unknown job status', async () => {
+    const unknownStatus = {
+      job_id: 'abc',
+      status: 'exploded' as unknown as 'processing',
+      progress: 0,
+      message: 'Boom',
+      completed_at: null,
+      download_url: null,
+      processing_time: null,
+    }
+    mockFetchResponse(unknownStatus)
+
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+    const rejection = promise.catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('Unexpected job status: exploded')
+  })
+
+  it('rejects immediately if signal already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    const onUpdate = vi.fn()
+    await expect(
+      pollUntilDone('abc', onUpdate, controller.signal),
+    ).rejects.toThrow('aborted')
+  })
+})
+
+describe('pollUntilDone on HTTP 429', () => {
+  const throttled = { ok: false, status: 429, json: () => Promise.resolve({}) }
+
+  function statusResponse(status: 'processing' | 'completed'): object {
+    const body = {
+      job_id: 'abc',
+      status,
+      progress: status === 'completed' ? 100 : 50,
+      message: status,
+      completed_at: status === 'completed' ? '2026-01-01' : null,
+      download_url: status === 'completed' ? '/download/abc' : null,
+      processing_time: status === 'completed' ? 5.0 : null,
+    }
+    return { ok: true, status: 200, json: () => Promise.resolve(body) }
+  }
+
+  // Records the fake-clock time of each fetch, so tests can read the waits between them.
+  function fetchSequence(responses: object[], fallback: object = throttled): number[] {
+    const calls: number[] = []
+    let next = 0
+    globalThis.fetch = vi.fn().mockImplementation(() => {
+      calls.push(Date.now())
+      const response = next < responses.length ? responses[next] : fallback
+      next += 1
+      return Promise.resolve(response)
+    })
+    return calls
+  }
+
+  function gaps(calls: number[]): number[] {
+    return calls.slice(1).map((t, i) => t - calls[i])
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('keeps polling after a 429 and resolves when the job completes', async () => {
+    fetchSequence([throttled, statusResponse('completed')])
+    const onUpdate = vi.fn()
+    const promise = pollUntilDone('abc', onUpdate)
+
+    await vi.advanceTimersByTimeAsync(1499)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    const result = await promise
+    expect(result.status).toBe('completed')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('doubles the wait after each consecutive 429, up to 10 s', async () => {
+    const calls = fetchSequence([])
+    const controller = new AbortController()
+    const rejection = pollUntilDone('abc', vi.fn(), controller.signal).catch((e: unknown) => e)
+
+    await vi.advanceTimersByTimeAsync(30_500)
+    controller.abort()
+    await rejection
+
+    expect(gaps(calls)).toEqual([1500, 3000, 6000, 10_000, 10_000])
+  })
+
+  it('goes back to the normal interval after a successful status', async () => {
+    const calls = fetchSequence([
+      throttled,
+      throttled,
+      statusResponse('processing'),
+      throttled,
+      statusResponse('completed'),
+    ])
+    const promise = pollUntilDone('abc', vi.fn())
+
+    await vi.advanceTimersByTimeAsync(7500)
+    await promise
+
+    expect(gaps(calls)).toEqual([1500, 3000, 1500, 1500])
+  })
+
+  it('still times out when every check is throttled', async () => {
+    fetchSequence([])
+    const rejection = pollUntilDone('abc', vi.fn()).catch((e: Error) => e)
+
+    await vi.advanceTimersByTimeAsync(311_000)
+    const error = await rejection
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toBe('Processing timed out')
+  })
+
+  it('still rejects at once on other HTTP errors', async () => {
+    fetchSequence([], { ok: false, status: 500, json: () => Promise.resolve({ detail: 'Internal error' }) })
+    const rejection = pollUntilDone('abc', vi.fn()).catch((e: unknown) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    const error = await rejection
+    expect(error).toBeInstanceOf(HttpError)
+    expect((error as HttpError).status).toBe(500)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects with AbortError when aborted during a backoff wait', async () => {
+    fetchSequence([])
+    const controller = new AbortController()
+    const rejection = pollUntilDone('abc', vi.fn(), controller.signal).catch((e: unknown) => e)
+
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(20_000)
+
+    const error = await rejection
+    expect(error).toBeInstanceOf(DOMException)
+    expect((error as DOMException).name).toBe('AbortError')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+  })
+})
