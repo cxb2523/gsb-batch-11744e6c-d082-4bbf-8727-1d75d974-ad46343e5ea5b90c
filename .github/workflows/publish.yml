@@ -1,0 +1,67 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write   # REQUIRED for npm provenance (OIDC)
+  contents: read
+
+jobs:
+  publish:
+    name: Publish packages to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Update npm for trusted publishing
+        run: npm install --global npm@12.0.2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm run build
+
+      - name: Run tests
+        run: pnpm run test
+
+      - name: Require the shared core release before publishing the adapters
+        shell: bash
+        run: |
+          set -euo pipefail
+          core_version=$(node -p "require('./packages/core/package.json').dependencies['@npm-safe/core']")
+          npm view "@npm-safe/core@${core_version}" version
+
+      - name: Publish unpublished package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package_dir in packages/core packages/tool-npm-safe; do
+            package_name=$(node -p "require('./${package_dir}/package.json').name")
+            package_version=$(node -p "require('./${package_dir}/package.json').version")
+            if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+              echo "Skipping ${package_name}@${package_version}: already published"
+            else
+              package_slug="${package_name//@/}"
+              package_slug="${package_slug//\//-}"
+              tarball_path="${RUNNER_TEMP}/${package_slug}-${package_version}.tgz"
+              pnpm --dir "${package_dir}" pack --out "${tarball_path}"
+              npm publish "${tarball_path}"
+            fi
+          done

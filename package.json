@@ -1,0 +1,17 @@
+{
+  "name": "npm-safe-dsh",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": { "node": ">=24.9" },
+  "scripts": { "typecheck": "pnpm -r run typecheck", "build": "pnpm -r run build", "test": "pnpm -r run test" },
+  "devDependencies": { "@npm-safe/core-dsh": "workspace:^" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nisconder/npm-safe-forDSH.git"
+  },
+  "homepage": "https://github.com/nisconder/npm-safe-forDSH#readme",
+  "bugs": {
+    "url": "https://github.com/nisconder/npm-safe-forDSH/issues"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+lib/
+coverage/
+*.db
+.env
+.omo/
+.codegraph/
+.DS_Store
+.smoke-project/
+.npm-cache/
+.dlx-store/
+.dsh-home/
+release-assets/
