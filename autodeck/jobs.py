@@ -1,0 +1,175 @@
+"""Rolling-window background worker: downloads + analyses the songs the mix needs next."""
+import logging
+import random
+import threading
+from collections.abc import Callable
+
+from . import analyze, config, fetch, genre, library, stems
+from .library import Song
+
+log = logging.getLogger(__name__)
+
+
+class Worker:
+    # ponytail: one thread, one song at a time. If prep falls behind playback,
+    # use 2 threads (download in parallel with analyze).
+    def __init__(self, get_state: Callable[[], tuple[list[Song], list[str], str, set[str]]],
+                 on_change: Callable[[], None] = lambda: None, seed: int = 0,
+                 stems_wanted: Callable[[], list[str]] = list):
+        # get_state -> (pool, upcoming ids, active genre, played ids); the server owns all four.
+        self.get_state = get_state
+        self.on_change = on_change
+        # Ready songs that should have vocal/instrumental stems, most urgent first (ON AIR, then the
+        # next few). Separate from get_state: stems are optional extras, not part of "ready".
+        self.stems_wanted = stems_wanted
+        # Songs whose separation failed this run: never retried in a loop (a restart retries).
+        self.stems_failed: set[str] = set()
+        # Fixed seed per instance: the "rest of the queue" order is random but reproducible in tests.
+        self._rng = random.Random(seed)
+        self._wake = threading.Event()
+        self._stop = False
+        self._thread: threading.Thread | None = None
+
+    # --- selection (pure apart from the seeded RNG) ---------------------------
+    def wanted(self, pool: list[Song], upcoming: list[str], genre_name: str,
+               played: set[str] = frozenset()) -> list[str]:
+        """Ids to prepare, in priority order: upcoming, genre matches, the rest. Max WINDOW_SIZE.
+
+        Look-ahead cap: once WINDOW_SIZE ready, unplayed songs of the active genre exist,
+        only not-yet-ready upcoming songs are prepared (the spec says ~10 ahead, not the pool).
+        """
+        by_id = {s.id: s for s in pool}
+        # downloading/analyzing count as todo: after a crash they'd otherwise be stuck
+        # forever; both steps are resumable (download is idempotent, analysis re-runs).
+        todo = ("queued", "downloading", "analyzing")  # ready/failed never need work
+        out = [i for i in upcoming if i in by_id and by_id[i].status in todo]
+        ahead = sum(1 for s in pool if s.status == "ready" and s.id not in played
+                    and (genre_name == config.ANY_GENRE or s.effective_genre() == genre_name))
+        total = sum(1 for s in pool if s.status == "ready" and s.id not in played)
+        if ahead >= config.WINDOW_SIZE:
+            return out[: config.WINDOW_SIZE]
+        seen = set(out)
+        queued = [s for s in pool if s.status in todo and s.id not in seen]
+        names = config.genres()
+
+        def matches(s: Song) -> bool:
+            # Metadata hint covers songs we haven't analysed yet (no genre_guess).
+            return genre_name in (s.effective_genre(), genre.metadata_hint(s.title, s.channel, names))
+
+        hit = [s.id for s in queued if matches(s)]
+        if total >= config.MAX_READY_AHEAD:
+            # The hard cap stops blind hunting through the pool, not songs KNOWN to belong to
+            # the active genre/mood (labelled at import): those still fill its window.
+            return (out + hit)[: config.WINDOW_SIZE]
+        rest = [s.id for s in queued if not matches(s)]
+        self._rng.shuffle(rest)
+        return (out + hit + rest)[: config.WINDOW_SIZE]
+
+    def next_job(self, pool: list[Song], upcoming: list[str], genre_name: str,
+                 played: set[str] = frozenset()) -> tuple[str, str] | None:
+        """("prep", id) | ("stems", id) | None. Selection is purely status-based: every _prep ends
+        ready/failed, so no "done" set is needed and retry/re-add (status back to queued) just works.
+
+        Stems are low priority: the next songs' download + analysis always come first, so a
+        separation (~17 s on MPS) never delays the next mix being ready. They do go before filling
+        the rest of the window, or a big library would keep them waiting forever."""
+        ids = self.wanted(pool, upcoming, genre_name, played)
+        if not (ids and ids[0] in upcoming):
+            sid = self.next_stems()
+            if sid:
+                return "stems", sid
+        return ("prep", ids[0]) if ids else None
+
+    # --- thread control --------------------------------------------------------
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True, name="autodeck-worker")
+        self._thread.start()
+
+    def poke(self) -> None:
+        """Server calls this on add / genre change so the worker re-reads state now."""
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._stop = True
+        self._wake.set()
+        if self._thread:
+            # Bounded: a download/analyze in flight can't be interrupted. The thread is a
+            # daemon, so giving up here never blocks interpreter exit.
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop:
+            try:
+                pool, upcoming, active, played = self.get_state()
+                job = self.next_job(pool, upcoming, active, played)
+                if job is None:
+                    # Idle: sleep until poked; the timeout is a safety net for missed pokes.
+                    self._wake.wait(2)
+                    self._wake.clear()
+                    continue
+                kind, sid = job
+                if kind == "stems":
+                    self._stems(sid)
+                else:
+                    self._prep(next(s for s in pool if s.id == sid))
+            except Exception:  # never let the thread die
+                log.exception("worker loop error")
+                self._wake.wait(2)
+
+    # --- stems (low priority, see _run) -----------------------------------------
+    def next_stems(self) -> str | None:
+        return next((i for i in self.stems_wanted() if i not in self.stems_failed and not stems.has(i)), None)
+
+    def _stems(self, sid: str) -> None:
+        try:
+            stems.separate(sid)
+            stems.prune(set(self.stems_wanted()))
+        except Exception:
+            # A failed split only means "no Voice/Beat, no Vocal swap" for this song: playback
+            # never depends on stems, so log it, remember it, and carry on.
+            log.exception("stems failed for %s", sid)
+            self.stems_failed.add(sid)
+        self.on_change()
+
+    # --- one song --------------------------------------------------------------
+    def _set(self, song: Song, status: str, error: str | None = None, analysis=None) -> None:
+        with library.LOCK:  # short: only field updates + save
+            song.status, song.error = status, error
+            if analysis is not None:
+                song.analysis = analysis
+            # The server may have removed this song during a long download; saving now
+            # would resurrect its song.json. Identity check against the live pool.
+            if any(s is song for s in self.get_state()[0]):
+                library.save_song(song)
+        self.on_change()
+
+    def _peaks(self, audio) -> None:
+        out = library.song_dir(audio.parent.name) / "peaks.json"
+        if not out.exists():
+            analyze.write_peaks(audio, out)
+
+    def _prep(self, song: Song) -> None:
+        audio = library.audio_path(song.id)
+        saved = library.load_song(song.id) if audio.exists() else None
+        # load_song drops analyses with a stale version, so a hit here is current.
+        if saved and saved.analysis:
+            try:
+                self._peaks(audio)
+            except Exception:
+                log.exception("peaks failed for %s", song.id)
+            self._set(song, "ready", analysis=saved.analysis)
+            return
+        try:
+            self._set(song, "downloading")
+            audio = fetch.download(song)
+            self._set(song, "analyzing")
+            result = analyze.analyze(audio, song.title, song.channel)
+            self._peaks(audio)
+        except fetch.FetchError as e:
+            self._set(song, "failed", str(e))
+            return
+        except Exception as e:
+            log.exception("prep failed for %s", song.id)
+            self._set(song, "failed", f"analysis failed: {e}"[:200])
+            return
+        self._set(song, "ready", analysis=result)

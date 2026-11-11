@@ -1,0 +1,52 @@
+[project]
+name = "autodeck"
+version = "0.3.1"
+requires-python = ">=3.12"
+dependencies = [
+    # From PyPI, not git: the standalone app installs with `uv sync` on Macs that have no git.
+    "beat-this==1.1.0",
+    # Vocal / instrumental stems (autodeck/stems.py, htdemucs). Resolves to 4.1.0 on Apple Silicon (the
+    # only standalone target); not pinned because 4.1.0 needs numpy<2 on Intel Macs, which librosa rules out.
+    "demucs>=4.0.1",
+    "deno>=2.9.8",  # official deno binary as a wheel: yt-dlp's YouTube challenge solver
+    "essentia==2.1b6.dev1389",
+    "fastapi>=0.162.0",
+    "faster-whisper>=1.2.1",
+    "librosa>=1.0.0",
+    "mcp>=1.10",
+    "onnxruntime>=1.31.1",
+    "pyloudnorm>=0.2.0",
+    "imageio-ffmpeg>=0.7.0",  # static ffmpeg binary as a wheel: yt-dlp remux + audio decode fallback
+    # Calls the rubberband CLI. pylibrb (in-process) can't pass a keyframe map (its binding rejects
+    # every dict), and render's blend-then-ease needs one; the standalone app ships the official CLI.
+    "pyrubberband>=0.4.0",
+    "pywebview>=6.2.1",
+    "soundfile>=0.14.0",
+    "uvicorn>=0.54.0",
+    "yt-dlp>=2026.10.26",
+    "yt-dlp-ejs>=0.8.0",
+]
+
+[tool.uv]
+# Anaconda's python is first on PATH here; its builds break essentia wheel selection. Use uv-managed CPython only.
+python-preference = "only-managed"
+# essentia dev1438 only ships cp314 wheels; dev1389 is the newest with cp312 macOS arm64.
+
+[tool.setuptools]
+packages = ["autodeck"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# network tests hit real YouTube; opt in with: pytest -m network
+addopts = "-m 'not network'"
+markers = [
+    "slow: heavy tests (real audio analysis / rendering)",
+    "network: tests that hit the real network (YouTube)",
+]
+
+[dependency-groups]
+dev = ["pytest>=9.2.0"]
+# Installed first by the standalone app's setup (autodeck/standalone.py): just enough to
+# open the "Setting up autodeck" window before the rest (~600 MB download).
+ui = ["pywebview>=6.2.1"]

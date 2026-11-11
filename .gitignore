@@ -1,0 +1,16 @@
+*.flac
+*.wav
+*.m4a
+*.opus
+cookies*
+.env*
+.superpowers/
+__pycache__/
+.venv/
+.pytest_cache/
+dist/
+build/
+*.dmg
+.DS_Store
+# YouTube thumbnails used as examples in design/autodeck.pen: kept locally, never committed (copyright is the uploaders')
+design/thumbs/
