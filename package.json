@@ -13,7 +13,7 @@
     "postinstall": "node scripts/r-packages.mjs",
     "check": "tsc --noEmit",
     "sample": "node --import tsx tests/sample-project.ts",
-    "test": "node --import tsx tests/checks.ts && node --import tsx tests/reference.ts",
+    "test": "node --import tsx tests/checks.ts && node --import tsx tests/diagnose.ts && node --import tsx tests/reference.ts",
     "format": "prettier --write ."
   },
   "dependencies": {
