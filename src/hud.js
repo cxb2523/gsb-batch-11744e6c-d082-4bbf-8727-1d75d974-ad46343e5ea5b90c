@@ -265,7 +265,7 @@ export function radio(who, text, opts = {}) {
   if (msg.prio >= 2) { radioQ.length = 0; if (rcur) rcur.t = 1e9; }
   if (msg.prio >= 1) radioQ.unshift(msg); else radioQ.push(msg);
 }
-export function clearRadio() { radioQ.length = 0; rcur = null; EL.radio.classList.remove('on'); }
+export function clearRadio() { radioQ.length = 0; rcur = null; EL.radio.classList.remove('on'); EL.rtext.textContent = ''; }
 
 function startRadio(m) {
   const C = CHARACTERS[m.who] || { name: m.who.toUpperCase(), role: '', color: '#fff' };

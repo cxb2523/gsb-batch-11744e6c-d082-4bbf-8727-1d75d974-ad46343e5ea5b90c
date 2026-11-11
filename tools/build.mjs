@@ -48,15 +48,41 @@ const options = {
   write: false,
   logLevel: 'warning',
   define: { __DEV__: dev ? 'true' : 'false' },
-  plugins: [{
-    name: 'html-writer',
-    setup(build) {
-      build.onEnd(result => {
-        if (result.errors.length) return;
-        try { writeHtml(result.outputFiles[0].text); } catch (e) { console.error(e); }
-      });
+  plugins: [
+    // Production builds must never ship the headless self-test. Two layers:
+    //  1. strip the install call from main.js (block delimited by markers)
+    //  2. replace selftest.js itself with an empty stub so nothing is bundled
+    !dev && {
+      name: 'strip-selftest',
+      setup(build) {
+        build.onResolve({ filter: /\/selftest\.js$/ }, () => ({
+          path: 'selftest-stub.js',
+          namespace: 'selftest-stub',
+        }));
+        build.onLoad({ filter: /.*/, namespace: 'selftest-stub' }, () => ({
+          contents: 'export function installSelfTest(){ return function(){ return { ok:false, results:[] }; }; }',
+          loader: 'js',
+        }));
+        build.onLoad({ filter: /[/\\]main\.js$/ }, async (args) => {
+          const src = await fs.promises.readFile(args.path, 'utf8');
+          const out = src.replace(
+            /\/\/ @@SELFTEST_START@@[\s\S]*?\/\/ @@SELFTEST_END@@/g,
+            '/* self-test stripped in production build */',
+          );
+          return { contents: out, loader: 'js', resolveDir: path.dirname(args.path) };
+        });
+      },
     },
-  }],
+    {
+      name: 'html-writer',
+      setup(build) {
+        build.onEnd(result => {
+          if (result.errors.length) return;
+          try { writeHtml(result.outputFiles[0].text); } catch (e) { console.error(e); }
+        });
+      },
+    },
+  ].filter(Boolean),
 };
 
 if (watch) {

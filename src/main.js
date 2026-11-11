@@ -27,6 +27,9 @@ import {
   updateResults, skipResults, resetHUDCache, setGameOverText, clearMarkers,
 } from './hud.js';
 import { AudioSys } from './audio.js';
+// @@SELFTEST_START@@
+import { installSelfTest } from './selftest.js';
+// @@SELFTEST_END@@
 
 // Resolve on the next animation frame, or after a short timeout when the tab is in the background.
 const nextFrame = () => new Promise(r => { let done = false; const f = () => { if (!done) { done = true; r(); } }; requestAnimationFrame(f); setTimeout(f, 60); });
@@ -97,7 +100,7 @@ async function boot() {
   enterTitle(true);
   requestAnimationFrame(loop);
   if (__DEV__) Object.assign(window, {
-    G, BOSS, WING, ship, emit, Input, POST, GFX, THREE,
+    G, BOSS, WING, ship, emit, Input, POST, GFX, THREE, MENU_CB,
     __jump: (d) => { G.run = G.run || newRun(); hideScreens(); setupStage(d, false); },
     __start: () => startMission(),
     CAMP, progress,
@@ -164,6 +167,16 @@ async function boot() {
       return { d: Math.round(G.rail.d), hits: G.run.hits, shield: Math.round(G.run.shield), lives: G.run.lives, state: G.state, enemies: enemies.length };
     },
   });
+  // @@SELFTEST_START@@
+  // Headless regression self-test (see src/selftest.js). Reuses the exact frame
+  // pipeline and helpers above, so it exercises real input → state causality.
+  // The build strips this whole block (and the module import) in production.
+  window.__selftest = installSelfTest({
+    frame, jump: d => window.__jump(d), snap: () => window.__snap(), ship,
+    autoPauseOnBlur: () => autoPauseOnBlur(),
+    pause: () => pause(),
+  });
+  // @@SELFTEST_END@@
 }
 
 // Pause automatically when the page loses focus mid-mission.
@@ -175,7 +188,17 @@ if (__DEV__) {
   if (q.has('manual')) window.__manual = true;
   if (q.has('seed')) { const r0 = mulberry32(+q.get('seed') || 1); window.__rc = 0; Math.random = () => { window.__rc++; return r0(); }; }
 }
-window.addEventListener('blur', () => { if (G.state === 'play' && !S.intro && !manual()) pause(); });
+// Real window-blur handler, exported for the dev self-test so it can exercise
+// the production auto-pause path without flipping __manual (which would open a
+// race window for the requestAnimationFrame loop).
+function autoPauseOnBlur() {
+  // __blurTestBypass is a dev-only seam: manual stepping normally suppresses
+  // auto-pause by design, and the self-test must keep manual stepping on to
+  // block the rAF loop. The seam lets the test prove the pause logic itself.
+  const bypass = __DEV__ && window.__blurTestBypass;
+  if (G.state === 'play' && !S.intro && (!manual() || bypass)) pause();
+}
+window.addEventListener('blur', autoPauseOnBlur);
 document.addEventListener('visibilitychange', () => { if (document.hidden && G.state === 'play' && !S.intro && !manual()) pause(); });
 
 // Unlock audio on any genuine user gesture. (Test runs stay silent: sound effects are throttled in real time.)
@@ -706,7 +729,10 @@ function loop(now) {
   requestAnimationFrame(loop);
   let rdt = (now - last) / 1000;
   last = now;
-  if (manual()) return;
+  // Dev self-tests drive every frame manually through frame(); while the gate
+  // is engaged the rAF loop must never interleave a free-running frame, or
+  // deterministic scripts would pick up nondeterministic wall-clock frames.
+  if (manual() || (__DEV__ && window.__selftestActive)) return;
   if (!(rdt > 0)) rdt = 0.016;
   frame(Math.min(rdt, 0.05));
 }

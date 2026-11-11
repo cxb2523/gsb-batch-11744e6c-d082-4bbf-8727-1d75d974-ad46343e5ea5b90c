@@ -13,7 +13,9 @@
   "type": "module",
   "scripts": {
     "build": "node tools/build.mjs",
-    "dev": "node tools/build.mjs --watch"
+    "dev": "node tools/build.mjs --watch",
+    "selftest": "node tools/selftest-runner.mjs",
+    "selftest:fast": "node tools/selftest-runner.mjs --no-build"
   },
   "devDependencies": {
     "esbuild": "^0.25.10",

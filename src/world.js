@@ -418,6 +418,14 @@ function respawnCloud(c, d, spread) {
   c.alive = true;
 }
 
+// Return every cloud to the unspawned state, so the next world update respawns
+// the whole pool deterministically. Used when (re)entering a stage; without it
+// clouds spawned on an earlier run stay cached and seeded runs would consume
+// different amounts of Math.random despite identical scripts.
+export function resetClouds() {
+  for (const c of cloudData) { c.alive = false; c.x = 0; c.y = 0; c.z = 0; c.s = 0; c.r = 0; c.a = 0; }
+}
+
 const _cd = [];
 function updateClouds(d, cover) {
   const cam = G.camera.position;
@@ -485,6 +493,7 @@ export function useStageWorld(def) {
   water.visible = G.sea;
   clouds.visible = !SW.space && SW.clouds !== false;
   resetTerrain();
+  resetClouds();
 }
 
 export function setWorldAtmosphere(d) {
