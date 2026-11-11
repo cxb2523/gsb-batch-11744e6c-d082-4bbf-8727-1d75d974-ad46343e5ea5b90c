@@ -1,0 +1,6 @@
+node_modules
+dist
+old-code
+.yarn
+.astro
+**/.astro
