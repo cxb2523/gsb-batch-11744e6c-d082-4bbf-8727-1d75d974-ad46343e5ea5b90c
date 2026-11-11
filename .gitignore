@@ -1,0 +1,38 @@
+# Internal notes — never commit
+FIELD_NOTES.md
+.private/
+LICENSING_RESEARCH.md
+docs/DISTRIBUTION.md
+docs/plans/
+docs/brainstorms/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python artifacts (top-level only)
+__pycache__/
+*.py[cod]
+
+# Forensics runtime files (security-sensitive)
+.forensics-key
+.forensics-baseline.json
+
+# Devin CLI tooling artifact
+.devin/
+TORTURE-FINDINGS.md
+FIX-MANDATE.md
+*.patch
+review-*.md
+
+# Cursor install runtime artifact (written by scripts/cursor_install.py,
+# removed by --uninstall). Per-install state, never committed.
+install-manifest.json
+
+# Local test virtualenvs (never commit)
+.venv-test/
+.venv/

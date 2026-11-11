@@ -1,0 +1,3769 @@
+#!/usr/bin/env python3
+"""
+forensics_core.py - Core framework for repo-forensics v2
+Provides Finding dataclass, severity system, output formatting,
+correlation engine, and .forensicsignore support.
+
+Created by Alex Greenshpun
+"""
+
+import math
+import ast
+import os
+import re
+import sys
+import json
+import time
+import hashlib
+import fnmatch
+import subprocess
+import urllib.parse
+from collections import defaultdict
+from dataclasses import dataclass, asdict
+
+# --- Hardened git invocation -------------------------------------------------
+# A repository we are auditing controls its own .git/config and any config
+# files inside its tree. Several git config keys name an EXTERNAL PROGRAM that
+# git executes during ordinary read-only operations -- gpg.program (run by
+# `git log --show-signature` / the `%G?` pretty format), core.fsmonitor (run by
+# status/ls-files/index refresh), core.hooksPath hooks, core.sshCommand,
+# core.pager, diff.external, and the LFS filter.* commands. Merely reading a
+# hostile repo's history must never run code the repo supplies, so this is the
+# ONLY sanctioned way to invoke git in this codebase. Every exec-capable key is
+# overridden to an inert value with `-c` (which wins over the repo's config),
+# system/global config is disabled via env so nothing outside the overrides can
+# reintroduce an exec key, and gpg*.program is pointed at `false` as a second
+# line of defense for any signature-verifying invocation.
+_GIT_EXEC_CONFIG_OVERRIDES = (
+    "core.fsmonitor=",
+    "core.hooksPath=/dev/null",
+    "core.sshCommand=",
+    "core.pager=cat",
+    "core.editor=true",
+    "core.askpass=",
+    "credential.helper=",
+    "gpg.program=false",
+    "gpg.ssh.program=false",
+    "gpg.x509.program=false",
+    "diff.external=",
+    "filter.lfs.process=",
+    "filter.lfs.clean=",
+    "filter.lfs.smudge=",
+    "uploadpack.packObjectsHook=",
+    "safe.directory=*",
+)
+
+
+def _hardened_git_env():
+    """Minimal environment for a hardened git call.
+
+    Deliberately does NOT inherit the parent environment wholesale: it drops any
+    GIT_CONFIG_COUNT / GIT_CONFIG_KEY_* / GIT_* config-injection variables and
+    forces system+global config off, so the only config git sees is the inert
+    `-c` override set. PATH/HOME are preserved so git and coreutils resolve.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": "C.UTF-8",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+
+
+def run_git_hardened(repo_path, *git_args, timeout=15, check=False):
+    """Run a read-only git command that a hostile repo cannot turn into RCE.
+
+    Prepends the exec-capable-config overrides, uses the hardened env, and
+    swallows the ways a git call can fail (missing binary, non-zero exit,
+    timeout, OS error) by returning None. Callers pass only read-only
+    subcommands. This is the single choke point for every git subprocess in the
+    scanner; do not build a bare `["git", ...]` command anywhere else.
+    """
+    cmd = ["git"]
+    for override in _GIT_EXEC_CONFIG_OVERRIDES:
+        cmd += ["-c", override]
+    cmd += [str(a) for a in git_args]
+    try:
+        return subprocess.run(
+            cmd, cwd=repo_path, capture_output=True, text=True,
+            timeout=timeout, check=check, env=_hardened_git_env(),
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return None
+
+
+# --- Severity System ---
+SEVERITY = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+SEVERITY_COLORS = {
+    "critical": "\033[91m",  # bright red
+    "high": "\033[93m",      # yellow
+    "medium": "\033[96m",    # cyan
+    "low": "\033[37m",       # light gray
+}
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+
+# Severity -> default confidence fallback map (KTD-8). Any code path that
+# does not explicitly set confidence (legacy scanners, correlation-synthesized
+# findings) gets a severity-derived value here. Confidence is ADDITIVE: it
+# shapes verdict-tier messaging and adjudication only; severity still drives
+# the 0/1/2/99 exit-code contract (KTD-7).
+SEVERITY_CONFIDENCE = {
+    "critical": 0.95,
+    "high": 0.80,
+    "medium": 0.60,
+    "low": 0.40,
+}
+
+
+# --- Evidence Model (Track A / P0) ---
+# Every Finding carries an `evidence_class` in {direct, structural, inferred}
+# that records HOW the finding was established. The aggregation/report layer
+# uses it to cap severity: descriptions/mentions/comments (inferred) and pure
+# structural anomalies (structural) cannot exceed LOW; HIGH/CRITICAL requires
+# direct evidence. This keeps a malicious DIRECTIVE in a SKILL.md CRITICAL
+# (directive detectors set `direct`) while a README that merely DESCRIBES a
+# dangerous pattern is demoted to LOW (no false negatives on real directives,
+# no false positives on prose).
+EVIDENCE_CLASSES = ("direct", "structural", "inferred")
+
+# Directive-class detectors (spec): the four named directive families set
+# evidence_class=direct themselves. instruction-override is the prompt-injection
+# category (ST-PI-001 "Instruction override directive"); skill-poisoning is the
+# mcp-tool-injection category (ST-PI-014..016 tool/skill metadata poisoning);
+# memory-heist is the memory-heist-exfil category. A finding from any of these
+# is a real directive addressed at an agent, not a description, so it stays
+# eligible for HIGH/CRITICAL.
+DIRECTIVE_CATEGORIES = {
+    "prompt-injection",      # prompt-injection / instruction-override
+    "mcp-tool-injection",    # skill-poisoning
+    "memory-heist-exfil",    # memory-heist
+}
+
+# Scanners whose output can include agent-directed directives. Findings from
+# these scanners bypass the documentation/comment/string demotion when the
+# carrier file is an agent-instruction file (SKILL.md, CLAUDE.md, etc.), so
+# imperative categories that live outside the four named ones (update-channel,
+# sub-agent-spawn, prose-imperative, credential-path-directive, stealth,
+# scope-escalation, authority-framing) stay direct. A malicious update-channel
+# directive in a SKILL.md must NOT be demoted to LOW.
+DIRECTIVE_SCANNERS = {"skill_threats", "agent_skills", "mcp_security"}
+
+# Agent-instruction file basenames (uppercase, matched case-insensitively).
+# These are agent-executed instruction files, not human documentation. A
+# directive here is executable by the agent, so it must stay evidence_class=
+# direct and keep full severity. Mirrors the _AGENT_INSTRUCTION_FILES set in
+# scan_skill_threats.py.
+_AGENT_INSTRUCTION_BASENAMES = {
+    "SKILL.MD", "CLAUDE.MD", "AGENTS.MD", ".CURSORRULES", ".WINDSURFRULES",
+    "ROUTINE.MD", "HEARTBEAT.MD", "SOUL.MD", "INSTRUCTIONS.MD",
+}
+_COPILOT_INSTRUCTIONS_SUFFIX = ".github/copilot-instructions.md"
+
+# Scanners that detect repo STRUCTURE / metadata anomalies rather than direct
+# malicious content (manifest drift, integrity drift, provenance gaps, dead
+# anchors, oversize). Their findings are `structural` and cap at LOW in the
+# report layer unless corroborated by a direct leaf.
+STRUCTURAL_SCANNERS = {
+    "manifest_drift", "integrity", "provenance", "dead_anchors", "oversize",
+}
+
+# Documentation extensions: a finding from a non-directive scanner that fires
+# inside one of these is reading prose (a description / mention), not an active
+# directive or executable code, so it is `inferred` and caps at LOW.
+_DOC_EXTS = {".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".asciidoc"}
+
+# Documentation basenames (case-insensitive). A finding whose file basename
+# matches one of these is inside documentation, not executable code.
+_DOC_BASENAMES = {
+    "readme", "security", "privacy", "changelog", "license", "licence",
+    "authors", "contributors", "code_of_conduct", "contributing",
+}
+
+# Path segments that identify documentation directories.
+_DOC_PATH_SEGMENTS = {"docs", "doc", "documentation"}
+
+# Executable / interpreted source extensions. A file with one of these RUNS
+# regardless of the directory it lives in or its basename, so it is never
+# documentation for evidence purposes. This is the CANONICAL set: _context_gate
+# aliases to it (`_CODE_EXTS = core._CODE_EXTS`) so the two evidence engines can
+# never drift — the drift is exactly what shipped the docs/helper.py and
+# readme.php suppression bypasses. Includes web-executable carriers
+# (.php/.jsp/.asp/.hta/.cgi) a web server runs from any folder.
+_CODE_EXTS = {
+    ".py", ".pyw", ".pyi",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    ".rb", ".go", ".rs",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd",
+    ".php", ".phtml", ".pl", ".pm", ".psgi", ".cgi",
+    ".java", ".kt", ".kts", ".scala", ".groovy",
+    ".cs", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+    ".swift", ".lua", ".r", ".jl", ".dart", ".ex", ".exs",
+    ".vbs", ".hta", ".jsp", ".jspx", ".asp", ".aspx",
+    # Shell carriers folded in from _SHELL_CARRIER_EXTS so every engine + the
+    # doc-carrier agree these EXECUTE (a folder name must never grade them down
+    # while _is_comment_or_string treats them as never-inert). Additive only.
+    ".ksh", ".command", ".bashrc", ".profile",
+    # Additional executable/interpreted carriers a runner executes from any
+    # folder: Gradle build scripts, AppleScript/OSA, Windows Script Host,
+    # AWK, AutoHotkey, and Nmap NSE scripts.
+    ".gradle", ".scpt", ".applescript", ".osascript", ".wsf", ".awk",
+    ".ahk", ".nse",
+}
+
+# Operational-data (config) extensions. A live miner/exfil config is data, not
+# prose, so the basename/path-segment doc heuristics must NOT demote it either
+# (a payload in docs/config.json is still operational). Canonical; the gate
+# aliases to it.
+_CONFIG_EXTS = {
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml",
+    ".csv", ".env", ".properties", ".lock",
+}
+
+# Extensionless files that are executable/build code, never prose — so a docs/
+# path segment must not demote them (Makefile/Dockerfile under docs/ still run).
+# Stems are compared lowercase.
+_CODE_BASENAMES = {
+    "makefile", "gnumakefile", "dockerfile", "containerfile", "jenkinsfile",
+    "vagrantfile", "rakefile", "gemfile", "guardfile", "capfile", "berksfile",
+    "brewfile", "procfile", "thorfile", "appfile", "fastfile", "podfile",
+    "configure", "meson", "bsconfig", "justfile", "earthfile", "taskfile",
+}
+
+
+# Shebang interpreters that mark an extensionless / unknown-extension file as
+# executable code. CANONICAL: _context_gate aliases these so the two evidence
+# engines classify a dropped stager identically.
+_SHEBANG_INTERPRETERS = (
+    "sh", "bash", "zsh", "ksh", "fish", "python", "python2", "python3",
+    "perl", "ruby", "php", "node", "pwsh", "powershell", "osascript", "expect",
+)
+_SHEBANG_RE = re.compile(r"^#!\s*(?:/usr/bin/env\s+)?(\S+)")
+
+
+def _shebang_is_code(text):
+    """True if line 1 of `text` is a #! shebang for a known interpreter.
+
+    Used to fail CLOSED on extensionless files: `docs/installer` carrying
+    `#!/bin/bash` is a script, not prose, and must never be demoted by its
+    folder or basename. Accepts str or bytes; never raises."""
+    if not text:
+        return False
+    try:
+        if isinstance(text, (bytes, bytearray)):
+            text = bytes(text[:512]).decode("utf-8", errors="replace")
+        first = text.split("\n", 1)[0]
+    except (UnicodeDecodeError, ValueError, TypeError):
+        return False
+    m = _SHEBANG_RE.match(first)
+    if not m:
+        return False
+    interp = m.group(1).lower()
+    return (os.path.basename(interp) in _SHEBANG_INTERPRETERS
+            or interp in _SHEBANG_INTERPRETERS)
+
+
+def _is_doc_carrier(ext, stem, parts, content=None):
+    """CANONICAL doc-carrier signal, shared by forensics_core and _context_gate.
+
+    Fails CLOSED on unknown extensions (design: a security scanner must not
+    demote what it cannot prove is prose):
+      1. doc EXTENSION (.md/.rst/.txt/...) -> documentation anywhere. A doc
+         extension is the ONLY thing that earns demotion by name/location.
+      2. ANY non-empty, non-doc extension -> NEVER documentation. This includes
+         known code/config AND unknown extensions (.command/.gradle/.tcl/.ipynb/
+         .sql/...). The code allowlist can never be complete, so "unknown
+         extension" must not default to doc-eligible — that fail-OPEN default is
+         exactly what let docs/payload.command demote to LOW / exit 0.
+      3. empty extension only -> fails CLOSED. A known code/build basename
+         (Makefile, Dockerfile, configure, ...) is code; a shebang in `content`
+         (when the caller has it) is code. A doc BASENAME (readme, license, ...)
+         demotes ONLY when the caller supplied CONTENT that is not a shebang
+         script: a genuinely-prose README almost always carries a .md/.txt
+         extension, so on the CONTENT-LESS path (infer_evidence_class passes
+         content=None) an extensionless `readme`/`license` does NOT demote by
+         basename alone — an extensionless SCRIPT named `readme` is the attack.
+         A bare `docs/` path segment NO LONGER
+         demotes an extensionless file on its own: `docs/install`,
+         `docs/bootstrap` and friends are routinely executable, and an
+         allowlist of code basenames can never be complete — the same
+         fail-OPEN default F1 was meant to kill.
+
+    Keying on what the content EXECUTES rather than where it sits (or its name)
+    is the fix for the whole suppression-bypass class. _context_gate's
+    _is_doc_carrier delegates here so both engines decide identically; parity
+    AND correctness tests (test_evidence_engine_parity.py) guard it.
+    """
+    if ext in _DOC_EXTS:
+        return True
+    if ext:
+        # Non-empty, non-doc extension (known or unknown) -> not prose.
+        return False
+    # Extensionless files only. Order matters: the content/shebang code-check
+    # runs BEFORE any name-based demotion so `docs/installer` (#!/bin/bash) is
+    # code in both engines.
+    if stem in _CODE_BASENAMES:
+        return False
+    if content is not None and _shebang_is_code(content):
+        return False
+    # Doc BASENAME demotion requires CONTENT we can inspect. On the content-less
+    # path (infer_evidence_class -> _is_doc_file(content=None)) an extensionless
+    # `readme`/`license`/`changelog`/... is NOT provably prose — a genuinely
+    # prose README carries a .md/.txt extension, while an extensionless script
+    # named `readme` is exactly the suppression-bypass attack. Fail CLOSED: only
+    # demote by doc basename when the caller gave us content and it is not a
+    # shebang script (verified just above).
+    if content is not None and stem in _DOC_BASENAMES:
+        return True
+    # Unknown / content-less extensionless file: NOT provably prose -> stay loud.
+    del parts
+    return False
+
+
+def _normalize_path_parts(rel_path):
+    """Lowercased path segments with '.'/'..' (and empty segments) collapsed.
+
+    A demoting segment the path has ESCAPED ('x/docs/../installer') must not
+    fire the docs/ heuristic. Shared with _context_gate._normalize_parts so both
+    engines agree on '..' paths — the un-collapsed split in this engine let an
+    attacker-chosen archive-member name like 'docs/../installer' misreport a
+    real critical finding as LOW."""
+    if not rel_path:
+        return []
+    norm = rel_path.replace("\\", "/").lower()
+    parts = []
+    for p in norm.split("/"):
+        if not p or p == ".":
+            continue
+        if p == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(p)
+    return parts
+
+
+# Near-identical language variants. A scanner's rule pack is keyed by one
+# extension per language family; these aliases route the variants to it so a
+# payload cannot dodge an entire ruleset by renaming `.js` -> `.mjs`.
+_EXT_ALIASES = {
+    ".mjs": ".js", ".cjs": ".js",
+    ".pyw": ".py", ".pyi": ".py",
+    ".bash": ".sh", ".zsh": ".sh", ".ksh": ".sh", ".fish": ".sh",
+    ".phtml": ".php", ".php3": ".php", ".php4": ".php", ".php5": ".php",
+    ".mts": ".ts", ".cts": ".ts",
+    ".rake": ".rb", ".gemspec": ".rb",
+    ".psm1": ".ps1", ".psd1": ".ps1",
+    ".kt": ".java", ".kts": ".java", ".groovy": ".java",
+}
+
+# Characters Windows silently strips from the END of a filename when opening or
+# executing it. `evil.py ` and `evil.py.` both run as `evil.py`, but
+# os.path.splitext reports `".py "` / `"."` — neither is in any allowlist, so an
+# extension-gated scanner skipped its ENTIRE ruleset for a file that still runs.
+_EXT_TRAILING_JUNK = " .\t\r\n\x0b\x0c\u00a0"
+
+
+def normalized_ext(path):
+    """Lowercased extension of `path`, canonicalized for allowlist lookups.
+
+    Trailing dots/spaces are stripped from the BASENAME first (see
+    _EXT_TRAILING_JUNK). Backslashes are normalized so Windows paths split
+    correctly on POSIX. Returns "" when there is no extension."""
+    if not path:
+        return ""
+    base = os.path.basename(str(path).replace("\\", "/"))
+    base = base.rstrip(_EXT_TRAILING_JUNK)
+    if not base:
+        return ""
+    return os.path.splitext(base)[1].lower()
+
+
+def resolve_scan_ext(path, supported):
+    """Return the extension key a scanner should use for `path`, or "" if the
+    scanner does not cover it.
+
+    Single source of truth for every scanner's scannable-code gate: normalizes
+    the trailing-dot/space bypass, then resolves language variants through
+    _EXT_ALIASES so `.mjs`/`.cjs`/`.pyw`/`.phtml` reach the pack rules for their
+    family instead of falling off the allowlist entirely."""
+    ext = normalized_ext(path)
+    if not ext:
+        return ""
+    if ext in supported:
+        return ext
+    alias = _EXT_ALIASES.get(ext)
+    if alias and alias in supported:
+        return alias
+    return ""
+
+
+# Top-level modules whose import grants no capability: pure computation and
+# data formats from the standard library. `__import__("json")` reaches nothing
+# an attacker wants; anything outside this list (os, timeit, pydoc, site,
+# socketserver, a PyPI package, ...) keeps a literal __import__ high unless it
+# is the repository's own module.
+INERT_IMPORT_MODULES = frozenset({
+    "json", "re", "math", "cmath", "string", "collections", "itertools",
+    "functools", "operator", "datetime", "decimal", "fractions", "statistics",
+    "numbers", "enum", "dataclasses", "typing", "textwrap", "difflib", "pprint",
+    "copy", "heapq", "bisect", "array", "struct", "hashlib", "hmac", "uuid",
+    "unicodedata", "calendar", "abc", "contextlib", "warnings", "keyword",
+    "colorsys", "graphlib", "zoneinfo", "random", "secrets", "html",
+})
+_LITERAL_IMPORT = re.compile(r'__import__\s*\(\s*(["\'])([A-Za-z_][\w.]{0,200})\1\s*[,)]')
+_ANY_IMPORT_CALL = re.compile(r'__import__\s*\(')
+_STDLIB_NAMES = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+
+def _first_party_module(top, file_path, rel_path):
+    """True when `top` is a package or module shipped in the scanned repository
+    (next to the file or at the repository root) and does not shadow a
+    standard-library name. Its code is scanned like any other file."""
+    if not file_path or top in _STDLIB_NAMES:
+        return False
+    here = os.path.dirname(os.path.abspath(file_path))
+    bases = [here]
+    parts = [p for p in (rel_path or "").replace("\\", "/").split("/") if p]
+    root = os.path.abspath(file_path)
+    if parts:
+        for _ in parts:
+            root = os.path.dirname(root)
+        if os.path.join(root, *parts) == os.path.abspath(file_path):
+            bases.append(root)
+    for base in bases:
+        if (os.path.isfile(os.path.join(base, top + ".py"))
+                or os.path.isfile(os.path.join(base, top, "__init__.py"))
+                or os.path.isdir(os.path.join(base, top))):
+            return True
+    return False
+
+
+def literal_import_is_inert(line, file_path=None, rel_path=None):
+    """True when every __import__(...) call on the line names a literal module
+    that is on the inert allowlist or is the repository's own module. A
+    computed name, any other module, or a getattr() on the line keeps it
+    suspicious."""
+    calls = len(_ANY_IMPORT_CALL.findall(line))
+    if not calls or 'getattr' in line:
+        return False                    # getattr(__import__("m"), name) evasion
+    literals = [m.group(2).split('.', 1)[0] for m in _LITERAL_IMPORT.finditer(line)]
+    return (len(literals) == calls
+            and all(name in INERT_IMPORT_MODULES
+                    or _first_party_module(name, file_path, rel_path)
+                    for name in literals))
+
+
+def downgrade_inert_literal_imports(findings, text, rule_ids, file_path=None, rel_path=None):
+    """Grade a dynamic-import finding low when its line only imports inert or
+    first-party modules by literal name (lazy imports, `__import__("json")`)."""
+    if not any(f.rule_id in rule_ids for f in findings):
+        return findings
+    lines = text.split('\n')
+    for f in findings:
+        if (f.rule_id in rule_ids and 1 <= f.line <= len(lines)
+                and literal_import_is_inert(clip_line(lines[f.line - 1]), file_path, rel_path)):
+            f.severity = "low"
+    return findings
+
+
+def clip_line(line):
+    """Truncate an over-long line to MAX_LINE_LENGTH (the ReDoS bound) while
+    preserving a trailing newline so line numbering is unaffected.
+
+    Scanners must TRUNCATE, never `continue`: skipping the line lets an attacker
+    blind every text detector at once by emitting the payload plus 10k
+    characters of padding on a single line."""
+    if len(line) <= MAX_LINE_LENGTH:
+        return line
+    return line[:MAX_LINE_LENGTH] + ("\n" if line.endswith("\n") else "")
+
+
+def _is_code_file(file_path):
+    """Return True if the extension marks the file as executable/interpreted
+    source. Retained for callers that only need the code-vs-not test."""
+    if not file_path:
+        return False
+    return normalized_ext(file_path) in _CODE_EXTS
+
+# Comment-line prefixes. A left-stripped snippet beginning with one of these
+# is a comment, not executable code.
+_COMMENT_PREFIXES = ("#", "//", ";;", "/*", "*", "--", ";", "<!--", "//!", "///")
+
+# Log/print/warn/echo call patterns. A snippet that starts with (or whose
+# matched portion is inside) one of these is a log/message string, not an
+# executable statement.
+_LOG_CALL_RE = re.compile(
+    r"(?:^|\s)(?:"
+    r"print\s*\(|"
+    r"warn(?:ing)?\s*\(|"
+    r"echo\b|"
+    r"console\.(?:log|warn|error|info|debug)\s*\(|"
+    r"logger\.(?:debug|info|warn|warning|error|critical|fatal)\s*\(|"
+    r"logging\.(?:debug|info|warn|warning|error|critical|fatal)\s*\(|"
+    r"log\.(?:debug|info|warn|warning|error|fatal|print)\s*\(|"
+    r"log\s*\(|"
+    r"syslog\s*\(|"
+    r"fprintf\s*\(\s*stderr|"
+    r"cout\s*<<|"
+    r"cerr\s*<<|"
+    r"System\.out\.print|"
+    r"System\.err\.print|"
+    r"NSLog\s*\(|"
+    r"puts\s*\(|"
+    r"fputs\s*\("
+    r")"
+)
+
+# Quoted-string detection: a snippet that starts with a quote character is
+# inside a string literal, not an executable statement.
+_QUOTE_CHARS = ("'", '"', '`')
+
+# String-literal spans, and the punctuation allowed to surround pure string
+# arguments. Used to tell a log of a STRING (`log("os.system is risky")`,
+# demote) from a log WRAPPING code (`print(os.system(cmd))`, never demote — the
+# inner call executes before the log runs).
+# ESCAPE-AWARE string spans: a backslash-escaped quote (`\"`) does NOT close the
+# literal, so `"\""` is one span, not `"\"` + a stray quote. A non-escape-aware
+# regex mis-split `"\""+os.system('id')` and left EMPTY residue, laundering an
+# executing os.system() call down to a "pure string" (exit 2 -> 0).
+_STRING_SPAN_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`")
+_LOG_ARG_ALLOWED_RE = re.compile(r"^[()+,;\s]*$")
+# A snippet is capped at 120 chars, so a long literal can be cut mid-string. An
+# unterminated trailing quote is a truncation artifact, not code, and is dropped
+# before judging what is left over. The negative lookbehind is the second half
+# of the escaped-quote fix: the tail-strip fires only when the stray quote is at
+# the START of the residue or follows punctuation/whitespace — NEVER when an
+# identifier, `)` or `]` (i.e. real executing code) precedes it, so a laundered
+# `code"tail` is not silently reduced to an inert-looking prefix.
+_UNTERMINATED_TAIL_RE = re.compile(r"(?<![A-Za-z0-9_)\]])['\"`][^'\"`]*$")
+
+# Shell command substitution. `$(...)`, backticks and `${...}` EXECUTE inside a
+# double-quoted shell string, so a downloader wrapped in `echo "$( ... )"` is a
+# live command, not an inert message. The string-literal demotion is
+# Python-centric and read these as prose — an exit 2 -> 0 laundering path.
+_SHELL_SUBST_RE = re.compile(r"\$\(|\$\{|`")
+
+# Carriers where a quoted string is never reliably inert (word splitting, eval,
+# command substitution). Only the comment-prefix branch may demote in these.
+_SHELL_CARRIER_EXTS = {".sh", ".bash", ".zsh", ".ksh", ".fish", ".command",
+                       ".bashrc", ".profile"}
+
+
+def _snippet_is_pure_string(snip):
+    """True if `snip` is nothing but string literal(s) plus punctuation.
+
+    This is the rigor the quote-START check was missing: a snippet like
+    `"n"; x=open(...)` begins with a quote but is executable code carrying a
+    no-op string prefix, and demoting it laundered a critical to LOW."""
+    residue = _STRING_SPAN_RE.sub("", snip)
+    residue = _UNTERMINATED_TAIL_RE.sub("", residue)
+    return bool(_LOG_ARG_ALLOWED_RE.match(residue))
+
+
+def _log_arg_is_pure_string(rest):
+    """True if the text after a log/print call opener is only string literal(s)
+    and punctuation — i.e. a logged MESSAGE, not wrapped executable code."""
+    rest = rest.lstrip()
+    if rest.startswith('('):
+        rest = rest[1:].lstrip()
+    if rest[:1] not in _QUOTE_CHARS:
+        return False
+    return _snippet_is_pure_string(rest)
+
+
+def _is_doc_file(file_path, content=None):
+    """Return True if the file path indicates a documentation file.
+
+    Thin wrapper over the canonical _is_doc_carrier so this engine and the
+    _context_gate engine decide code-vs-doc identically. Normalizes Windows
+    backslashes BEFORE splitting so `docs\\shell.php` is seen as a code file on
+    POSIX too (os.path.basename does not split on "\\" off Windows). The
+    extension key is normalized (trailing dot/space) so `guide.md ` is still a
+    doc and `evil.py ` is still code.
+
+    `content` is optional; when a caller has the bytes it enables the shebang
+    code-check for extensionless files.
+    """
+    if not file_path:
+        return False
+    lower = file_path.replace("\\", "/").lower()
+    ext = normalized_ext(lower)
+    stem = os.path.splitext(os.path.basename(lower).rstrip(_EXT_TRAILING_JUNK))[0]
+    parts = _normalize_path_parts(file_path)
+    return _is_doc_carrier(ext, stem, parts, content=content)
+
+
+def _is_agent_instruction_file(file_path):
+    """Return True if the file path is an agent-instruction file.
+
+    These are agent-executed instruction files (SKILL.md, CLAUDE.md,
+    AGENTS.md, routine.md, etc.), not human documentation. A directive
+    here is executable by the agent and must stay evidence_class=direct.
+    """
+    if not file_path:
+        return False
+    basename_upper = os.path.basename(file_path).upper()
+    if basename_upper in _AGENT_INSTRUCTION_BASENAMES:
+        return True
+    normalized = file_path.replace("\\", "/").lower()
+    if normalized.endswith(_COPILOT_INSTRUCTIONS_SUFFIX):
+        return True
+    return False
+
+
+def _is_comment_or_string(snippet, ext=""):
+    """Return True if the snippet is a comment, a quoted string literal, or
+    a log/print/warn/echo message rather than an executable statement.
+
+    `ext` is the carrier's normalized extension when the caller knows it. In a
+    shell carrier only the comment branch may demote: a quoted shell string is
+    not inert (word splitting, eval, command substitution)."""
+    if not snippet:
+        return False
+    snip = snippet.lstrip()
+    if snip.startswith(_COMMENT_PREFIXES):
+        # A comment is inert in every language, including shell.
+        return True
+    if _SHELL_SUBST_RE.search(snip):
+        # `$(...)` / backticks / `${...}` execute even inside double quotes.
+        return False
+    if ext in _SHELL_CARRIER_EXTS:
+        return False
+    if snip.startswith(_QUOTE_CHARS):
+        # Quote-START alone is not enough: the WHOLE snippet must be string
+        # literal(s) + punctuation, or executable code with a no-op string
+        # prefix launders itself down to LOW.
+        return _snippet_is_pure_string(snip)
+    # A log/print/echo call demotes ONLY when it appears at the START of the
+    # statement AND its argument is a pure string literal. `.match` (not
+    # `.search`) anchors at the statement start so a dangerous call that merely
+    # CONTAINS a log token (`os.system(print(x))`) is not laundered; the
+    # pure-string check stops `print(os.system(cmd))` — where the payload runs
+    # before the log call — from demoting to LOW. This closed an exit 2->0
+    # bypass on the sast/dataflow/correlation path.
+    m = _LOG_CALL_RE.match(snip)
+    if m and _log_arg_is_pure_string(snip[m.end():]):
+        return True
+    return False
+
+
+def infer_evidence_class(scanner, category, file_path, snippet):
+    """Centrally infer an evidence_class from scanner / category / file type /
+    comment/string context. This is the single place evidence_class is derived,
+    so the individual scanners never need to hand-tag it.
+
+    Precedence (first match wins):
+      1. directive category  -> direct   (the four named directive detectors)
+      2. directive scanner in an agent-instruction file -> direct
+         (imperative categories like update-channel, sub-agent-spawn,
+         credential-path-directive, stealth, scope-escalation, authority-
+         framing, prose-imperative are agent-executable directives when
+         they live in SKILL.md/CLAUDE.md/AGENTS.md/routine.md, not prose)
+      3. structural scanner   -> structural
+      4. documentation file   -> inferred (prose, not executable code)
+      5. comment / quoted string / log message -> inferred
+      6. otherwise            -> direct   (real executable code evidence)
+
+    A scanner that wants to override this can simply pass evidence_class=
+    explicitly at construction; __post_init__ only infers when it is empty.
+    """
+    cat = (category or "").lower()
+    if cat in DIRECTIVE_CATEGORIES:
+        return "direct"
+    if (scanner or "") in DIRECTIVE_SCANNERS and _is_agent_instruction_file(file_path):
+        return "direct"
+    if (scanner or "") in STRUCTURAL_SCANNERS:
+        return "structural"
+    if _is_doc_file(file_path):
+        # A directive scanner finding in a documentation file that is NOT an
+        # agent-instruction file is prose (a description of behavior), so it
+        # stays inferred. A non-directive scanner finding in documentation is
+        # also prose.
+        return "inferred"
+    if _is_comment_or_string(snippet, ext=normalized_ext(file_path)):
+        # A directive scanner finding hidden in a code comment or string is
+        # still an agent-readable directive (agents ingest file contents
+        # including comments). Only non-directive scanners are demoted here.
+        if (scanner or "") in DIRECTIVE_SCANNERS:
+            return "direct"
+        return "inferred"
+    return "direct"
+
+
+@dataclass
+class Finding:
+    scanner: str       # "secrets", "sast", "skill_threats", etc.
+    severity: str      # "critical", "high", "medium", "low"
+    title: str         # "AWS Access Key ID"
+    description: str   # Human-readable explanation
+    file: str          # Relative path
+    line: int          # Line number (0 if N/A)
+    snippet: str       # Code context (max 120 chars)
+    category: str      # "secret", "injection", "exfiltration", etc.
+    rule_id: str = ""      # Stable rule id (e.g. "ST-PI-001"); "" for code-baked findings
+    confidence: float = 0.0  # 0.0-1.0; 0.0/None means "fill from severity map"
+    attacker: str = ""     # Threat-model precondition: who the attacker is
+    boundary: str = ""     # Threat-model precondition: trust boundary crossed
+    asset: str = ""        # Threat-model precondition: asset at risk
+    freshness_status: str = ""  # Evidence freshness signal (STALE/RECHECK_REQUIRED)
+    evidence_class: str = ""    # direct | structural | inferred (Track A); "" -> infer centrally
+    finding_id: str = ""        # Stable short id; computed in __post_init__
+
+    def __post_init__(self):
+        # Defensive type coercion at the trust boundary between the in-process
+        # correlation engine and external scanner JSON. Any scanner that emits
+        # a stringified line number or a None severity must NOT crash the text
+        # aggregator or the `self.line > 0` comparison in format_text().
+        # (Python language review PL-F1 + PL-F12, 2026-04-05.)
+        try:
+            self.line = int(self.line) if self.line is not None else 0
+        except (TypeError, ValueError):
+            self.line = 0
+        if self.line < 0:
+            self.line = 0
+        if not isinstance(self.severity, str):
+            self.severity = "low"
+        else:
+            self.severity = self.severity.lower()
+        # Guard the remaining string fields so downstream .lower() / slicing
+        # can never NoneError.
+        for _field in ("scanner", "title", "description", "file", "snippet", "category",
+                       "attacker", "boundary", "asset"):
+            if getattr(self, _field) is None:
+                setattr(self, _field, "")
+        # rule_id is a plain string identifier; coerce non-strings/None to "".
+        if not isinstance(self.rule_id, str):
+            self.rule_id = "" if self.rule_id is None else str(self.rule_id)
+        # Confidence dimension (KTD-7/8). When unset (None or exactly 0.0),
+        # derive from the severity map so every finding carries a meaningful
+        # confidence even on legacy code paths. Any explicitly-provided value
+        # is clamped to [0.0, 1.0]. A non-numeric value (e.g. "high") or a
+        # non-finite value (NaN / ±inf) falls back to the severity-derived
+        # default rather than crashing the aggregator or producing non-standard
+        # JSON (C4 fix: NaN compares False to every numeric test without isfinite).
+        if self.confidence is None:
+            self.confidence = SEVERITY_CONFIDENCE.get(self.severity, 0.40)
+        else:
+            try:
+                conf = float(self.confidence)
+            except (TypeError, ValueError):
+                conf = 0.0
+            # NaN and ±inf must be caught before < / > comparisons (C4).
+            if not math.isfinite(conf) or conf == 0.0:
+                conf = SEVERITY_CONFIDENCE.get(self.severity, 0.40)
+            elif conf < 0.0:
+                conf = 0.0
+            elif conf > 1.0:
+                conf = 1.0
+            self.confidence = conf
+        self._tags = (self.description + " " + self.title + " " + self.category).lower()
+
+        # Evidence model (Track A / P0). Infer centrally when a scanner did not
+        # set evidence_class explicitly. An invalid value (typo / legacy data)
+        # is re-derived so downstream capping never silently no-ops on a bad
+        # class string.
+        if not isinstance(self.evidence_class, str) or self.evidence_class not in EVIDENCE_CLASSES:
+            self.evidence_class = infer_evidence_class(
+                self.scanner, self.category, self.file, self.snippet
+            )
+        # Stable short finding_id from (rule_id or title) + scanner + file +
+        # snippet[:80]. SHA-1 truncated to 12 hex chars: stable across runs for
+        # the same evidence, distinct across different evidence, and compact
+        # enough to use as a correlation distinctness key without leaking full
+        # content. rule_id is preferred (pack-stable) so the same rule firing
+        # on the same locus is idempotent across scanner versions.
+        ident = self.rule_id or self.title
+        fingerprint = "\x1f".join((ident, self.scanner, self.file, self.snippet[:80]))
+        self.finding_id = hashlib.sha1(fingerprint.encode("utf-8", "replace")).hexdigest()[:12]
+
+    def to_dict(self):
+        return asdict(self)
+
+    def severity_score(self):
+        return SEVERITY.get(self.severity, 0)
+
+    def format_text(self):
+        color = SEVERITY_COLORS.get(self.severity, "")
+        sev = self.severity.upper()
+        loc = f"{self.file}:{self.line}" if self.line > 0 else self.file
+        snip = self.snippet[:120] if self.snippet else ""
+        return (
+            f"  {color}[{sev}]{RESET} {self.title}\n"
+            f"         {loc}\n"
+            f"         {self.description}\n"
+            f"         {snip}"
+        )
+
+
+# --- .forensicsignore Support (backward compatible) ---
+
+def load_ignore_patterns(repo_path):
+    """Loads PATH ignore patterns from a .forensicsignore file in the repo root.
+
+    Backward compatible: returns the list of path-glob patterns used by the
+    file walk. `rule:<id>[:<glob>]` AND `suppress:<json>` lines are per-finding
+    suppression directives (U1) handled separately by load_rule_suppressions()
+    and are deliberately excluded here so they never act as path globs — a
+    `suppress:{...}` line was previously double-counted (once as a path glob,
+    once as a rule suppression) and fed to the walk as a bogus glob.
+    """
+    ignore_file = os.path.join(repo_path, '.forensicsignore')
+    patterns = []
+
+    if os.path.exists(ignore_file):
+        try:
+            with open(ignore_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if (line and not line.startswith('#')
+                            and not line.startswith('rule:')
+                            and not line.startswith('suppress:')):
+                        patterns.append(line)
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"[!] Warning: Could not read .forensicsignore: {e}", file=sys.stderr)
+
+    return patterns
+
+
+def load_rule_suppressions(repo_path):
+    """Parse per-finding rule suppressions from a .forensicsignore file.
+
+    Recognizes lines of the form:
+        rule:<rule_id>            -> suppress that rule everywhere
+        rule:<rule_id>:<glob>     -> suppress that rule only under <glob>
+
+    The glob may itself contain ':' (e.g. a Windows-style path); only the
+    first colon after the `rule:` prefix splits id from glob. A finding is
+    suppressed when its rule_id matches and (if a glob is present) its file
+    path matches the glob via fnmatch.
+
+    Returns a list of dicts: {"rule_id": str, "glob": str|None, "raw": str}.
+    Malformed lines (empty id) are skipped.
+    """
+    ignore_file = os.path.join(repo_path, '.forensicsignore')
+    suppressions = []
+
+    if not os.path.exists(ignore_file):
+        return suppressions
+
+    try:
+        with open(ignore_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('suppress:'):
+                    try:
+                        entry = json.loads(line[len('suppress:'):])
+                    except json.JSONDecodeError:
+                        suppressions.append({"invalid": "malformed-json", "raw": line})
+                        continue
+                    entry["raw"] = line
+                    entry["structured"] = True
+                    suppressions.append(entry)
+                    continue
+                if not line.startswith('rule:'):
+                    continue
+                body = line[len('rule:'):]
+                # Split id from optional glob on the FIRST colon.
+                if ':' in body:
+                    rule_id, glob = body.split(':', 1)
+                    rule_id = rule_id.strip()
+                    glob = glob.strip() or None
+                else:
+                    rule_id = body.strip()
+                    glob = None
+                if not rule_id:
+                    continue
+                suppressions.append({"rule_id": rule_id, "glob": glob, "raw": line})
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"[!] Warning: Could not read .forensicsignore: {e}", file=sys.stderr)
+
+    return suppressions
+
+
+def suppression_signature(suppression):
+    """Return an integrity signature for the stable suppression fields."""
+    stable = {
+        key: suppression.get(key, "")
+        for key in ("rule_id", "scope", "author", "reason", "expiry", "content_hash")
+    }
+    payload = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def suppression_matches(suppression, rule_id, file_path, repo_path=None, now=None):
+    """Return True if a suppression directive applies to a finding.
+
+    Match semantics (U5/U8 build on this):
+      - rule_id must equal suppression["rule_id"] exactly (case-sensitive,
+        matching the published `<SCANNER>-<CATEGORY>-<NNN>` id convention).
+      - If suppression["glob"] is set, the finding's file path must also match
+        that glob via fnmatch (forward-slash normalized for cross-platform
+        consistency). A finding with no rule_id never matches.
+    """
+    if not rule_id or suppression.get("invalid"):
+        return False
+    if suppression.get("rule_id") != rule_id:
+        return False
+    if suppression.get("structured"):
+        required = ("author", "reason", "expiry", "content_hash", "signature")
+        if any(not suppression.get(key) for key in required):
+            return False
+        if suppression_signature(suppression) != suppression.get("signature"):
+            return False
+        try:
+            if float(suppression["expiry"]) <= (time.time() if now is None else now):
+                return False
+        except (TypeError, ValueError):
+            return False
+        if not repo_path:
+            return False
+        candidate = os.path.join(repo_path, file_path)
+        try:
+            with open(candidate, "rb") as handle:
+                actual_hash = hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            return False
+        if actual_hash != suppression["content_hash"]:
+            return False
+    glob = suppression.get("scope") if suppression.get("structured") else suppression.get("glob")
+    if not glob:
+        return True
+    path = (file_path or "").replace(os.sep, "/")
+    return fnmatch.fnmatch(path, glob)
+
+
+# --- Capability declaration ledger ---
+
+# Mapping from declared capability names to the finding categories and
+# rule_id prefixes that indicate them. A finding matches a declared
+# capability when its category or rule_id prefix appears in the set for
+# that capability name.
+_CAPABILITY_CATEGORY_MAP = {
+    "writes-config": {
+        "config-modification", "file-write", "settings-modification",
+    },
+    "reads-home": {
+        "home-directory-access", "path-traversal",
+    },
+    "spawns-subprocess": {
+        "code-execution", "shell-injection", "process-spawn",
+        "subprocess-exec", "command-execution",
+    },
+    "network-egress": {
+        "exfiltration", "network-call", "dataflow",
+        "git-exfiltration",
+    },
+    "dynamic-import": {
+        "deserialization", "reflection-rce", "dynamic-import",
+        "obfuscation",
+    },
+}
+
+# rule_id prefixes (lowercased) that map to each capability. A finding whose
+# rule_id starts with one of these prefixes matches the capability.
+_CAPABILITY_RULE_PREFIX_MAP = {
+    "writes-config": {"sa-config-", "sa-file-write-"},
+    "reads-home": {"sa-path-", "sa-home-"},
+    "spawns-subprocess": {"sa-exec-", "sa-shell-", "sa-cmd-", "sa-subprocess-"},
+    "network-egress": {"sa-net-", "sa-exfil-", "sa-dataflow-", "df-"},
+    "dynamic-import": {"sa-deser-", "sa-reflection-", "sa-import-"},
+}
+
+# Categories that are NEVER downgradable by a capability declaration.
+# This is a comprehensive blocklist of high-signal malicious-behavior
+# categories. A capability declaration can only downgrade findings whose
+# categories are NOT in this set. The principle: a self-declared capability
+# can soften a BLOCK finding only for genuinely benign-intent categories,
+# never for categories that represent confirmed malicious behavior patterns.
+_NON_DOWNGRADABLE_CATEGORIES = {
+    # Directive-class findings (agent-directed attacks)
+    "prompt-injection",
+    "mcp-tool-injection",
+    "memory-heist-exfil",
+    # Threat intelligence matches (never downgradable)
+    "known-ioc",
+    "cve",
+    "cve-kev",
+    # High-signal malicious behavior categories
+    "exfiltration",
+    "git-exfiltration",
+    "credential-exfiltration",
+    "shell-injection",
+    "code-execution",
+    "command-execution",
+    "subprocess-exec",
+    "process-spawn",
+    "process-enumeration",
+    "obfuscation",
+    "deserialization",
+    "reflection-rce",
+    "path-traversal",
+    "credential-theft",
+    "credential-validation",
+    "secret-exposure",
+    "hardcoded",
+    "secret",
+    "secret-storage",
+    "file-write",
+    "config-modification",
+    "settings-modification",
+    "kernel-exploit",
+    "worm-propagation",
+    "runner-backdoor",
+    "destructive-command",
+    "injection",
+    "xss",
+    "css-steganography",
+    "scanner-integrity",
+    "lethal-trifecta",
+    "compound-attack",
+    "credential-read",
+    "memory-forensics",
+    "memory-safety",
+    "model-confusion",
+    "provenance-forging",
+}
+
+# Scanner names that are NEVER downgradable by a capability declaration.
+# All directive scanners AND all primary evidence scanners are included.
+# Only explicitly benign-intent scanners (none currently) would be eligible.
+_NON_DOWNGRADABLE_SCANNERS = {
+    "skill_threats", "agent_skills", "mcp_security",
+    "correlation", "sast", "secrets", "dataflow",
+    "trifecta_raw", "registry_hijack", "dependencies",
+    "manifest_drift", "integrity", "provenance", "dead_anchors", "oversize",
+}
+
+
+def _capability_matches_finding(capability, finding):
+    """Return True if a finding's category matches a declared capability name.
+
+    A rule_id-prefix match alone is NOT sufficient: the finding's category
+    must also be in the capability's category set. This prevents a secrets
+    finding whose rule_id happens to start with a capability prefix from
+    being downgraded without a category-level guard.
+    """
+    cats = _CAPABILITY_CATEGORY_MAP.get(capability, set())
+    fcat = (finding.get("category") or "").lower()
+    if fcat in cats:
+        return True
+    return False
+
+
+def _is_non_downgradable(finding):
+    """Return True if a finding can never be downgraded by a capability
+    declaration (directive-class, known-IOC, or CVE/KEV)."""
+    fcat = (finding.get("category") or "").lower()
+    if fcat in _NON_DOWNGRADABLE_CATEGORIES:
+        return True
+    scanner = (finding.get("scanner") or "").lower()
+    if scanner in _NON_DOWNGRADABLE_SCANNERS:
+        return True
+    return False
+
+
+def _parse_capability_yaml(text):
+    """Parse the restricted YAML subset of a .forensics-capabilities file:
+    a top-level `capabilities:` list of {name, reason} string maps.
+
+    Zero-dependency fallback used only when PyYAML is not installed (same
+    trade-off as parse_pnpm_lock.py). Returns the dict yaml.safe_load would
+    have produced for such a file. Raises ValueError on anything outside
+    the subset so the caller reports an invalid declaration instead of
+    silently misreading it.
+    """
+    capabilities = []
+    current = None
+    in_caps = False
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if in_caps and (stripped == "-" or stripped.startswith("- ")):
+            current = {}
+            capabilities.append(current)
+            stripped = stripped[1:].strip()
+            if not stripped:
+                continue
+        else:
+            indent = len(raw_line) - len(raw_line.lstrip())
+            if indent == 0:
+                # `capabilities:` opens the block; any other top-level key
+                # closes it.
+                in_caps = stripped == "capabilities:"
+                current = None
+                continue
+            if not in_caps or current is None:
+                raise ValueError(f"unexpected line: {stripped!r}")
+        key, sep, value = stripped.partition(":")
+        if not sep or not key.strip():
+            raise ValueError(f"unexpected line: {stripped!r}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        current[key.strip()] = value
+    return {"capabilities": capabilities}
+
+
+def load_capability_declaration(repo_path):
+    """Load and validate a .forensics-capabilities.json or .forensics-capabilities.yml
+    file from the repo root.
+
+    YAML files are parsed with PyYAML when it is installed; otherwise a
+    zero-dependency subset parser (_parse_capability_yaml) handles the
+    standard declaration shape so the ledger works in minimal environments.
+
+    Returns a dict with:
+      - "capabilities": list of {"name": str, "reason": str}
+      - "source": str (the filename that was loaded, or "")
+      - "error": str or None (parse/validation error message)
+
+    Returns empty capabilities and no error when no declaration file exists.
+    """
+    json_path = os.path.join(repo_path, ".forensics-capabilities.json")
+    yml_path = os.path.join(repo_path, ".forensics-capabilities.yml")
+    yaml_path = os.path.join(repo_path, ".forensics-capabilities.yaml")
+
+    source = ""
+    raw_data = None
+    error = None
+
+    if os.path.exists(json_path):
+        source = ".forensics-capabilities.json"
+        try:
+            with open(json_path, "r", encoding="utf-8") as fh:
+                raw_data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            error = f"Invalid JSON in {source}: {exc}"
+    elif os.path.exists(yml_path):
+        source = ".forensics-capabilities.yml"
+        try:
+            import yaml as _yaml
+            with open(yml_path, "r", encoding="utf-8") as fh:
+                raw_data = _yaml.safe_load(fh)
+        except ImportError:
+            try:
+                with open(yml_path, "r", encoding="utf-8") as fh:
+                    raw_data = _parse_capability_yaml(fh.read())
+            except Exception as exc:
+                error = f"Invalid YAML in {source}: {exc}"
+        except Exception as exc:
+            error = f"Invalid YAML in {source}: {exc}"
+    elif os.path.exists(yaml_path):
+        source = ".forensics-capabilities.yaml"
+        try:
+            import yaml as _yaml
+            with open(yaml_path, "r", encoding="utf-8") as fh:
+                raw_data = _yaml.safe_load(fh)
+        except ImportError:
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as fh:
+                    raw_data = _parse_capability_yaml(fh.read())
+            except Exception as exc:
+                error = f"Invalid YAML in {source}: {exc}"
+        except Exception as exc:
+            error = f"Invalid YAML in {source}: {exc}"
+
+    if error:
+        return {"capabilities": [], "source": source, "error": error}
+
+    if raw_data is None:
+        return {"capabilities": [], "source": "", "error": None}
+
+    if not isinstance(raw_data, dict):
+        return {"capabilities": [], "source": source,
+                "error": f"{source}: top-level must be an object"}
+
+    raw_caps = raw_data.get("capabilities")
+    if not isinstance(raw_caps, list):
+        return {"capabilities": [], "source": source,
+                "error": f"{source}: 'capabilities' must be a list"}
+
+    capabilities = []
+    for entry in raw_caps:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "")
+        reason = entry.get("reason", "")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(reason, str):
+            reason = ""
+        capabilities.append({"name": name.strip(), "reason": reason.strip()})
+
+    return {"capabilities": capabilities, "source": source, "error": None}
+
+
+# Patterns that suppress too much of the walk to be plausibly legitimate.
+# An attacker-planted .forensicsignore with `*.py` or `*.js` would otherwise
+# silently suppress entire languages and escape detection. (Security review
+# SS-F4, 2026-04-05.)
+DANGEROUS_IGNORE_PATTERNS = {
+    # Total wildcards
+    '*', '**', '**/*', '*.*', '.',
+    # Language-scope wildcards — suppressing all files of a major language
+    # is never a legitimate use case and is the shape of an attacker-planted
+    # suppression.
+    '*.py', '*.pyc', '*.pyw',
+    '*.js', '*.jsx', '*.mjs', '*.cjs',
+    '*.ts', '*.tsx',
+    '*.rb',
+    '*.go',
+    '*.rs',
+    '*.sh', '*.bash', '*.zsh',
+    '*.php', '*.phtml',
+    '*.pl', '*.pm',
+    '*.ps1',
+    '*.java', '*.kt', '*.scala',
+    '*.cs',
+    '*.c', '*.cpp', '*.cc', '*.h', '*.hpp',
+    '*.swift',
+    '*.lua',
+    # Directory-scope wildcards that would suppress source trees
+    'src/**', 'src/**/*',
+    'scripts/**', 'scripts/**/*',
+    '**/src/*', '**/src/**',
+    '**/scripts/*', '**/scripts/**',
+    '**/*.py', '**/*.js', '**/*.ts', '**/*.rb', '**/*.go',
+}
+
+# Representative source files spanning languages and source trees. A
+# .forensicsignore pattern is "dangerously broad" if it silently suppresses a
+# swath of these. Detection tests what a pattern MATCHES rather than its exact
+# spelling, so obfuscated equivalents of the denylist (character classes like
+# `*.[p]y`, single-star tree globs like `src/*`) are caught too — an exact
+# string set was blind to them. Sentinels are all files we never want silently
+# unscanned; legitimate narrow ignores (build/, vendor/, dist/**, a single
+# generated file) match none of them.
+_SOURCE_SENTINELS = (
+    "src/app.py", "src/app.js", "src/app.ts",
+    "lib/core.rb", "pkg/server.go", "app/main.rs",
+    "scripts/deploy.sh", "scripts/build.py", "scripts/lib/util.js",
+    "cmd/tool/main.go", "internal/db.go",
+    "server.py", "index.js", "Main.java",
+)
+
+# Sentinel hits are only a cheap PRE-FLIGHT (used when no repo walk is available,
+# e.g. an empty fixture). The authoritative broad-suppression signal is
+# coverage against the ACTUAL walk (dangerous_ignore_coverage) — a fixed
+# sentinel list is a guess at the file tree and misses whole real trees like
+# skills/ (a whole-tree suppression a fixed sentinel list misses).
+_BROAD_SENTINEL_THRESHOLD = 2
+
+# Walk-based thresholds. A pattern (or the ignore file in aggregate) is broad
+# when it suppresses this fraction of discovered source, OR this many absolute
+# source files via one pattern, OR 100% of any one present language.
+_BROAD_COVERAGE_RATIO = 0.25
+_BROAD_COVERAGE_ABS = 10
+
+# Trivial single-character class: [p] -> p, but NOT [!..], [a-z], or multi-char.
+_TRIVIAL_CHARCLASS_RE = re.compile(r"\[([^\]!^-])\]")
+
+
+def _expand_trivial_char_classes(pattern):
+    """Collapse needless single-char classes so char-class obfuscation of the
+    denylist (`*.[p]y` -> `*.py`, `s[r]c/*` -> `src/*`) is caught by the literal
+    membership pre-flight. Leaves real classes/ranges (`[a-z]`, `[!x]`) intact."""
+    prev = None
+    out = pattern
+    # Iterate to collapse adjacent/multiple single-char classes.
+    while out != prev:
+        prev = out
+        out = _TRIVIAL_CHARCLASS_RE.sub(r"\1", out)
+    return out
+
+
+def _is_dangerously_broad_pattern(pattern):
+    """Cheap, walk-free pre-flight: True if a pattern is a known broad
+    suppressor by literal membership (including trivial char-class obfuscation)
+    or matches >= _BROAD_SENTINEL_THRESHOLD source sentinels. This is NOT the
+    authoritative check — dangerous_ignore_coverage() measures the real walk and
+    catches whole-tree suppressors the sentinels miss. Kept for empty-fixture
+    callers and as a fast path."""
+    if pattern in DANGEROUS_IGNORE_PATTERNS:
+        return True
+    if _expand_trivial_char_classes(pattern) in DANGEROUS_IGNORE_PATTERNS:
+        return True
+    hits = 0
+    for sentinel in _SOURCE_SENTINELS:
+        if pattern.endswith('/'):
+            if sentinel.startswith(pattern) or sentinel == pattern[:-1]:
+                hits += 1
+                continue
+        if fnmatch.fnmatch(sentinel, pattern):
+            hits += 1
+            continue
+        if '*' not in pattern and '?' not in pattern and '[' not in pattern:
+            if sentinel.startswith(pattern + '/') or sentinel == pattern:
+                hits += 1
+        if hits >= _BROAD_SENTINEL_THRESHOLD:
+            return True
+    return hits >= _BROAD_SENTINEL_THRESHOLD
+
+
+def _is_scannable_source(rel_path):
+    """True if a file would carry real findings (so silently ignoring it hides
+    detections). Must count EVERY file the real scanners flag — otherwise a
+    `.forensicsignore` line that hides one reports "hiding 0" while killing the
+    detection. Binaries are excluded (no text findings), but:
+      - agent-instruction files (SKILL.md/CLAUDE.md/AGENTS.md/routine.md/...)
+        are Markdown yet are scanned for injection DIRECTIVES — hiding one hides
+        a CRITICAL, so they count;
+      - lockfiles are scanned (dependency / integrity), so hiding one hides
+        findings — they count too.
+    """
+    base = os.path.basename(rel_path)
+    ext = normalized_ext(rel_path)
+    # Binary blobs carry no text findings.
+    if ext in BINARY_EXTENSIONS:
+        return False
+    # Agent-instruction files are scanned for directives even though they are
+    # Markdown (which _is_doc_file would otherwise treat as prose).
+    if _is_agent_instruction_file(rel_path):
+        return True
+    # Lockfiles are scanned by the dependency/integrity engines.
+    if base in LOCKFILES:
+        return True
+    return not _is_doc_file(rel_path)
+
+
+def dangerous_ignore_coverage(repo_path, patterns):
+    """Measure what `patterns` actually suppress against the REAL repo tree.
+
+    Walks the repo UNFILTERED (ignoring the .forensicsignore under test), then
+    for each pattern counts the scannable-source files it hides via the same
+    should_ignore() the scan uses. Returns a dict:
+      {broad_patterns, source_total, suppressed_total, per_pattern, wiped_langs}
+    A pattern is broad when it hides >= _BROAD_COVERAGE_ABS source files, or is a
+    walk-free-known broad pattern, or 100%-wipes a present language; the file is
+    broad in aggregate when suppressed/source >= _BROAD_COVERAGE_RATIO. This
+    measures the SAME set should_ignore acts on, so no fixed sentinel list can
+    leave a whole real tree (skills/, hooks/, ...) uncovered."""
+    source_rel = []
+    try:
+        for _abs, rel in walk_repo(repo_path, ignore_patterns=[]):
+            if _is_scannable_source(rel):
+                source_rel.append(rel)
+    except OSError:
+        pass
+
+    by_lang = {}
+    for rel in source_rel:
+        by_lang.setdefault(os.path.splitext(rel)[1].lower(), []).append(rel)
+
+    per_pattern = {}
+    suppressed_any = set()
+    broad = []
+    critical = []
+    wiped_langs = []
+    for pat in patterns:
+        hidden = [rel for rel in source_rel
+                  if should_ignore(os.path.join(repo_path, rel), repo_path, [pat])]
+        per_pattern[pat] = len(hidden)
+        suppressed_any.update(hidden)
+        # Whole-language wipe: this one pattern hides every file of a language
+        # that has a meaningful presence (>=2 files).
+        wiped = [ext or "(no extension)" for ext, files in by_lang.items()
+                 if len(files) >= 2 and all(
+                     should_ignore(os.path.join(repo_path, rel), repo_path, [pat])
+                     for rel in files)]
+        wiped_langs.extend(wiped)
+        # CRITICAL tier: a total wildcard, a literal denylist entry (incl.
+        # char-class obfuscation), or a whole-language wipe. These have no
+        # legitimate use and are the shape of attacker-planted evasion.
+        is_critical = _is_dangerously_broad_pattern(pat) or bool(wiped)
+        if is_critical:
+            critical.append(pat)
+        if is_critical or len(hidden) >= _BROAD_COVERAGE_ABS:
+            broad.append(pat)
+
+    total = len(source_rel)
+    suppressed_total = len(suppressed_any)
+    if total and (suppressed_total / total) >= _BROAD_COVERAGE_RATIO:
+        for pat in patterns:
+            if pat not in broad and per_pattern.get(pat):
+                broad.append(pat)
+    return {
+        "broad_patterns": broad,
+        "critical_patterns": critical,
+        "wiped_langs": sorted(set(wiped_langs)),
+        "source_total": total,
+        "suppressed_total": suppressed_total,
+        "per_pattern": per_pattern,
+    }
+
+
+def emit_status(output_format, message):
+    """Emit human status lines only for non-JSON formats."""
+    if output_format != "json":
+        print(message)
+
+
+def warn_forensicsignore(repo_path):
+    """Return warning findings if .forensicsignore exists. Escalate for broad patterns."""
+    ignore_file = os.path.join(repo_path, '.forensicsignore')
+    if not os.path.exists(ignore_file):
+        return []
+
+    findings = []
+    patterns = load_ignore_patterns(repo_path)
+    # Rule-level (`rule:`/`suppress:`) directives are excluded from path globs
+    # by load_ignore_patterns, but they still disable detections and MUST be
+    # counted in the human warning — otherwise a rule-only ignore file reports
+    # "Suppresses 0 pattern(s)" while silently killing findings.
+    rule_suppressions = load_rule_suppressions(repo_path)
+    # Authoritative broad-detection measures what the patterns actually suppress
+    # against the REAL repo walk (catches whole-tree suppressors like `skills/`
+    # that a fixed sentinel list misses). The walk-free pre-flight is unioned in
+    # so literal wildcards / char-class obfuscation are still caught when there
+    # is no source to walk (empty fixtures).
+    coverage = dangerous_ignore_coverage(repo_path, patterns)
+    critical = list(coverage["critical_patterns"])
+    for p in patterns:
+        if p not in critical and _is_dangerously_broad_pattern(p):
+            critical.append(p)
+    broad = list(coverage["broad_patterns"])
+    for p in critical:
+        if p not in broad:
+            broad.append(p)
+    total_suppressions = len(patterns) + len(rule_suppressions)
+
+    if critical:
+        # CRITICAL tier: total wildcard (`*`, `**`, `.`, `*.*`), a literal
+        # DANGEROUS_IGNORE_PATTERNS entry (incl. char-class obfuscation like
+        # `*.[p]y`), or a whole-language wipe. None of these has a legitimate
+        # use; each is the shape of attacker-planted evasion.
+        wiped = coverage.get("wiped_langs") or []
+        findings.append(Finding(
+            scanner="meta", severity="critical",
+            title=".forensicsignore: Wildcard / Whole-Language Suppression",
+            description=(
+                f"Wildcard or whole-language patterns suppress "
+                f"{coverage['suppressed_total']} of {coverage['source_total']} "
+                f"scannable source file(s)"
+                + (f", wiping 100% of {', '.join(wiped)}" if wiped else "")
+                + f" — the shape of attacker-planted evasion. Patterns: {critical}."
+            ),
+            file=".forensicsignore", line=0,
+            snippet=f"Wildcard patterns: {critical}",
+            category="configuration"
+        ))
+    else:
+        # VISIBLE tier: a legitimate scoped ignore (a first-party self-scan
+        # routinely hides most of its own tree) stays exit 0 but is NEVER
+        # silent — the coverage it hides is stated so a reader can audit it.
+        # LOW, not MEDIUM: any repo carrying a .forensicsignore would otherwise
+        # be pinned at exit 1 forever, which trains operators to ignore it.
+        severity = "low"
+        findings.append(Finding(
+            scanner="meta", severity=severity,
+            title=".forensicsignore Present",
+            description=(
+                f"Suppresses {total_suppressions} item(s): "
+                f"{len(patterns)} path pattern(s) (hiding {coverage['suppressed_total']} "
+                f"of {coverage['source_total']} source file(s)), "
+                f"{len(rule_suppressions)} rule suppression(s). "
+                f"Verify it wasn't planted by an attacker."
+            ),
+            file=".forensicsignore", line=0,
+            snippet=f"Patterns: {patterns[:3]}; Rules: {[s.get('rule_id', s.get('raw')) for s in rule_suppressions[:3]]}",
+            category="configuration"
+        ))
+    return findings
+
+
+def build_output_skip_findings(repo_path):
+    """INFO findings naming each build-output directory excluded from the scan.
+
+    Returns [] unless the operator opted into skipping gitignored build
+    output (BUILD_OUTPUT_SKIP_ENV_VAR). When skipping is active, every
+    excluded folder is named with its file count: a repository under audit
+    can ship both the folder and the .gitignore that excludes it, so a skip
+    must never be silent. LOW severity tiers these as INFO in the report and
+    keeps them out of the exit-code contract (own-project scans stay green);
+    the disclosure exists so an exclusion is always visible, not to gate.
+    """
+    if not build_output_skip_enabled():
+        return []
+    findings = []
+    gitignores = {}
+    skip_dirs = _effective_skip_dirs(repo_path, IGNORE_DIRS)
+    cap = 25
+    for root, dirs, _files in os.walk(repo_path, followlinks=False):
+        hits = [d for d in sorted(dirs)
+                if d not in skip_dirs
+                and is_ignored_build_output(repo_path, root, d, gitignores)]
+        if not hits:
+            continue
+        hit_set = set(hits)
+        for d in hits:
+            path = os.path.join(root, d)
+            file_count = 0
+            truncated = False
+            for _r, _ds, _fs in os.walk(path, followlinks=False):
+                file_count += len(_fs)
+                if file_count > 100000:
+                    truncated = True
+                    break
+            rel = os.path.relpath(path, repo_path).replace(os.sep, "/")
+            count = f"{file_count}+" if truncated else str(file_count)
+            findings.append(Finding(
+                scanner="meta", severity="low",
+                title="Build output excluded from scan",
+                description=(
+                    f"{rel}: {count} file(s) not scanned - a .gitignore excludes "
+                    f"this generated build folder and {BUILD_OUTPUT_SKIP_ENV_VAR} "
+                    "is set. The repository under audit can ship both the folder "
+                    "and the .gitignore that excludes it, so excluded content is "
+                    "unverified. Unset the variable to scan everything."
+                ),
+                file=rel, line=0,
+                snippet=f"{count} file(s) excluded",
+                category="build-output-excluded",
+                evidence_class="direct",
+            ))
+        # Do not descend into excluded folders: their contents were counted
+        # above, and nested build folders inside them are not separate skips.
+        dirs[:] = [d for d in dirs if d not in hit_set]
+        if len(findings) >= cap:
+            break
+    # An exclusion past the cap is still disclosed: one summary finding names
+    # the overflow so a large repo cannot hide exclusions behind the cap.
+    if len(findings) >= cap:
+        overflow = 0
+        for root, dirs, _files in os.walk(repo_path, followlinks=False):
+            hits = [d for d in sorted(dirs)
+                    if d not in skip_dirs
+                    and is_ignored_build_output(repo_path, root, d, gitignores)]
+            overflow += len(hits)
+            dirs[:] = [d for d in dirs if d not in set(hits)]
+        overflow -= len(findings)
+        if overflow > 0:
+            findings.append(Finding(
+                scanner="meta", severity="low",
+                title="Build output exclusions truncated",
+                description=(
+                    f"{overflow} further excluded build folder(s) are not listed "
+                    f"individually (cap {cap}). They are equally unverified."
+                ),
+                file="", line=0, snippet="",
+                category="build-output-excluded",
+                evidence_class="direct",
+            ))
+    findings.sort(key=lambda f: f.file)
+    return findings
+
+
+def should_ignore(file_path, repo_root, patterns):
+    """Checks if a file path matches any ignore pattern."""
+    if not patterns:
+        return False
+
+    try:
+        rel_path = os.path.relpath(file_path, repo_root)
+    except ValueError:
+        return False
+
+    for pattern in patterns:
+        if pattern.endswith('/'):
+            if rel_path.startswith(pattern) or rel_path == pattern[:-1]:
+                return True
+
+        if fnmatch.fnmatch(rel_path, pattern):
+            return True
+
+        if '*' not in pattern and '?' not in pattern:
+            if rel_path.startswith(pattern + os.sep) or rel_path == pattern:
+                return True
+
+    return False
+
+
+# --- Common Constants ---
+
+IGNORE_DIRS = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build', 'coverage', '.tox', '.mypy_cache', '.pytest_cache', '.ruff_cache'}
+BINARY_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.zip', '.tar', '.gz', '.7z',
+                     '.exe', '.dll', '.so', '.dylib', '.bin', '.pyc', '.class', '.woff', '.woff2',
+                     '.ttf', '.eot', '.mp3', '.mp4', '.mov', '.avi', '.bmp', '.tiff'}
+LOCKFILES = {'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'go.sum', 'Cargo.lock',
+             'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'composer.lock'}
+MAX_FILE_SIZE_MB = 10
+MAX_LINE_LENGTH = 10000  # Truncate lines longer than this to prevent ReDoS (C3)
+# C2: coarse per-call wall-clock budget for scan_patterns / scan_rule_patterns.
+# A regex that slips past the static heuristic + length cap still cannot wedge
+# an entire scan indefinitely. The check fires every _SCAN_BUDGET_CHECK_INTERVAL
+# lines; if elapsed > _SCAN_FILE_BUDGET_SEC the current file is aborted.
+# This is deliberately coarse (not per-call SIGALRM) to stay cross-platform and
+# keep overhead negligible on the hot loop (one time.monotonic() per N lines,
+# not per regex call). The static heuristic (C1) + length cap remain the primary
+# defence; this is defence-in-depth.
+_SCAN_FILE_BUDGET_SEC = 10.0
+_SCAN_BUDGET_CHECK_INTERVAL = 500  # lines between time checks
+
+
+def sha256_file(filepath):
+    """Compute SHA256 hash of a file. Returns hex digest or None on error."""
+    h = hashlib.sha256()
+    try:
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except (OSError, PermissionError):
+        return None
+
+
+# Binary classification is decided by CONTENT, not by a single sentinel byte or
+# the extension. A lone NUL is trivially prepended by an attacker, and an
+# extension is attacker-chosen — both previously hid plaintext secrets AND
+# blinded every text scanner at once, because walk_repo is shared.
+_BINARY_SNIFF_BYTES = 8192
+# Fraction of non-text bytes above which a sample is really binary. Mirrors the
+# ratio test scan_archive already uses on archive members.
+_BINARY_NONTEXT_RATIO = 0.30
+# Stricter bar for overriding a binary EXTENSION: only content that is almost
+# entirely printable text reclassifies a .png/.pdf/.zip as scannable text.
+_BINARY_EXT_OVERRIDE_RATIO = 0.10
+
+
+def _nontext_ratio(chunk):
+    """Fraction of bytes in `chunk` that cannot appear in plain text."""
+    if not chunk:
+        return 0.0
+    nontext = sum(1 for b in chunk if b < 9 or (13 < b < 32) or b == 127)
+    return nontext / len(chunk)
+
+
+def _decodes_as_text(chunk):
+    """True if the sniff sample is valid UTF-8. A multi-byte character cut by
+    the sample boundary is a read artifact, not a binary signal."""
+    try:
+        chunk.decode('utf-8')
+        return True
+    except UnicodeDecodeError as exc:
+        return exc.start >= len(chunk) - 4
+
+
+def is_binary_file(file_path):
+    """Check if a file is binary by SNIFFING its content.
+
+    The extension and the null-byte sentinel are hints, never verdicts:
+      - no binary extension: binary only when the sample is densely non-text.
+        A text file carrying a sprinkled NUL stays scannable (the NUL-prefix
+        trick blinded every text scanner through the shared walk_repo).
+      - binary extension: still sniffed, and reclassified as TEXT when the
+        sample is overwhelmingly printable — a payload renamed `logo.png`
+        must not fall off the scan surface.
+    Unreadable files stay binary (nothing to scan either way)."""
+    try:
+        with open(file_path, 'rb') as f:
+            chunk = f.read(_BINARY_SNIFF_BYTES)
+    except (PermissionError, OSError):
+        return True
+    if not chunk:
+        return False
+    if not _decodes_as_text(chunk):
+        return True
+    ratio = _nontext_ratio(chunk)
+    if normalized_ext(file_path) in BINARY_EXTENSIONS:
+        return ratio > _BINARY_EXT_OVERRIDE_RATIO
+    return ratio > _BINARY_NONTEXT_RATIO
+
+
+
+# Directory names that mark a real source tree next to generated output.
+_SRC_DIR_HINTS = frozenset({'src', 'source', 'app', 'libsrc'})
+
+
+def _effective_skip_dirs(repo_path, skip_dirs):
+    """Keep dist/build in scope when the scan root is a package tarball.
+
+    IGNORE_DIRS skips dist/ and build/ because in a source checkout they hold
+    generated output that only duplicates (or pads) the real code. A published
+    npm package is the opposite layout: the tarball IS the payload, shipped
+    under dist/ (or build/) with no source tree beside it, so skipping those
+    dirs reduces the scan to the manifest and lets packaged malware through
+    (verified on the Sept 2026 relay-driven agent-malware batch). When the root
+    carries a package.json, has no source-dir hint beside it, and a dist/ or
+    build/ directory exists, that directory is the product under audit and is
+    walked. Caller-supplied skip_dirs sets are respected as-is.
+    """
+    if skip_dirs is not IGNORE_DIRS:
+        return skip_dirs
+    try:
+        entries = set(os.listdir(repo_path))
+    except OSError:
+        return skip_dirs
+    if 'package.json' not in entries or entries & _SRC_DIR_HINTS:
+        return skip_dirs
+    refined = set(skip_dirs)
+    for payload_dir in ('dist', 'build'):
+        if payload_dir in entries:
+            refined.discard(payload_dir)
+    return refined
+
+# Framework build output (Next.js, Nuxt, SvelteKit, Turborepo, ...). A dev
+# build sitting in a checkout is generated noise, so the operator can opt into
+# skipping it (BUILD_OUTPUT_SKIP_ENV_VAR below). The skip applies only when a
+# .gitignore at or above the folder lists it. .gitignore is read as text; git
+# itself is never run inside the repo under audit. Note the trust boundary:
+# in a repository under audit both the folder and the .gitignore are shipped
+# by the repo, so this skip is OFF unless the operator asks for it, and every
+# skipped folder is disclosed in the report (build_output_skip_findings).
+GENERATED_BUILD_DIRS = frozenset({
+    '.next', '.nuxt', '.svelte-kit', '.turbo', '.vercel', '.output', '.parcel-cache',
+    '.angular', '.docusaurus', '.astro', '.expo', '.vite', '.webpack', '.serverless',
+})
+_GITIGNORE_CACHE_LIMIT = 4096
+
+
+def _gitignore_patterns(directory, cache):
+    """Plain patterns from directory/.gitignore (comments and blanks dropped)."""
+    if directory in cache:
+        return cache[directory]
+    patterns = ()
+    path = os.path.join(directory, '.gitignore')
+    try:
+        if os.path.isfile(path) and not os.path.islink(path) and os.path.getsize(path) <= 256 * 1024:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                patterns = tuple(line.strip() for line in fh
+                                 if line.strip() and not line.lstrip().startswith('#'))
+    except OSError:
+        patterns = ()
+    if len(cache) < _GITIGNORE_CACHE_LIMIT:
+        cache[directory] = patterns
+    return patterns
+
+
+# Generated build files with the same rule (TypeScript's incremental cache is
+# a file of content hashes that reads as high-entropy noise).
+GENERATED_BUILD_FILE_SUFFIXES = ('.tsbuildinfo',)
+
+# Operator opt-in for skipping generated build output. The DEFAULT is to scan
+# everything: when auditing code you did not write, both the build folder and
+# the .gitignore that would exclude it are shipped by the repository under
+# audit, so repository-supplied ignore rules are never trusted to narrow
+# coverage. Set FORENSICS_SKIP_BUILD_OUTPUT=1 (or true/yes/on) to skip
+# gitignored build output when scanning your own projects. The opt-in lives
+# in the operator's environment precisely so the audited repo cannot set it.
+BUILD_OUTPUT_SKIP_ENV_VAR = "FORENSICS_SKIP_BUILD_OUTPUT"
+
+_BUILD_OUTPUT_SKIP_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def build_output_skip_enabled(environ=None):
+    """True when the operator opted into skipping gitignored build output."""
+    env = os.environ if environ is None else environ
+    return env.get(BUILD_OUTPUT_SKIP_ENV_VAR, "").strip().lower() in _BUILD_OUTPUT_SKIP_TRUTHY
+
+
+def is_ignored_build_output(repo_path, root, name, cache):
+    """True when `root/name` is framework build output that .gitignore excludes."""
+    if name not in GENERATED_BUILD_DIRS:
+        return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def is_ignored_build_file(repo_path, root, name, cache):
+    """True when `root/name` is a generated build file that .gitignore excludes."""
+    if not name.endswith(GENERATED_BUILD_FILE_SUFFIXES):
+        return False
+    return _gitignore_lists(repo_path, root, name, cache)
+
+
+def _gitignore_lists(repo_path, root, name, cache):
+    target = os.path.join(root, name)
+    repo_abs = os.path.abspath(repo_path)
+    directory = os.path.abspath(root)
+    listed = False
+    while True:
+        rel = os.path.relpath(target, directory).replace(os.sep, '/')
+        for raw in _gitignore_patterns(directory, cache):
+            negated = raw.startswith('!')
+            pattern = raw[1:] if negated else raw
+            pattern = pattern.rstrip('/')
+            if pattern.startswith('**/'):
+                pattern = pattern[3:]
+            anchored = pattern.startswith('/') or '/' in pattern
+            hit = fnmatch.fnmatchcase(rel, pattern.lstrip('/')) if anchored else fnmatch.fnmatchcase(name, pattern)
+            if hit:
+                if negated:
+                    return False  # Re-included on purpose: scan it.
+                listed = True
+        if directory == repo_abs or not directory.startswith(repo_abs):
+            break
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return listed
+
+
+def walk_repo(repo_path, ignore_patterns=None, skip_dirs=None, skip_lockfiles=True, skip_binary=True):
+    """Generator that walks a repo respecting ignore rules.
+    Yields (file_path, rel_path) tuples."""
+    if skip_dirs is None:
+        skip_dirs = _effective_skip_dirs(repo_path, IGNORE_DIRS)
+    if ignore_patterns is None:
+        ignore_patterns = load_ignore_patterns(repo_path)
+
+    gitignores = {}
+    skip_build_output = build_output_skip_enabled()
+    for root, dirs, files in os.walk(repo_path, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in skip_dirs
+                   and not (skip_build_output
+                            and is_ignored_build_output(repo_path, root, d, gitignores))]
+
+        for filename in files:
+            if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if skip_build_output and is_ignored_build_file(repo_path, root, filename, gitignores):
+                continue
+
+            file_path = os.path.join(root, filename)
+
+            # Skip symlinks to prevent traversal outside repo
+            if os.path.islink(file_path):
+                continue
+
+            if should_ignore(file_path, repo_path, ignore_patterns):
+                continue
+
+            try:
+                if os.path.getsize(file_path) > MAX_FILE_SIZE_MB * 1024 * 1024:
+                    continue
+            except OSError:
+                continue
+
+            if skip_binary and is_binary_file(file_path):
+                continue
+
+            rel_path = os.path.relpath(file_path, repo_path)
+            yield file_path, rel_path
+
+
+def walk_aux(repo_path, ignore_patterns=None, skip_dirs=None, *,
+             apply_size_cap=False, reach_pycache=False, skip_lockfiles=True):
+    """Auxiliary walk for the binary-reaching scanners (oversize, bytecode,
+    archive). Yields (file_path, rel_path).
+
+    Unlike walk_repo this NEVER skips files by BINARY_EXTENSIONS — these
+    scanners do their own byte-level inspection — and it makes two of
+    walk_repo's hard-coded behaviours explicit per call:
+
+    - apply_size_cap: when False (the default for these scanners), files larger
+      than MAX_FILE_SIZE_MB are STILL yielded. walk_repo skips them
+      unconditionally (the `os.path.getsize(...) > cap: continue` guard) so an
+      attacker pads a payload past 10 MB to fall off every scanner's radar. The
+      oversize/bytecode/archive scanners MUST see those files (the headline
+      blind spot in the origin audit).
+    - reach_pycache: when True, the __pycache__ directory is traversed. It is in
+      IGNORE_DIRS and therefore invisible to walk_repo; the bytecode scanner
+      needs it.
+
+    Symlinks are still refused (traversal safety), lockfiles still skipped by
+    default, and .forensicsignore patterns are still honoured.
+    """
+    if skip_dirs is None:
+        skip_dirs = set(_effective_skip_dirs(repo_path, IGNORE_DIRS))
+        if reach_pycache:
+            skip_dirs.discard('__pycache__')
+    if ignore_patterns is None:
+        ignore_patterns = load_ignore_patterns(repo_path)
+
+    gitignores = {}
+    skip_build_output = build_output_skip_enabled()
+    for root, dirs, files in os.walk(repo_path, followlinks=False):
+        # Deterministic order: os.walk yields readdir order (filesystem-dependent),
+        # and these scanners enforce global budgets over the walk — which file a
+        # fan-out decoy starves must not depend on inode layout, or the fail-loud
+        # "budget exhausted" naming becomes nondeterministic.
+        dirs[:] = sorted(d for d in dirs if d not in skip_dirs
+                         and not (skip_build_output
+                                  and is_ignored_build_output(repo_path, root, d, gitignores)))
+
+        for filename in sorted(files):
+            if skip_lockfiles and filename in LOCKFILES:
+                continue
+            if skip_build_output and is_ignored_build_file(repo_path, root, filename, gitignores):
+                continue
+
+            file_path = os.path.join(root, filename)
+
+            # Skip symlinks to prevent traversal outside repo
+            if os.path.islink(file_path):
+                continue
+
+            if should_ignore(file_path, repo_path, ignore_patterns):
+                continue
+
+            if apply_size_cap:
+                try:
+                    if os.path.getsize(file_path) > MAX_FILE_SIZE_MB * 1024 * 1024:
+                        continue
+                except OSError:
+                    continue
+
+            rel_path = os.path.relpath(file_path, repo_path)
+            yield file_path, rel_path
+
+
+# --- Raw-content Trifecta Scanner ---
+# Rule 19 Lethal Trifecta relies on sub-scanner findings to detect the three
+# primitives (exec, network, credential read). In practice, sub-scanners miss
+# low-level primitives like direct `open('~/.ssh/id_rsa')` or raw
+# `http.client.HTTPSConnection`. To keep Rule 19 from becoming dead code when
+# sub-scanners are silent, this module also does an independent raw-content
+# scan that synthesizes primitive findings directly. Called from
+# aggregate_json.py before correlate().
+# (Fix for 2026-04-05 security review A6.)
+
+# Each regex matches ONLY actionable code patterns — method calls with parens,
+# specific file paths, or named constant references. Bare descriptive keywords
+# (`webhook`, `api_key`, `browser data`, `reverse shell`, `keychain`) were
+# removed in the 2026-04-05 torture review (CRC-F2) because they matched
+# legitimate code comments, variable names, and doc strings and caused
+# false-positive Rule 19 hits on every CI/integration test repo.
+_TRIFECTA_EXEC_RE = re.compile(
+    r'(?:os\.(?:system|popen)\s*\(|pty\.spawn\s*\(|subprocess\.(?:run|call|Popen|check_output|check_call)\s*\(|'
+    r'runpy\.run_(?:path|module)\s*\(|importlib\.import_module\s*\(|'
+    r'child_process\.(?:exec|spawn|execSync)\s*\(|(?<![a-zA-Z_])eval\s*\(|'
+    r'(?<![a-zA-Z_])exec\s*\(|shell\s*=\s*True)'
+)
+_TRIFECTA_NETWORK_RE = re.compile(
+    # Only actionable outbound network primitives with concrete call syntax.
+    # Removed bare `webhook`, `reverse[\s_-]?shell`, and `node-fetch` which
+    # were prose-level keywords that matched comments and docstrings.
+    r'(?:http\.client\.HTTPS?Connection|urllib\.request\.urlopen|'
+    r'requests\.(?:post|get|put|delete)\s*\(|socket\.(?:connect|create_connection|send|sendto)\s*\(|'
+    r'urllib3\.PoolManager\s*\(|'
+    r'axios\.(?:post|get|put|delete)\s*\(|'
+    r'\bfetch\s*\(\s*[\'"]https?://|'
+    r'httpx\.(?:post|get|put|delete|stream|Client|AsyncClient)\s*\(|'
+    r'aiohttp\.ClientSession|'
+    r'/dev/tcp/)'
+)
+_TRIFECTA_CREDENTIAL_RE = re.compile(
+    # Specific file paths and named environment variables. Removed bare
+    # `api_key`, `private_key`, `browser data`, `keychain` which matched
+    # legitimate variable names and comments in any file with auth code.
+    # Added \b boundaries on the remaining tokens so `GITHUB_TOKENIZE` and
+    # `.aws/credentials_fake_helper` do not match.
+    r'(?:\.ssh/id_(?:rsa|ed25519|dsa|ecdsa)\b|'
+    r'\.aws/credentials\b|\.aws/config\b|'
+    r'\.netrc\b|/etc/(?:shadow|passwd)\b|keyring\.get_password\s*\(|'
+    r'os\.popen\s*\(\s*[\'\"]printenv\b|'
+    r'\b(?:GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)\b|'
+    r'\.env(?!\.example|\.template)(?:\s|\)|\'|"|$))'
+)
+
+# Derived from the ONE canonical code-extension set: a hand-kept second
+# allowlist is how `.js` -> `.mjs` slipped past the trifecta scanner while
+# staying fully executable. `.md` is included on purpose — agent-instruction
+# markdown carries live directives.
+_TRIFECTA_SCAN_EXTENSIONS = set(_CODE_EXTS) | {'.md', '.markdown'}
+_TRIFECTA_MAX_SCAN_FILES = 5000
+_TRIFECTA_MAX_SCAN_BYTES = 2 * 1024 * 1024  # 2MB per file
+
+
+def detect_trifecta_raw(repo_path, ignore_patterns=None):
+    """Scan files in repo_path for the Lethal Trifecta three primitives.
+
+    Returns a list of Finding objects (one per primitive per file) that can
+    be fed into correlate() so Rule 19 fires regardless of whether the
+    specialized sub-scanners caught the primitives.
+
+    This is deliberately narrow: it only fires on unambiguous keyword hits
+    (e.g. `subprocess.run(` with the paren, `http.client.HTTPSConnection`,
+    `.aws/credentials`). The regexes use lookbehinds and word boundaries to
+    avoid false positives on `executable`, `.env.example`, etc.
+
+    As of 2026-04-05 (CRC-F2, CRC-F3), iterates line-by-line rather than
+    whole-file so each emitted Finding carries the actual line number and
+    a snippet of the matching code. This makes triage possible — previously
+    every CRITICAL Rule 19 finding pointed at file:0 with a canned snippet.
+    """
+    findings = []
+    if not repo_path or not os.path.isdir(repo_path):
+        return findings
+
+    scanned = 0
+    try:
+        walker = walk_repo(
+            repo_path,
+            ignore_patterns=ignore_patterns,
+            skip_binary=True,
+            skip_lockfiles=True,
+        )
+    except OSError:
+        return findings
+
+    for file_path, rel_path in walker:
+        if scanned >= _TRIFECTA_MAX_SCAN_FILES:
+            break
+        ext = normalized_ext(file_path)
+        if ext not in _TRIFECTA_SCAN_EXTENSIONS:
+            continue
+
+        try:
+            size = os.path.getsize(file_path)
+            if size > _TRIFECTA_MAX_SCAN_BYTES:
+                continue
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        scanned += 1
+
+        # Line-by-line scan with attribution. Record first match per primitive.
+        exec_hit = None       # (line_num, snippet_text)
+        network_hit = None
+        credential_hit = None
+        for line_num, line in enumerate(content.splitlines(), start=1):
+            # Skip obvious comment-only lines to reduce false positives from
+            # prose. Conservative — language-agnostic comment prefixes only.
+            stripped = line.lstrip()
+            if stripped.startswith(('#', '//', ';;', '/*', '*')):
+                continue
+            if exec_hit is None and _TRIFECTA_EXEC_RE.search(line):
+                exec_hit = (line_num, line.strip()[:120])
+            if network_hit is None and _TRIFECTA_NETWORK_RE.search(line):
+                network_hit = (line_num, line.strip()[:120])
+            if credential_hit is None and _TRIFECTA_CREDENTIAL_RE.search(line):
+                credential_hit = (line_num, line.strip()[:120])
+            if exec_hit and network_hit and credential_hit:
+                break  # early exit: we have enough for Rule 19 to fire
+
+        # Emit every present primitive. These leaves are correlation-only and
+        # are filtered from user output by the aggregate/report layer.
+        if exec_hit:
+            findings.append(Finding(
+                scanner="trifecta_raw", severity="high",
+                title="Code execution primitive",
+                description="Raw-content match for exec primitive (os.system, subprocess, eval, exec, shell=true)",
+                file=rel_path, line=exec_hit[0],
+                snippet=exec_hit[1],
+                category="code-execution",
+            ))
+        if network_hit:
+            findings.append(Finding(
+                scanner="trifecta_raw", severity="high",
+                title="Outbound network primitive",
+                description="Raw-content match for outbound network primitive (http.client, requests.post, urllib, socket, axios, httpx, aiohttp)",
+                file=rel_path, line=network_hit[0],
+                snippet=network_hit[1],
+                category="exfiltration",
+            ))
+        if credential_hit:
+            findings.append(Finding(
+                scanner="trifecta_raw", severity="high",
+                title="Credential read primitive",
+                description="Raw-content match for credential read primitive (.ssh/id_*, .aws/credentials, .netrc, GITHUB_TOKEN)",
+                file=rel_path, line=credential_hit[0],
+                snippet=credential_hit[1],
+                category="credential-read",
+            ))
+
+    return findings
+
+
+# --- Registry-hijack raw correlation detector (GAP 3) -----------------------
+# A skill that redirects npm/yarn/pip package resolution to a non-canonical host
+# is a dependency-confusion / supply-chain vector. Hostname alone cannot prove
+# malice (legitimate corporate mirrors look identical), so a bare redirect is
+# MEDIUM/WARN. It escalates to HIGH only when it co-occurs with reviewer-directed
+# "assurance" prose (engineered to disarm a human/LLM reviewer) or with an
+# install-time / lifecycle script (a redirect that auto-runs persists on every
+# future install). Calibrated for accuracy over aggression: the benign-corpus FP
+# gate must stay green (a clean corporate mirror flags MEDIUM, never HIGH).
+_REGISTRY_CANONICAL_HOSTS = (
+    "registry.npmjs.org", "registry.yarnpkg.com", "registry.yarnpkg.org",
+    "pypi.org", "files.pythonhosted.org", "registry.bower.io",
+    "registry.npmmirror.com",  # well-known public mirror, not attacker-specific
+)
+_REGISTRY_SCAN_EXTS = {".sh", ".bash", ".zsh", ".ksh", ".conf", ".cfg", ".ini",
+                       ".toml", ".cmd", ".ps1", ".js", ".ts", ".py", ".rb",
+                       ".env", ".yml", ".yaml", ".npmrc", ".yarnrc"}
+_REGISTRY_SCAN_NAMES = {".npmrc", ".yarnrc", ".yarnrc.yml", "pip.conf", "pip.ini",
+                        ".pip.conf", "bunfig.toml", ".bunfig.toml"}
+_REGISTRY_MAX_SCAN_FILES = 2000
+_REGISTRY_MAX_SCAN_BYTES = 512 * 1024
+# A registry/index-url directive and the value it is set to (a literal URL or a
+# ${VAR}/$VAR reference resolved against same-file assignments). Covers npm/pip
+# (registry / index-url) and Yarn Berry (.yarnrc.yml npmRegistryServer). The
+# `\s*(?:[=:]\s*)?` form avoids the catastrophic-backtracking (ReDoS) of two
+# adjacent greedy `\s*` runs around an optional separator.
+_REGISTRY_DIRECTIVE_RE = re.compile(
+    r"""(?im)\b((?:extra-)?index-url|registry|npmRegistryServer|npmPublishRegistry)\b"""
+    r"""\s*(?:[=:]\s*)?["']?"""
+    r"""(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|https?://[^\s"']+)""")
+_URL_VAR_ASSIGN_RE = re.compile(
+    r"""(?im)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']?(https?://[^\s"']+)""")
+# Reviewer-directed assurance prose: self-justifying safety claims aimed at the
+# reviewer to disarm scrutiny of the redirect. Each alternative is specific
+# enough to be rare in benign docs — generic phrasing like "safe to use" or
+# "standard practice" is deliberately excluded to keep the HIGH escalation
+# false-positive-free.
+_REGISTRY_ASSURANCE_RE = re.compile(
+    r"""(?i)("""
+    r"""already public(\s+information)?|"""
+    r"""appsec[-\s]?audited|audited\s+(dependency|allowlist|allow-list)|"""
+    r"""(does not|doesn't)\s+introduce\s+(new\s+)?(disclosure|attack|exposure)\s*(surface)?|"""
+    r"""no\s+(new\s+)?(disclosure|attack|exposure)\s+surface|"""
+    r"""(is|are)\s+the\s+same\s+value(s)?\s+(published|referenced|shown)|"""
+    r"""no\s+(auth\w*|credentials?|secrets?)\s+(are\s+)?(written|stored|disclosed)"""
+    r""")""")
+
+
+_REGISTRY_VAR_REF_RE = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+
+
+def _registry_host(value, var_urls):
+    """Resolve a registry directive value to a hostname. Handles ${VAR}/$VAR
+    references via same-file URL assignments. Returns host or None."""
+    val = value.strip().strip('"\'')
+    var_ref = _REGISTRY_VAR_REF_RE.match(val)
+    if var_ref:
+        val = var_urls.get(var_ref.group(1))
+        if not val:
+            return None
+    if not val.startswith(("http://", "https://")):
+        return None
+    try:
+        return urllib.parse.urlsplit(val).hostname
+    except ValueError:
+        return None
+
+
+def detect_registry_hijack_raw(repo_path, ignore_patterns=None):
+    """Scan for package-registry redirection (GAP 3). Returns Finding objects:
+    a MEDIUM `registry-redirect` per affected file, plus a HIGH `registry-hijack`
+    when the redirect co-occurs with reviewer-assurance prose or an install-time
+    script. Reads files directly (like detect_trifecta_raw) so the standalone
+    assurance signal never surfaces on its own."""
+    findings = []
+    if not repo_path or not os.path.isdir(repo_path):
+        return findings
+    try:
+        walker = walk_repo(repo_path, ignore_patterns=ignore_patterns,
+                           skip_binary=True, skip_lockfiles=True)
+    except OSError:
+        return findings
+
+    scanned = 0
+    for file_path, rel_path in walker:
+        if scanned >= _REGISTRY_MAX_SCAN_FILES:
+            break
+        base = os.path.basename(file_path).lower()
+        ext = normalized_ext(base)
+        if ext not in _REGISTRY_SCAN_EXTS and base not in _REGISTRY_SCAN_NAMES:
+            continue
+        # Count toward the budget once a file passes the extension gate, so an
+        # adversarial flood of large config-extension files still terminates.
+        scanned += 1
+        try:
+            if os.path.getsize(file_path) > _REGISTRY_MAX_SCAN_BYTES:
+                continue
+            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        # Strip comment lines before matching directives: a commented-out mirror
+        # URL (common in setup.py / .npmrc docs) is not an active redirect.
+        scan_lines = [ln for ln in content.splitlines()
+                      if not ln.lstrip().startswith(("#", ";"))]
+        scan_content = "\n".join(scan_lines)
+
+        var_urls = {m.group(1): m.group(2)
+                    for m in _URL_VAR_ASSIGN_RE.finditer(scan_content)}
+        redirect_hosts = []
+        redirect_line = 0
+        for m in _REGISTRY_DIRECTIVE_RE.finditer(scan_content):
+            host = _registry_host(m.group(2), var_urls)
+            if host and not any(host == c or host.endswith("." + c)
+                                for c in _REGISTRY_CANONICAL_HOSTS):
+                if host not in redirect_hosts:
+                    redirect_hosts.append(host)
+                    if not redirect_line:
+                        redirect_line = scan_content.count("\n", 0, m.start()) + 1
+        if not redirect_hosts:
+            continue
+
+        hosts_str = ", ".join(redirect_hosts)
+        findings.append(Finding(
+            scanner="registry_hijack", severity="medium",
+            title="Package registry redirected to non-canonical host",
+            description=(
+                "A package-manager configuration points dependency resolution at "
+                f"a non-canonical endpoint ({hosts_str}). Corporate mirrors are "
+                "legitimate, so review whether this endpoint is trusted; an "
+                "untrusted one is a dependency-confusion / supply-chain redirect."),
+            file=rel_path, line=redirect_line, snippet=hosts_str,
+            category="registry-redirect"))
+
+        # Escalate to HIGH only on reviewer-directed assurance prose — the
+        # unambiguous manipulation signal. Install-script context alone is NOT
+        # escalated: legitimate corporate bootstrap/setup scripts routinely set a
+        # mirror, so escalating on filename would false-positive on every one.
+        if _REGISTRY_ASSURANCE_RE.search(content):
+            findings.append(Finding(
+                scanner="registry_hijack", severity="high",
+                title="Registry redirect wrapped in reviewer-disarming assurance prose",
+                description=(
+                    f"The registry redirect to {hosts_str} co-occurs with "
+                    "self-justifying assurance language ('already public', "
+                    "'audited', 'introduces no disclosure surface') engineered to "
+                    "disarm a reviewer. A genuine corporate mirror does not need to "
+                    "argue for its own safety — this is the dependency-confusion "
+                    "social-engineering pattern."),
+                file=rel_path, line=redirect_line, snippet=hosts_str,
+                category="registry-hijack"))
+    return findings
+
+
+def scan_text_trifecta(text, rel_path):
+    """Run the three Lethal-Trifecta primitive regexes over an in-memory text
+    blob (a disassembled .pyc listing, an extracted archive member) and return
+    one Finding per primitive that matches.
+
+    Unlike detect_trifecta_raw — which is path-based, gated to source
+    extensions, and emits only when ALL THREE primitives co-occur to feed Rule
+    19 — this helper:
+      * accepts text directly (no file on disk, no extension gate), and
+      * emits each matched primitive INDIVIDUALLY, because a single exec or
+        credential-read primitive hidden inside compiled bytecode or an archive
+        member is itself worth surfacing (that hiding is the whole attack).
+
+    Severity stays "high"; the caller re-labels title/category as needed (e.g.
+    bytecode-hidden-logic, archive-indirection). Comment-only lines are skipped,
+    matching detect_trifecta_raw, and only the first match per primitive is
+    recorded (bounded — early-exits once all three are seen).
+    """
+    findings = []
+    primitives = (
+        (_TRIFECTA_EXEC_RE, "Code execution primitive", "code-execution",
+         "Raw-content match for exec primitive (os.system, subprocess, eval, exec, shell=true)"),
+        (_TRIFECTA_NETWORK_RE, "Outbound network primitive", "exfiltration",
+         "Raw-content match for outbound network primitive (http.client, requests.post, urllib, socket, axios)"),
+        (_TRIFECTA_CREDENTIAL_RE, "Credential read primitive", "credential-read",
+         "Raw-content match for credential read primitive (.ssh/id_*, .aws/credentials, .netrc, GITHUB_TOKEN)"),
+    )
+    seen = [False, False, False]
+    # split('\n') (not splitlines()) so a payload cannot be hidden across a
+    # Unicode line-boundary char (\x0b,  , …) that splitlines would break
+    # but a single-line regex would otherwise see as one line on the file path.
+    for line_num, line in enumerate(text.split('\n'), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith(('#', '//', ';;', '/*', '*')):
+            continue
+        if len(line) > MAX_LINE_LENGTH:
+            line = line[:MAX_LINE_LENGTH]
+        for idx, (regex, title, category, desc) in enumerate(primitives):
+            if not seen[idx] and regex.search(line):
+                seen[idx] = True
+                findings.append(Finding(
+                    scanner="trifecta_raw", severity="high",
+                    title=title, description=desc,
+                    file=rel_path, line=line_num,
+                    snippet=line.strip()[:120],
+                    category=category,
+                ))
+        if all(seen):
+            break
+    return findings
+
+
+# --- Correlation Engine ---
+
+
+def findings_from_dicts(dicts):
+    """Convert a sequence of finding dicts back into Finding dataclass instances.
+
+    Shared helper used by both `aggregate_json.run_correlation_pass` and
+    `auto_scan.run_targeted_scan` to avoid diverged copy-paste of the
+    conversion logic. (Pattern-recognition PR-F1, 2026-04-05.)
+
+    Skips items that aren't dicts or fail construction (e.g. malformed
+    scanner output). Type coercion for `line` (to int) is delegated to
+    Finding.__post_init__ which handles None, str, and out-of-range values.
+    """
+    return list(findings_from_dicts_iter(dicts))
+
+
+def findings_from_dicts_iter(dicts):
+    """Yield Finding instances lazily from a sequence of dicts.
+
+    Generator variant of findings_from_dicts. Passing this directly to
+    correlate() avoids holding a full parallel Finding list in memory
+    alongside the source dicts -- correlate() builds its by_file dict
+    by consuming the iterator once, so no separate list is ever created.
+    """
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        try:
+            yield Finding(
+                scanner=d.get("scanner", "unknown"),
+                severity=d.get("severity", "low"),
+                title=d.get("title", ""),
+                description=d.get("description", ""),
+                file=d.get("file", ""),
+                line=d.get("line", 0),
+                snippet=d.get("snippet", ""),
+                category=d.get("category", ""),
+                rule_id=d.get("rule_id", ""),
+                confidence=d.get("confidence", 0.0),
+                attacker=d.get("attacker", ""),
+                boundary=d.get("boundary", ""),
+                asset=d.get("asset", ""),
+                freshness_status=d.get("freshness_status", ""),
+                evidence_class=d.get("evidence_class", ""),
+            )
+        except (TypeError, ValueError):
+            continue
+
+
+def _build_local_import_graph(repo_path):
+    """Return {relative_python_file: {relative_python_file, ...}} local imports."""
+    module_files = {}
+    python_files = []
+    for file_path, rel_path in walk_repo(repo_path, skip_binary=True, skip_lockfiles=True):
+        if not rel_path.endswith('.py'):
+            continue
+        rel_path = rel_path.replace(os.sep, '/')
+        python_files.append((file_path, rel_path))
+        module = rel_path[:-3].replace('/', '.')
+        module_files[module] = rel_path
+        if module.endswith('.__init__'):
+            module_files[module[:-9]] = rel_path
+
+    def resolve(module):
+        while module:
+            if module in module_files:
+                return module_files[module]
+            module = module.rpartition('.')[0]
+        return None
+
+    graph = {rel_path: set() for _, rel_path in python_files}
+    for file_path, rel_path in python_files:
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as source:
+                tree = ast.parse(source.read(), filename=rel_path)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        package = rel_path[:-3].replace('/', '.').split('.')[:-1]
+        for node in ast.walk(tree):
+            candidates = []
+            if isinstance(node, ast.Import):
+                candidates.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    keep = max(0, len(package) - node.level + 1)
+                    prefix = package[:keep]
+                    base = '.'.join(prefix + ([node.module] if node.module else []))
+                else:
+                    base = node.module or ''
+                if base:
+                    candidates.append(base)
+                candidates.extend(
+                    '.'.join(part for part in (base, alias.name) if part)
+                    for alias in node.names if alias.name != '*'
+                )
+            elif (isinstance(node, ast.Call) and node.args
+                  and isinstance(node.args[0], ast.Constant)
+                  and isinstance(node.args[0].value, str)):
+                func = node.func
+                if (isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and (func.value.id, func.attr) in {
+                            ('importlib', 'import_module'), ('runpy', 'run_module')
+                        }):
+                    candidates.append(node.args[0].value)
+            for candidate in candidates:
+                target = resolve(candidate)
+                if target and target != rel_path:
+                    graph[rel_path].add(target)
+    return graph
+
+
+def _cross_file_trifecta(by_file, exec_files, network_files, credential_files,
+                         repo_path):
+    if not repo_path or not all((exec_files, network_files, credential_files)):
+        return None
+    graph = _build_local_import_graph(repo_path)
+    contributors = exec_files | network_files | credential_files
+    for root in sorted(contributors):
+        reached, pending = {root}, list(graph.get(root, ()))
+        while pending:
+            current = pending.pop()
+            if current in reached:
+                continue
+            reached.add(current)
+            pending.extend(graph.get(current, ()))
+        if (reached & exec_files and reached & network_files
+                and reached & credential_files):
+            return root
+    return None
+
+
+# --- Typed exfiltration correlation leaves (Rules 1 & 3) -----------------
+# Rules 1 and 3 pair an env/credential or sensitive-read leaf with a network
+# leaf. Classification uses ONLY structured finding identity - scanner,
+# rule_id, category, and the fixed primitive titles emitted by the raw
+# trifecta / bytecode scanners - never free-text description or title prose.
+# Prose keyword matching manufactured critical compounds from vocabulary
+# accidents (e.g. SC-NET-001 "Hardcoded IP Address", whose generic
+# "Potential hardcoded secret detected" description satisfied the env side
+# with no credential access present).
+
+# Categories whose semantics ARE env/credential access or egress, assigned
+# by scanners and signed rulepacks (structured fields, not prose).
+_EXFIL_ENV_CATEGORIES = frozenset({
+    "env access", "credential-read", "credential-exfiltration",
+    "credential-theft", "secret-exposure", "credential-path-directive",
+})
+_EXFIL_SENSITIVE_READ_CATEGORIES = frozenset({
+    "credential-path-directive", "credential-read", "secret-storage",
+    "sensitive-read",
+})
+_EXFIL_NETWORK_CATEGORIES = frozenset({"network", "network-egress"})
+
+# (scanner, category) pairs whose findings ARE an outbound-network directive or
+# egress primitive even though their category is not `network`. Instruction
+# files (SKILL.md, agent prose) never trigger the raw network primitives above,
+# so without these a skill that says "read ~/.aws/credentials, then POST it to
+# https://..." lost its critical exfil compound and dropped from BLOCK to WARN.
+# Keyed on the emitting scanner as well as the category so an unrelated scanner
+# reusing a generic category name (e.g. `exfiltration`) does not join the set.
+# `skill_threats: credential-exfiltration` is NOT listed as a category: most of
+# its rules (ST-EX-005..008) are environment READS, and typing the whole
+# category as egress would let two env reads pair into a critical with no
+# network call anywhere. Its one egress rule is typed by id below.
+_EXFIL_NETWORK_SCANNER_CATEGORIES = frozenset({
+    # Both prose-imperative rules require a URL target in the directive.
+    ("skill_threats", "prose-imperative"),
+    ("skill_threats", "memory-heist-exfil"),
+    ("sast", "exfiltration"),
+    ("sast", "git-exfiltration"),
+    ("runtime_dynamism", "fetch-execute"),
+})
+
+# Fixed primitive identities from detect_trifecta_raw() and scan_bytecode -
+# (scanner, title) pairs pinned by their emitters and their tests.
+_EXFIL_NETWORK_RULE_IDS = frozenset({
+    "ST-EX-001",  # known exfiltration webhook service (webhook.site, ...)
+})
+_EXFIL_NETWORK_PRIMITIVES = frozenset({
+    ("trifecta_raw", "Outbound network primitive"),
+    ("bytecode", "Outbound network primitive"),
+})
+_EXFIL_CRED_READ_PRIMITIVES = frozenset({
+    ("trifecta_raw", "Credential read primitive"),
+    ("bytecode", "Credential read primitive"),
+})
+
+
+def _exfil_capabilities(f):
+    """Classify a finding's exfil-correlation capabilities from structured
+    fields only. Returns a subset of {"env", "sensitive_read", "network"}.
+
+    Deliberate exclusions:
+    - SC-NET-* secrets rules (hardcoded IP addresses): an IP literal is
+      neither credential access nor an outbound call. Their category is
+      literally `network`, so the network side excludes the `secrets` scanner
+      outright rather than relying on the category string.
+    - Free-text keyword matches against description/title prose: the exact
+      failure mode this replaces.
+    """
+    caps = set()
+    scanner = f.scanner or ""
+    category = (f.category or "").lower()
+    rule_id = f.rule_id or ""
+    if (category in _EXFIL_ENV_CATEGORIES
+            or (scanner, f.title) in _EXFIL_CRED_READ_PRIMITIVES
+            or rule_id.startswith("ST-EX-")
+            or (scanner == "secrets" and rule_id.startswith("SC-")
+                and not rule_id.startswith("SC-NET-"))):
+        caps.add("env")
+    if (category in _EXFIL_SENSITIVE_READ_CATEGORIES
+            or (scanner, f.title) in _EXFIL_CRED_READ_PRIMITIVES
+            or rule_id == "ST-EX-004"
+            or rule_id.startswith("ST-CR-")):
+        caps.add("sensitive_read")
+    if ((category in _EXFIL_NETWORK_CATEGORIES and scanner != "secrets")
+            or (scanner, category) in _EXFIL_NETWORK_SCANNER_CATEGORIES
+            or (scanner == "dataflow" and rule_id == "DF-NET-001")
+            or rule_id in _EXFIL_NETWORK_RULE_IDS
+            or (scanner, f.title) in _EXFIL_NETWORK_PRIMITIVES):
+        caps.add("network")
+    return caps
+
+
+def correlate(findings, repo_path=None):
+    """Flag compound threats where multiple findings in the same file form attack chains.
+
+    Rules:
+    - env/credential read + network POST in same file = "Potential data exfiltration" (critical)
+    - base64 encoding + exec/eval in same file = "Obfuscated code execution" (critical)
+    - file read of sensitive paths + any network call = "Credential theft pattern" (high)
+    - Rule 19: exec + network + credential read in same file = "Lethal Trifecta" (critical)
+    """
+    correlated = []
+
+    # Group findings by file path. Scanners emit paths relative to the
+    # scanned repo, so we use the path string as-is. (An earlier revision
+    # tried os.path.realpath here but that resolves relative paths against
+    # the current working directory, not the scan target, which fragmented
+    # findings and broke Rule 19. Symlink-based split attacks across two
+    # different relative paths are a P1 follow-up.)
+    by_file = {}
+    _SYNTHETIC_FILE_TOKENS = ("", "(multiple files)")
+    # Scanners whose findings are already compound family verdicts (a YARA
+    # match is a confirmed multi-string indicator, not a primitive capability).
+    # Feeding their descriptive prose back into keyword correlation
+    # manufactures compound findings from vocabulary accidents ("$_REQUEST"
+    # in a webshell explanation satisfies network_keywords with no network call
+    # present). They remain in the report at full weight; they simply never act
+    # as correlation LEAVES. Because every correlation rule (1-27, trifecta,
+    # cross-file trifecta) reads from by_file/file_findings, this single
+    # exclusion covers all rules uniformly. No correlation rule keys on
+    # malware-family categories, so excluding the yara scanner loses nothing.
+    _CORRELATION_LEAF_EXCLUDED_SCANNERS = {"yara"}
+    for f in findings:
+        # Defense in depth (Issue #38): exclude synthetic aggregates (no real
+        # importer location) from `by_file` so they cannot seed a correlation
+        # bucket that later picks up unrelated findings tied to the same fake
+        # path. Real findings always have a non-empty file path.
+        if not f.file or f.file in _SYNTHETIC_FILE_TOKENS:
+            continue
+        # Exclude compound-family scanners from the correlation leaf pool.
+        # Their findings stay in the report (the caller still has the full
+        # `findings` list); they just never seed/satisfy a correlation bucket.
+        if f.scanner in _CORRELATION_LEAF_EXCLUDED_SCANNERS:
+            continue
+        by_file.setdefault(f.file, []).append(f)
+
+    network_keywords = {"network", "http", "fetch", "request", "post", "webhook", "curl", "wget", "exfiltration"}
+    exec_keywords = {"eval", "exec", "system", "subprocess", "code execution", "shell"}
+    # Legacy prose-keyword sets retained ONLY for the rules that were not
+    # part of the typed-correlation rewrite (Rules 27/28/29 below). Rules 1
+    # and 3 classify leaves structurally via _exfil_capabilities instead.
+    env_keywords = {"env access", "environ", "credential", "secret", ".env", ".ssh", ".aws", "keychain"}
+    sensitive_read_keywords = {".env", ".ssh", ".aws", "credential", "keychain", "browser data", "config"}
+    prompt_injection_keywords = {"prompt injection", "instruction override", "persona reassignment", "confirmation bypass"}
+    lifecycle_keywords = {"lifecycle", "hook", "postinstall", "preinstall", "cmdclass", "setup.py"}
+    dynamic_import_keywords = {"dynamic import", "importlib", "import_module", "dynamic-import"}
+    time_bomb_keywords = {"time bomb", "time-bomb", "datetime comparison", "activation trigger", "unix timestamp"}
+    dynamic_desc_keywords = {"dynamic-description", "rug-pull", "rug pull enabler", "dynamic tool description"}
+    mcp_server_keywords = {"mcp", "tool-poisoning", "mcp_security", "mcp-config", "rug-pull-enabler"}
+    phantom_dep_keywords = {"phantom-dependency", "phantom dep", "shadow dependency"}
+    pipe_exfil_keywords = {"pipe exfiltration", "reverse shell", "/dev/tcp", "pipe-exfiltration"}
+    openclaw_keywords = {"tool-poisoning", "agent-injection", "frontmatter", "clawhavoc-delivery", "clawhubignore-bypass"}
+
+    # Rules 22-27: Checkmarx-sourced compound threat keywords
+    command_jacking_keywords = {"command-jacking", "shadows system command"}
+    model_confusion_keywords = {"model-confusion", "from_pretrained", "trust_remote_code"}
+    compromised_action_keywords = {"compromised-action", "compromised action"}
+    secrets_keywords = {"secret", "credential", "token", "password", "api.key"}
+    steg_keywords = {"audio-steganography", "steganography", "audio steg"}
+    worm_keywords = {"worm-propagation", "npm publish", "package enumeration"}
+    npm_token_keywords = {"npmrc", "npm_token", "npm-token", "credential-theft"}
+    destructive_keywords = {"destructive-command", "shred", "cipher /w", "disk overwrite", "home directory"}
+    locale_gating_keywords = {"locale-gating", "locale gating", "geoip", "country_code", "navigator.language"}
+    proc_mem_keywords = {"memory-forensics", "process memory read"}
+    process_enum_keywords = {"process-enumeration", "runner.worker", "process hunt"}
+    llmo_keywords = {"llmo-suspicious", "llmo suspicious"}
+    brand_new_keywords = {"freshness-brand-new-package", "brand new package", "single version"}
+
+    def has_category(file_findings, keywords, exclude_scanner=None):
+        for f in file_findings:
+            if exclude_scanner and f.scanner == exclude_scanner:
+                continue
+            tags = f._tags
+            for kw in keywords:
+                if kw in tags:
+                    return True
+        return False
+
+    def first_match(file_findings, keywords, exclude_categories=None):
+        """Return the FIRST finding whose _tags contains any of the keywords,
+        skipping findings whose `category` is in `exclude_categories` (defense
+        in depth, Issue #38: keep encoding/obfuscation findings from satisfying
+        the exec side through their own descriptive prose such as 'shellcode').
+        Returns None when nothing matches."""
+        exclude_categories = exclude_categories or set()
+        for f in file_findings:
+            if f.category in exclude_categories:
+                continue
+            tags = f._tags
+            for kw in keywords:
+                if kw in tags:
+                    return f
+        return None
+
+    def is_encoding_leaf(f):
+        # "obfuscated-exec" also labels ordinary dynamic imports/reloads;
+        # only a real encoder/encoded-payload finding can seed Rule 2.
+        return (f.category in {"encoding", "hex-encoding"}
+                or (f.scanner == "ast_analysis"
+                    and f.title == "Obfuscated Exec: Encoded Payload"))
+
+    def strongest_evidence(findings_iter):
+        """Reduce a set of contributing (leaf) findings to the strongest
+        evidence_class among them: direct > structural > inferred. An
+        escalating correlation edge needs at least one direct leaf to stay
+        above LOW in the report layer; inferred/structural leaves alone cap
+        at LOW. Empty input -> inferred (safest, caps at LOW)."""
+        classes = {getattr(f, "evidence_class", "inferred") for f in findings_iter}
+        if "direct" in classes:
+            return "direct"
+        if "structural" in classes:
+            return "structural"
+        return "inferred"
+
+    def has_distinct_typed_pair(file_findings, capability_a, capability_b):
+        """True when SOME two DIFFERENT findings carry capability_a and
+        capability_b. A single finding may carry several capabilities (a
+        `credential-exfiltration` rule is both env access and egress), so
+        comparing only the first leaf of each side could miss a valid pair:
+        A(env+net), B(env) has the pair B->A but first-leaf comparison sees
+        A on both sides and stays silent."""
+        side_a = [f for f in file_findings if capability_a in _exfil_capabilities(f)]
+        side_b = [f for f in file_findings if capability_b in _exfil_capabilities(f)]
+        return any(a.finding_id != b.finding_id for a in side_a for b in side_b)
+
+    def has_corroborated_typed_pair(file_findings, capability_a, capability_b):
+        """Raw trifecta regex leaves alone do not establish an exfil flow."""
+        side_a = [f for f in file_findings if capability_a in _exfil_capabilities(f)
+                  and f.scanner != "trifecta_raw"]
+        side_b = [f for f in file_findings if capability_b in _exfil_capabilities(f)
+                  and f.scanner != "trifecta_raw"]
+        if any(a.finding_id != b.finding_id for a in side_a for b in side_b):
+            return True
+        # A source nested in the very same raw network-call line is direct
+        # composition, even when the network matcher has no richer rule ID.
+        raw_network = [f for f in file_findings if f.scanner == "trifecta_raw"
+                       and capability_b in _exfil_capabilities(f)]
+        return any(a.line > 0 and a.line == b.line and a.snippet and b.snippet
+                   and (a.snippet in b.snippet or b.snippet in a.snippet)
+                   for a in side_a for b in raw_network)
+
+    def compound_code_severity(filepath, *groups):
+        """Code capabilities far apart are a review lead, not a proven chain.
+
+        Keep instruction documents at their existing severity because distant
+        directives can still be executed together by an agent. For code and
+        binaries, require distinct findings in one 25-line region to escalate.
+        """
+        if os.path.splitext(filepath)[1].lower() in {".md", ".markdown", ".txt", ".rst", ".adoc"}:
+            return "critical"
+        events = sorted(
+            (f.line, group_index, f.finding_id)
+            for group_index, group in enumerate(groups)
+            for f in group if f.line > 0
+        )
+        counts = [0] * len(groups)
+        finding_ids = defaultdict(int)
+        left = 0
+        for right, (line, group_index, finding_id) in enumerate(events):
+            counts[group_index] += 1
+            finding_ids[finding_id] += 1
+            while line - events[left][0] > 25:
+                _, old_group, old_id = events[left]
+                counts[old_group] -= 1
+                finding_ids[old_id] -= 1
+                if finding_ids[old_id] == 0:
+                    del finding_ids[old_id]
+                left += 1
+            if all(counts) and len(finding_ids) >= 2:
+                return "critical"
+        return "high"
+
+    for filepath, file_findings in by_file.items():
+        # Rule 1: env/credential access + network call, from DISTINCT,
+        # structurally-typed leaves. Keyword matching over finding prose used
+        # to manufacture this compound from vocabulary accidents - a lone
+        # "Hardcoded IP Address" secrets finding (description "Potential
+        # hardcoded secret detected") satisfied the env side with no
+        # credential access present, so any IP literal next to an outbound
+        # primitive produced a spurious critical BLOCK that masked real
+        # verdicts (Pluto reflective-RCE audit, 2026-09-20).
+        if has_distinct_typed_pair(file_findings, "env", "network"):
+            corroborated = has_corroborated_typed_pair(file_findings, "env", "network")
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical" if corroborated else "high",
+                title="Potential Data Exfiltration",
+                description=("Environment/credential access combined with network call in the same file"
+                             if corroborated else "Raw network and credential primitives co-occur in the same file; data flow is unverified"),
+                file=filepath,
+                line=0,
+                snippet="[compound: env read + network call]",
+                category="exfiltration"
+            ))
+
+        # Rule 2: encoding + a DISTINCT, structured code-execution finding.
+        # Issue #38: an entropy/obfuscation finding must not satisfy BOTH sides of
+        # this rule through its own descriptive prose (e.g. "may be shellcode").
+        # Require the two sides to come from DISTINCT findings AND the exec side
+        # to be a real, non-obfuscation finding so a single "Long Hex String"
+        # finding does not self-correlate.
+        encoding_hits = [f for f in file_findings if is_encoding_leaf(f)]
+        execution_hits = [f for f in file_findings
+                          if f.category not in {"encoding", "obfuscation", "decoded-payload"}
+                          and any(kw in f._tags for kw in exec_keywords)]
+        if any(a.finding_id != b.finding_id for a in encoding_hits for b in execution_hits):
+            severity = compound_code_severity(filepath, encoding_hits, execution_hits)
+            if not any(f.title != "Long Hex String" for f in encoding_hits):
+                # A bare hex literal can be a checksum. Without a decoder or
+                # encoded-payload finding, nearby execution is only co-occurrence.
+                severity = "high"
+            correlated.append(Finding(
+                scanner="correlation",
+                severity=severity,
+                title="Obfuscated Code Execution",
+                description="Base64/encoding combined with code execution in the same file",
+                file=filepath,
+                line=0,
+                snippet="[compound: encoding + exec]",
+                category="obfuscation"
+            ))
+
+        # Rule 3: sensitive file read + network call, from DISTINCT,
+        # structurally-typed leaves (same typed model as Rule 1).
+        if has_distinct_typed_pair(file_findings, "sensitive_read", "network"):
+            # Don't duplicate if already caught by Rule 1
+            already_flagged = any(c.file == filepath and c.title == "Potential Data Exfiltration" for c in correlated)
+            if not already_flagged:
+                correlated.append(Finding(
+                    scanner="correlation",
+                    severity="high",
+                    title="Credential Theft Pattern",
+                    description="Sensitive file read combined with network call in the same file",
+                    file=filepath,
+                    line=0,
+                    snippet="[compound: sensitive read + network call]",
+                    category="exfiltration"
+                ))
+
+        # Rule 4: prompt injection + code execution (91% of malicious skills per Snyk)
+        prompt_hits = [f for f in file_findings if any(kw in f._tags for kw in prompt_injection_keywords)]
+        prompt_exec_hits = [f for f in file_findings if any(kw in f._tags for kw in exec_keywords)]
+        if prompt_hits and prompt_exec_hits:
+            correlated.append(Finding(
+                scanner="correlation",
+                severity=compound_code_severity(filepath, prompt_hits, prompt_exec_hits),
+                title="Prompt-Assisted Code Execution",
+                description="Prompt injection combined with code execution in the same file (top malicious skill pattern)",
+                file=filepath,
+                line=0,
+                snippet="[compound: prompt injection + code exec]",
+                category="compound-attack"
+            ))
+
+        # Rule 5: an actionable install hook plus a network capability.
+        if (any(f.scanner == "lifecycle"
+                and f.category in {"lifecycle-hook", "install-script-ioc"}
+                and "(Known Safe Pattern)" not in f.title
+                for f in file_findings)
+                and any("network" in _exfil_capabilities(f) for f in file_findings)):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Install-Time Exfiltration",
+                description="Lifecycle hook combined with network call in the same file (install-time data theft)",
+                file=filepath,
+                line=0,
+                snippet="[compound: lifecycle hook + network call]",
+                category="exfiltration"
+            ))
+
+        # Rule 6: SQL injection → stored prompt injection (Trend Micro TrendAI, May 2025)
+        sql_keywords = {"sql-injection", "string concatenation in execute", "sql select", "sql insert"}
+        mcp_keywords = {"tool-poisoning", "mcp_security", "skill_threats", "prompt injection"}
+        if has_category(file_findings, sql_keywords) and has_category(file_findings, mcp_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="SQL Injection Prompt Escalation",
+                description="SQL injection in MCP code can store malicious prompts for agent execution (Trend Micro TrendAI, 2025)",
+                file=filepath,
+                line=0,
+                snippet="[compound: sql injection + prompt injection in MCP file]",
+                category="mcp-escalation"
+            ))
+
+        # Rule 7: Tool metadata poisoning + code execution chain
+        poisoning_keywords = {"tool-poisoning", "tool shadowing", "mcp-tool-injection", "tool metadata"}
+        if has_category(file_findings, poisoning_keywords) and has_category(file_findings, exec_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Tool Metadata Poisoning Chain",
+                description="Hidden instructions in tool descriptions combined with code execution (Invariant Labs TPA pattern)",
+                file=filepath,
+                line=0,
+                snippet="[compound: tool poisoning + code execution]",
+                category="mcp-escalation"
+            ))
+
+        # Rule 8: Unicode smuggling + prompt injection in documentation
+        ext_lower = os.path.splitext(filepath)[1].lower()
+        if ext_lower in ('.md', '.txt', '.rst', '.adoc'):
+            smuggling_keywords = {"unicode-smuggling", "zero-width", "rtl override", "homoglyph"}
+            pi_keywords = {"prompt-injection", "prompt injection"}
+            if has_category(file_findings, smuggling_keywords) and has_category(file_findings, pi_keywords):
+                correlated.append(Finding(
+                    scanner="correlation",
+                    severity="high",
+                    title="Hidden Instruction Attack in Documentation",
+                    description="Invisible unicode combined with prompt injection in documentation (text steganography attack)",
+                    file=filepath,
+                    line=0,
+                    snippet="[compound: unicode smuggling + prompt injection in doc]",
+                    category="compound-attack"
+                ))
+
+        # Rule 9: Dynamic import/eval + network fetch = "Deferred Payload Loading"
+        import_hits = [f for f in file_findings if any(kw in f._tags for kw in dynamic_import_keywords)]
+        network_hits = [f for f in file_findings if "network" in _exfil_capabilities(f)]
+        if import_hits and network_hits:
+            correlated.append(Finding(
+                scanner="correlation",
+                severity=compound_code_severity(filepath, import_hits, network_hits),
+                title="Deferred Payload Loading",
+                description="Dynamic import combined with network fetch in the same file. Code can download and load arbitrary modules at runtime.",
+                file=filepath,
+                line=0,
+                snippet="[compound: dynamic import + network fetch]",
+                category="deferred-payload"
+            ))
+
+        # Rule 10: Date/counter comparison + exec/eval = "Time-Triggered Malware"
+        time_hits = [f for f in file_findings
+                     if f.rule_id not in {"RD-TB-002", "RD-TB-003", "RD-TB-005"}
+                     and any(kw in f._tags for kw in time_bomb_keywords)]
+        time_exec_hits = [f for f in file_findings if any(kw in f._tags for kw in exec_keywords)]
+        if time_hits and time_exec_hits:
+            correlated.append(Finding(
+                scanner="correlation",
+                severity=compound_code_severity(filepath, time_hits, time_exec_hits),
+                title="Time-Triggered Malware",
+                description="Time/counter-based activation combined with code execution. Classic time bomb pattern (Socket.dev NuGet, Nov 2025).",
+                file=filepath,
+                line=0,
+                snippet="[compound: time bomb + code execution]",
+                category="time-triggered-malware"
+            ))
+
+        # Rule 11: Dynamic tool description + MCP server signals = "MCP Rug Pull Enabler"
+        if has_category(file_findings, dynamic_desc_keywords) and has_category(file_findings, mcp_server_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="high",
+                title="MCP Rug Pull Enabler",
+                description="MCP server with dynamic tool descriptions. Tool behavior can change without code changes (Lukas Kania, March 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: dynamic description + MCP server]",
+                category="rug-pull"
+            ))
+
+        # Rule 12: Phantom dependency + network call = "Shadow Dependency with Network"
+        # Only a phantom finding that is itself medium or above can feed a
+        # critical correlation; a low-confidence phantom (type-only or doc
+        # references) must not be inflated to critical by an unrelated network hit.
+        phantom_actionable = [f for f in file_findings
+                              if f.severity in ('critical', 'high', 'medium')
+                              and any(kw in f._tags for kw in phantom_dep_keywords)]
+        if phantom_actionable and has_category(file_findings, network_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Shadow Dependency with Network Access",
+                description="Undeclared dependency combined with network access. Potential supply chain attack via shadow dependency.",
+                file=filepath,
+                line=0,
+                snippet="[compound: phantom dependency + network call]",
+                category="shadow-dependency"
+            ))
+
+        # Rule 13: Pipe exfiltration in shell scripts
+        if has_category(file_findings, pipe_exfil_keywords) and has_category(file_findings, network_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Shell Script Data Exfiltration Chain",
+                description="Shell script contains pipe exfiltration pattern combined with network tool. Data flows from sensitive source through pipe to external endpoint.",
+                file=filepath,
+                line=0,
+                snippet="[compound: pipe exfiltration + network sink]",
+                category="pipe-exfiltration"
+            ))
+
+        # Rule 14: OpenClaw skill compound attack (cross-scanner signal only)
+        if has_category(file_findings, openclaw_keywords) and has_category(file_findings, prompt_injection_keywords, exclude_scanner="agent_skills"):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Agent Skill Compound Attack",
+                description="Multiple attack vectors in agent skill: tool poisoning combined with prompt injection. Matches ClawHavoc campaign pattern.",
+                file=filepath,
+                line=0,
+                snippet="[compound: tool/config poisoning + prompt injection]",
+                category="openclaw-compound"
+            ))
+
+        # Rule 15: git dependency + lifecycle hook = npmrc injection risk
+        git_dep_keywords = {"git-dependency", "git dependency", "git+"}
+        if has_category(file_findings, git_dep_keywords) and has_category(file_findings, lifecycle_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="high",
+                title="Git Dependency with Lifecycle Hook",
+                description="Git dependency combined with lifecycle hook in the same package.json. Git deps can inject .npmrc to override git binary (PackageGate bypass, npm unfixed).",
+                file=filepath,
+                line=0,
+                snippet="[compound: git dependency + lifecycle hook]",
+                category="npmrc-injection-risk"
+            ))
+
+        # Rule 16: missing integrity + untrusted URL = lockfile tampering
+        missing_integrity_keywords = {"missing-integrity", "missing integrity", "no integrity"}
+        untrusted_url_keywords = {"untrusted-registry", "untrusted registry", "insecure-protocol"}
+        if has_category(file_findings, missing_integrity_keywords) and has_category(file_findings, untrusted_url_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Lockfile Tampering Indicator",
+                description="Missing integrity hashes combined with untrusted registry URLs. Strong indicator of lockfile manipulation.",
+                file=filepath,
+                line=0,
+                snippet="[compound: missing integrity + untrusted URL]",
+                category="lockfile-tampering"
+            ))
+
+        # Rule 17: .pth file + base64/exec (liteLLM-style startup injection)
+        pth_keywords = {"pth-injection", ".pth file", "pth file"}
+        pth_exec_keywords = {"exec", "eval", "compile", "base64", "obfuscat"}
+        if has_category(file_findings, pth_keywords) and has_category(file_findings, pth_exec_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Python Startup Injection (liteLLM-style)",
+                description=".pth file with code execution or obfuscated payload. Matches March 2026 liteLLM supply chain attack pattern: .pth files execute on Python startup, exfiltrating credentials without user action.",
+                file=filepath,
+                line=0,
+                snippet="[compound: .pth file + exec/base64]",
+                category="pth-injection"
+            ))
+
+        # Rule 18: .pth file + known IOC = "Known Supply Chain .pth Attack"
+        # (previously mis-labeled as Rule 16 — corrected 2026-04-05)
+        known_ioc_keywords = {"known-ioc", "known malicious", "ioc match", "ioc database"}
+        if has_category(file_findings, pth_keywords) and has_category(file_findings, known_ioc_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Known Supply Chain .pth Attack",
+                description="Known malicious .pth file from IOC database. Confirmed supply chain attack vector.",
+                file=filepath,
+                line=0,
+                snippet="[compound: .pth file + known IOC match]",
+                category="pth-injection"
+            ))
+
+        # Rule 19: Lethal Trifecta — exec + outbound network + credential read
+        # all in the same file. Named after Snyk's terminology. Per the
+        # SkillSafe ClawHavoc post-mortem, this pattern catches ~91% of
+        # malicious skills that evade the simpler Rule 1/Rule 3 checks.
+        #
+        # False-positive hardening (2026-04-05 code review):
+        #   - Narrow keywords: removed bare "exec", "post", "http", "fork",
+        #     "socket", "network", "request", ".env", "password", "secret",
+        #     "credential". Those substrings appear in legitimate CI build
+        #     scripts (e.g. "executable", "postgres", "urllib HTTP request",
+        #     ".env.example", "password field") and fired false positives
+        #     at the critical level.
+        #   - Require each primitive-hit to come from a distinct scanner.
+        #     A single kitchen-sink finding that mentions all three primitives
+        #     in its description should not trip the rule on its own — real
+        #     Lethal Trifecta malware has each primitive flagged by the
+        #     appropriate specialized scanner (sast/dataflow/secrets).
+        trifecta_exec_keywords = {
+            "code execution", "code-execution", "arbitrary code",
+            "remote code", "shell execution", "shell-exec",
+            "eval(", "exec(", "os.system(", "os.system ",
+            "subprocess.run", "subprocess.call", "subprocess.popen",
+            "subprocess.check_output", "subprocess.exec",
+            "child_process.exec", "child_process.spawn",
+            "child_process.execsync", "command injection",
+            "shell=true", "dangerous exec",
+        }
+        trifecta_network_keywords = {
+            "exfiltration", "exfiltrate", "data theft",
+            "outbound network", "outbound-network", "outbound http",
+            "outbound-http", "webhook post", "webhook-post", "webhook exfil",
+            "reverse shell", "reverse-shell", "/dev/tcp/",
+            "requests.post(", "urllib.request.urlopen(",
+            "socket.connect(", "socket.send(", "socket.sendto(",
+            "http.client.httpsconnection", "http.client.httpconnection",
+            "node-fetch(", "axios.post(", "axios.get(",
+            "httpx.post(", "httpx.get(", "httpx.client(",
+            "aiohttp.clientsession",
+            "command and control", "c2 callback", "data posted to external",
+            "posts to webhook",
+            "flows to sink", "tainted data reaches sink",
+        }
+        trifecta_credential_keywords = {
+            "credential read", "credential-read", "credential file",
+            "credential access", "credential theft", "credential exfil",
+            "secret read", "secret-read", "secret exfil",
+            ".env read", ".env access",
+            ".ssh/id_", ".aws/credentials", ".aws/config",
+            ".netrc", "id_rsa", "id_ed25519",
+            "keychain access", "keychain read",
+            "github_token", "gh_token", "npm_token", "aws_secret_access_key",
+            "aws_access_key_id", "private key read", "token theft",
+            "/etc/shadow", "/etc/passwd", "keyring.get_password(",
+            "os.popen('printenv", 'os.popen("printenv',
+        }
+
+        def _primitive_finding_ids(keywords):
+            """Return set of distinct finding-indices that matched the keywords.
+
+            Using indices (not scanner names) means multiple findings from
+            the same synthetic scanner (e.g. trifecta_raw emits one finding
+            per primitive) still count as distinct contributors — which is
+            correct. The check blocks single "kitchen sink" findings that
+            mention all three primitives in one description, not legitimate
+            multi-finding matches from any source.
+            """
+            ids = set()
+            for i, f in enumerate(file_findings):
+                tags = f._tags
+                for kw in keywords:
+                    if kw in tags:
+                        ids.add(i)
+                        break
+            return ids
+
+        exec_ids = _primitive_finding_ids(trifecta_exec_keywords)
+        # skill_threats' `credential-exfiltration` category holds environment
+        # READS (ST-EX-005..008: os.environ.items(), dict(os.environ)); the word
+        # "exfiltration" in that category name is not an outbound call. Only its
+        # typed egress rule (ST-EX-001) may stand for the network side, the
+        # same split _exfil_capabilities makes for Rule 1.
+        network_ids = {
+            i for i in _primitive_finding_ids(trifecta_network_keywords)
+            if not (file_findings[i].scanner == "skill_threats"
+                    and (file_findings[i].category or "").lower() == "credential-exfiltration"
+                    and "network" not in _exfil_capabilities(file_findings[i]))
+        }
+        credential_ids = _primitive_finding_ids(trifecta_credential_keywords)
+
+        # All three primitives must be present AND at least 2 must come from
+        # different findings (so a single noisy finding cannot trip the rule
+        # just by mentioning all three keywords in its description).
+        has_exec = bool(exec_ids)
+        has_network = bool(network_ids)
+        has_credential = bool(credential_ids)
+        distinct_contributors = exec_ids | network_ids | credential_ids
+        if has_exec and has_network and has_credential and len(distinct_contributors) >= 2:
+            # Rule 19 co-exists with Rules 1 and 3 when they fire on the same
+            # file: the Trifecta finding carries extra attribution value
+            # (names the pattern, ties to the SkillSafe ClawHavoc research).
+            # No dedupe is needed because the titles and categories differ.
+            correlated.append(Finding(
+                scanner="correlation",
+                severity=compound_code_severity(
+                    filepath,
+                    [file_findings[i] for i in exec_ids],
+                    [file_findings[i] for i in network_ids],
+                    [file_findings[i] for i in credential_ids],
+                ),
+                title="Lethal Trifecta (exec + network + credential read)",
+                description=(
+                    "File contains all three primitives of the 'Lethal "
+                    "Trifecta' (Snyk terminology): code execution, outbound "
+                    "network capability, and credential/secret file access. "
+                    "This co-occurrence pattern matches 91% of malicious "
+                    "skills per the SkillSafe ClawHavoc post-mortem and is a "
+                    "strong signal of credential-stealing malware even when "
+                    "each primitive alone would be legitimate."
+                ),
+                file=filepath,
+                line=0,
+                snippet="[compound: exec + outbound network + credential read]",
+                category="lethal-trifecta"
+            ))
+
+        # Rule 20: process.env exposure in error handler (same file)
+        secret_exposure_keywords = {"secret-exposure", "process.env logged", "process.env serialized", "json.stringify"}
+        error_handler_keywords = {"uncaughtexception", "unhandledrejection", "error handler", "crash report", "onerror"}
+        if has_category(file_findings, secret_exposure_keywords) and has_category(file_findings, error_handler_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Secrets Leaked via Error Handler",
+                description="process.env is logged or serialized in a file that also contains error handling. Any crash exposes all environment secrets to logs or files.",
+                file=filepath,
+                line=0,
+                snippet="[compound: process.env exposure + error handler]",
+                category="secret-leak-chain"
+            ))
+
+        # Rule 21: Devcontainer host secret mount + credential access pattern
+        devcontainer_keywords = {"host-secret-exposure", "host secret mount", "pulls host secret", "localenv"}
+        credential_access_keywords = {"credential-exfiltration", "credential exfiltration", "credential theft", "secret exfil", "token theft", "remote-code-execution"}
+        if has_category(file_findings, devcontainer_keywords) and has_category(file_findings, credential_access_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Devcontainer Secret Exposure Chain",
+                description="Devcontainer mounts host secrets AND code accesses credentials. Combined: full credential theft via container.",
+                file=filepath,
+                line=0,
+                snippet="[compound: devcontainer host secret + credential access]",
+                category="compound-threat"
+            ))
+
+        # Rule 22: Command-Jacking (entry point shadows system command)
+        if has_category(file_findings, command_jacking_keywords) and has_category(file_findings, network_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Command-Jacking + Network Access",
+                description="Package shadows a system CLI command AND makes network calls. Combined: command wrapping with credential exfiltration (Checkmarx Command-Jacking, October 2024).",
+                file=filepath,
+                line=0,
+                snippet="[compound: command-jacking + network call]",
+                category="command-jacking-chain"
+            ))
+
+        # Rule 23: Model Confusion + trust_remote_code
+        if has_category(file_findings, model_confusion_keywords) and has_category(file_findings, exec_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Model Confusion + Code Execution",
+                description="File loads AI models with bare paths AND enables code execution (trust_remote_code or torch.load). Combined: full RCE via model registry confusion (Checkmarx Model Confusion, January 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: model confusion + code execution]",
+                category="model-confusion-chain"
+            ))
+
+        # Rule 24: Compromised GitHub Action + secrets exposure
+        if has_category(file_findings, compromised_action_keywords) and has_category(file_findings, secrets_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Compromised Action + Secret Access",
+                description="Workflow uses a known-compromised GitHub Action AND handles secrets. Combined: direct secret exfiltration via supply chain (TeamPCP/tj-actions pattern).",
+                file=filepath,
+                line=0,
+                snippet="[compound: compromised action + secrets]",
+                category="compromised-action-chain"
+            ))
+
+        # Rule 25: Audio steganography + network call
+        if has_category(file_findings, steg_keywords) and has_category(file_findings, network_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Audio Steganography + Network Fetch",
+                description="Audio file contains hidden executable content AND network calls detected in same context. Combined: steganographic payload delivery (TeamPCP Telnyx pattern, March 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: audio steganography + network]",
+                category="steganography-chain"
+            ))
+
+        # Rule 26: NPM worm propagation pattern
+        if has_category(file_findings, worm_keywords) and has_category(file_findings, npm_token_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="NPM Worm: Publish + Token Access",
+                description="Code contains npm publish capabilities AND accesses npm tokens. Combined: self-propagating npm worm pattern (Shai-Hulud, September 2025).",
+                file=filepath,
+                line=0,
+                snippet="[compound: npm publish + token theft]",
+                category="worm-propagation-chain"
+            ))
+
+        # Rule 27: Destructive command + credential failure
+        if has_category(file_findings, destructive_keywords) and has_category(file_findings, env_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Destructive Fallback + Credential Access",
+                description="File contains destructive commands AND credential access. Combined: destructive fallback when exfiltration fails (Shai-Hulud v2 pattern, November 2025).",
+                file=filepath,
+                line=0,
+                snippet="[compound: destructive command + credential access]",
+                category="destructive-fallback-chain"
+            ))
+
+        # Rule 28: AI tool persistence + credential theft (Mini Shai-Hulud, April 2026)
+        ai_persistence_keywords = {"ai-tool-persistence", "claude code hook", "sessionstart", "folder open", "vscode task"}
+        if has_category(file_findings, ai_persistence_keywords) and has_category(file_findings, env_keywords | sensitive_read_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="AI Tool Persistence + Credential Theft",
+                description="AI tool hook injection combined with credential access. Combined: Mini Shai-Hulud persistence pattern. Infected repos re-execute dropper on every Claude Code/VS Code session (TeamPCP Wave 6, April 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: AI tool hook + credential access]",
+                category="ai-persistence-chain"
+            ))
+
+        # Rule 29: Git-based exfiltration + credential collection (Mini Shai-Hulud, April 2026)
+        git_exfil_keywords = {"git-exfiltration", "repo creation", "content push", "commit search"}
+        if has_category(file_findings, git_exfil_keywords) and has_category(file_findings, env_keywords | sensitive_read_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Git-Based Data Exfiltration Chain",
+                description="GitHub API calls for repo creation/content push combined with credential access. Combined: Mini Shai-Hulud exfiltrates stolen data by committing to victim's own GitHub account (TeamPCP Wave 6, April 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: git API exfil + credential access]",
+                category="git-exfiltration-chain"
+            ))
+
+        # Rule 37: Geofenced Destructive Command (mistralai v2.4.6 backdoor, May 2026)
+        if has_category(file_findings, locale_gating_keywords) and has_category(file_findings, destructive_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Geofenced Destructive Command",
+                description="Locale/country check combined with destructive command. Exact pattern from mistralai v2.4.6 backdoor (May 2026): code checks user locale then conditionally wipes files or exfiltrates data for targeted regions.",
+                file=filepath,
+                line=0,
+                snippet="[compound: locale gating + destructive command]",
+                category="geofenced-destructive"
+            ))
+
+        # Rule 38: CI Runner Memory Extraction (Mini Shai-Hulud SAP, TanStack CVE-2026-45321)
+        if has_category(file_findings, proc_mem_keywords) and has_category(file_findings, process_enum_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="CI Runner Memory Extraction",
+                description="Process memory read combined with process enumeration. Exact pattern from Mini Shai-Hulud (SAP April 2026): enumerates Runner.Worker processes via /proc, reads their memory to extract OIDC tokens.",
+                file=filepath,
+                line=0,
+                snippet="[compound: /proc/mem read + process enumeration]",
+                category="ci-runner-memory-extraction"
+            ))
+
+        # Rule 39: LLMO Attack (ReversingLabs PromptMink, April 2026)
+        if has_category(file_findings, llmo_keywords) and has_category(file_findings, brand_new_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="high",
+                title="LLMO Attack: AI-Named Brand-New Package",
+                description="Brand-new single-version package with AI/crypto buzzword name. High probability of LLMO attack: attacker registers package names that LLMs hallucinate, waits for developers to install them (ReversingLabs PromptMink, April 2026).",
+                file=filepath,
+                line=0,
+                snippet="[compound: brand-new package + AI/crypto naming pattern]",
+                category="llmo-attack"
+            ))
+
+        # Rule 40: Entrypoint payload + credential theft
+        # Matches entrypoint scanner categories: entrypoint-iife, entrypoint-import-exec
+        entrypoint_keywords = {"entrypoint", "entrypoint-iife", "entrypoint-import-exec"}
+        entrypoint_credential_keywords = {"credential", "env", "process.env", "os.environ"}
+        if has_category(file_findings, entrypoint_keywords) and has_category(file_findings, entrypoint_credential_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Supply Chain Entrypoint: Credential Theft via require()/import",
+                description="Entrypoint manipulation combined with credential access in the same file. This co-occurrence indicates a supply chain compromise: malicious code injected at the module entrypoint harvests environment variables or credentials on every require()/import.",
+                file=filepath,
+                line=0,
+                snippet="[compound: entrypoint manipulation + credential access]",
+                category="entrypoint-credential-chain"
+            ))
+
+        # Rule 41: Entrypoint payload + network exfiltration
+        # Matches entrypoint scanner categories: entrypoint-iife, entrypoint-import-exec
+        entrypoint_network_keywords = {"network", "fetch", "request", "http", "exfil", "socket"}
+        if has_category(file_findings, entrypoint_keywords) and has_category(file_findings, entrypoint_network_keywords):
+            correlated.append(Finding(
+                scanner="correlation",
+                severity="critical",
+                title="Supply Chain Entrypoint: Data Exfiltration via require()/import",
+                description="Entrypoint manipulation combined with network access in the same file. Code injected at the module entrypoint can silently exfiltrate data on every require()/import without triggering normal execution-path analysis.",
+                file=filepath,
+                line=0,
+                snippet="[compound: entrypoint manipulation + network exfiltration]",
+                category="entrypoint-exfiltration-chain"
+            ))
+
+    # ================================================================
+    # Repo-wide correlation rules (not per-file)
+    # These rules check for compound threats across the entire repo,
+    # not limited to co-occurrence within a single file.
+    # Proximity filtering: only correlate findings from files within
+    # the same directory tree to reduce false positives.
+    # Source: Terra Security OpenClaw vulnerability research (May 2026)
+    # Source: DeepMind AI Agent Traps (March 2026)
+    # ================================================================
+    update_channel_keywords = {"update-channel", "deferred update channel", "update channel"}
+    prose_imperative_keywords = {"prose-imperative", "prose imperative", "exfiltration instruction"}
+    config_write_keywords = {"config-write-request", "config write request", "hook installation"}
+    sub_agent_keywords = {"sub-agent-spawn", "sub-agent spawn", "agent spawn", "child agent"}
+    authority_framing_kws = {"authority-framing", "authority claim", "safety theater", "trust escalation"}
+    memory_poisoning_kws = {"memory-poisoning", "memory write", "rag poisoning", "provenance-stripping", "provenance stripping"}
+    css_steg_keywords = {"css-steganography", "css hiding", "visual hiding"}
+    cred_exfil_keywords = {"credential-exfiltration", "credential exfil", "credential theft", "exfil-pattern"}
+    action_directive_keywords = {"code-execution", "shell-injection", "config-write-request", "code execution"}
+
+    def _findings_by_dir(flist, keywords):
+        """Return dict mapping directory -> list of findings matching keywords."""
+        result = {}
+        for f in flist:
+            tags = f._tags
+            for kw in keywords:
+                if kw in tags:
+                    d = os.path.dirname(f.file) if f.file else ""
+                    result.setdefault(d, []).append(f)
+                    break
+        return result
+
+    def _dirs_overlap(dirs_a, dirs_b):
+        """True if any directory from set A shares a prefix with any from set B."""
+        for da in dirs_a:
+            for db in dirs_b:
+                if da == db or da.startswith(db + "/") or db.startswith(da + "/") or da == "" or db == "":
+                    return True
+        return False
+
+    update_dirs = _findings_by_dir(findings, update_channel_keywords)
+    prose_dirs = _findings_by_dir(findings, prose_imperative_keywords)
+    config_write_dirs = _findings_by_dir(findings, config_write_keywords)
+    sub_agent_dirs = _findings_by_dir(findings, sub_agent_keywords)
+    memory_dirs = _findings_by_dir(findings, memory_poisoning_kws)
+    css_steg_dirs = _findings_by_dir(findings, css_steg_keywords)
+
+    has_update_channel = bool(update_dirs)
+    has_prose_imperative = bool(prose_dirs)
+    has_config_write = bool(config_write_dirs)
+
+    # Rule 30: Staged Injection Kill Chain (Terra Security OpenClaw, May 2026)
+    if has_update_channel and has_prose_imperative and _dirs_overlap(update_dirs, prose_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Staged Injection Kill Chain (update channel + prose exfiltration)",
+            description="Skill creates an update channel AND contains prose exfiltration instructions in co-located files. Matches Terra Security staged injection pattern (May 2026).",
+            file="",
+            line=0,
+            snippet="[compound: update channel + prose imperative across repo]",
+            category="staged-injection-chain"
+        ))
+
+    # Rule 31: Workspace Persistence Setup (Terra Security OpenClaw, May 2026)
+    if has_config_write and has_update_channel and _dirs_overlap(config_write_dirs, update_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Workspace Persistence Setup (config write + update channel)",
+            description="Skill requests writing to auto-executed config files AND creates an update channel in co-located files. Combined: persistent remote control via workspace file modification (Terra Security OpenClaw, May 2026).",
+            file="",
+            line=0,
+            snippet="[compound: config write request + update channel across repo]",
+            category="workspace-persistence-chain"
+        ))
+
+    # Rule 32: Sub-Agent Hijack Exfiltration Chain (DeepMind Agent Traps, March 2026)
+    cred_exfil_dirs = _findings_by_dir(findings, cred_exfil_keywords)
+    if sub_agent_dirs and cred_exfil_dirs and _dirs_overlap(sub_agent_dirs, cred_exfil_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Sub-Agent Hijack Exfiltration Chain",
+            description="Sub-agent spawn directive combined with credential access or exfiltration URL. DeepMind reports >80% success rate for file exfiltration via this vector (Agent Traps, March 2026).",
+            file="",
+            line=0,
+            snippet="[compound: sub-agent spawn + credential exfil across repo]",
+            category="sub-agent-hijack-chain"
+        ))
+
+    # Rule 33: Social Engineering Assisted Attack (DeepMind Agent Traps, March 2026)
+    authority_dirs = _findings_by_dir(findings, authority_framing_kws)
+    action_dirs = _findings_by_dir(findings, action_directive_keywords)
+    if authority_dirs and action_dirs and _dirs_overlap(authority_dirs, action_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="high",
+            title="Social Engineering Assisted Attack",
+            description="Authority framing or safety theater combined with action directives (code execution, file write, network call). Semantic manipulation lowers agent refusal threshold (DeepMind Agent Traps, March 2026).",
+            file="",
+            line=0,
+            snippet="[compound: authority framing + action directive across repo]",
+            category="social-engineering-chain"
+        ))
+
+    # Rule 34: Persistent Memory Backdoor (DeepMind Agent Traps, March 2026)
+    pi_dirs = _findings_by_dir(findings, prompt_injection_keywords)
+    if memory_dirs and pi_dirs and _dirs_overlap(memory_dirs, pi_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Persistent Memory Backdoor",
+            description="Memory/RAG poisoning indicator combined with prompt injection directive. Creates persistent backdoor that activates in future sessions (DeepMind Agent Traps, March 2026).",
+            file="",
+            line=0,
+            snippet="[compound: memory poisoning + prompt injection across repo]",
+            category="memory-backdoor-chain"
+        ))
+
+    # Rule 35: Hidden Instruction via Visual Steganography (DeepMind Agent Traps, March 2026)
+    if css_steg_dirs and pi_dirs and _dirs_overlap(css_steg_dirs, pi_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Hidden Instruction via Visual Steganography",
+            description="CSS/HTML visual hiding combined with prompt injection keywords. Hidden instructions invisible to human reviewers but parseable by agents. 92.7% success rate (DeepMind Agent Traps, March 2026).",
+            file="",
+            line=0,
+            snippet="[compound: CSS steganography + prompt injection across repo]",
+            category="visual-steganography-chain"
+        ))
+
+    # Rule 36: Deferred Sub-Agent Injection (Terra + DeepMind combined)
+    if update_dirs and sub_agent_dirs and _dirs_overlap(update_dirs, sub_agent_dirs):
+        correlated.append(Finding(
+            scanner="correlation",
+            severity="critical",
+            title="Deferred Sub-Agent Injection",
+            description="Update channel combined with sub-agent spawn directive. The exact Terra Security attack pattern elevated with agent spawning: benign install creates update mechanism, future update spawns rogue sub-agent.",
+            file="",
+            line=0,
+            snippet="[compound: update channel + sub-agent spawn across repo]",
+            category="deferred-sub-agent-chain"
+        ))
+
+    # Cross-file Rule 19 is deliberately contributor-rooted. A non-contributor
+    # entry point importing three unrelated capability leaves is not evidence
+    # of composition and therefore cannot trigger this rule.
+    if by_file:
+        exec_files, network_files, credential_files = set(), set(), set()
+        for filepath, file_findings in by_file.items():
+            if any(any(kw in f._tags for kw in trifecta_exec_keywords) for f in file_findings):
+                exec_files.add(filepath)
+            if any(any(kw in f._tags for kw in trifecta_network_keywords) for f in file_findings):
+                network_files.add(filepath)
+            if any(any(kw in f._tags for kw in trifecta_credential_keywords) for f in file_findings):
+                credential_files.add(filepath)
+        root = _cross_file_trifecta(
+            by_file, exec_files, network_files, credential_files, repo_path
+        )
+        if root and not (root in exec_files & network_files & credential_files):
+            correlated.append(Finding(
+                scanner="correlation", severity="high",
+                title="Cross-File Lethal Trifecta",
+                description=("A primitive-holding Python module transitively imports "
+                             "repo-local modules containing the other two trifecta legs."),
+                file=root, line=0,
+                snippet="[compound: contributor-rooted import reachability]",
+                category="lethal-trifecta",
+            ))
+
+    # Evidence model (Track A): set each compound's evidence_class from its
+    # contributing leaves. Typed exfil/encoding compounds use only matching
+    # capability leaves; other per-file compounds use the file's findings.
+    # Repo-wide compounds (file="") default to direct since
+    # the dir-based Rules 30-36 fire on directive-class categories that come
+    # from directive scanners (skill_threats/agent_skills), which are direct.
+    # A compound built only from inferred/structural leaves caps at LOW in the
+    # report layer (apply_evidence_caps); a compound with at least one direct
+    # leaf stays eligible for HIGH/CRITICAL.
+    for c in correlated:
+        if c.file and c.file in by_file:
+            file_findings = by_file[c.file]
+            if c.title == "Potential Data Exfiltration":
+                c.evidence_class = strongest_evidence(
+                    f for f in file_findings
+                    if _exfil_capabilities(f) & {"env", "network"}
+                )
+            elif c.title == "Credential Theft Pattern":
+                c.evidence_class = strongest_evidence(
+                    f for f in file_findings
+                    if _exfil_capabilities(f) & {"sensitive_read", "network"}
+                )
+            elif c.title == "Obfuscated Code Execution":
+                c.evidence_class = strongest_evidence(
+                    f for f in file_findings
+                    if is_encoding_leaf(f)
+                    or (f.category not in {"encoding", "obfuscation", "decoded-payload"}
+                        and any(kw in f._tags for kw in exec_keywords))
+                )
+            else:
+                c.evidence_class = strongest_evidence(file_findings)
+        elif not c.file:
+            c.evidence_class = "direct"
+        else:
+            c.evidence_class = strongest_evidence([])
+
+    # Distinctness by finding_id: two rules that fire on the same evidence
+    # locus (same title+scanner+file+snippet) produce the same stable
+    # finding_id; keep the first occurrence. Rules are ordered most-specific
+    # first, so the first match is the intended one.
+    seen_ids = set()
+    distinct = []
+    for c in correlated:
+        if c.finding_id not in seen_ids:
+            seen_ids.add(c.finding_id)
+            distinct.append(c)
+    return distinct
+
+
+# --- Output Formatting ---
+
+def format_findings(findings, output_format="text"):
+    """Format findings list according to output mode."""
+    if output_format == "json":
+        return json.dumps([f.to_dict() for f in findings], indent=2)
+
+    elif output_format == "summary":
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        for f in findings:
+            counts[f.severity] = counts.get(f.severity, 0) + 1
+        lines = []
+        for sev in ["critical", "high", "medium", "low"]:
+            if counts[sev] > 0:
+                color = SEVERITY_COLORS.get(sev, "")
+                lines.append(f"  {color}{sev.upper()}: {counts[sev]}{RESET}")
+        return "\n".join(lines) if lines else "  No findings."
+
+    else:  # text
+        if not findings:
+            return "  No findings."
+        # Sort by severity (critical first)
+        sorted_findings = sorted(findings, key=lambda f: -f.severity_score())
+        return "\n\n".join(f.format_text() for f in sorted_findings)
+
+
+def scan_patterns(content, rel_path, patterns, category, default_severity, scanner_name):
+    """Generic line-based pattern scanner. Shared by scan_skill_threats and scan_mcp_security."""
+    findings = []
+    lines = content.split('\n')
+    _t0 = time.monotonic()
+    for i, line in enumerate(lines):
+        # C2: coarse per-file budget check every N lines to abort runaway scans.
+        if i % _SCAN_BUDGET_CHECK_INTERVAL == 0 and i > 0:
+            if time.monotonic() - _t0 > _SCAN_FILE_BUDGET_SEC:
+                print(
+                    f"[forensics_core] scan_patterns: per-file budget exceeded "
+                    f"({_SCAN_FILE_BUDGET_SEC}s) scanning {rel_path!r} at line {i+1} "
+                    f"— aborting remainder of file",
+                    file=sys.stderr,
+                )
+                break
+        # C3: truncate instead of skip — prefix is still scanned (closes the
+        # detection-evasion hole where a secret on a >10000-char line was missed)
+        # while bounding regex input length (ReDoS surface reduction).
+        if len(line) > MAX_LINE_LENGTH:
+            line = line[:MAX_LINE_LENGTH]
+        for pattern, title in patterns:
+            if pattern.search(line):
+                findings.append(Finding(
+                    scanner=scanner_name, severity=default_severity,
+                    title=title,
+                    description=f"Matched in {category} scan",
+                    file=rel_path, line=i + 1,
+                    snippet=line.strip()[:120],
+                    category=category
+                ))
+    return findings
+
+
+def scan_rule_patterns(content, rel_path, rules, category, default_severity, scanner_name):
+    """Pack-aware variant of scan_patterns (U4 rules-as-data).
+
+    `rules` is an iterable of compiled rule objects (rule_loader.CompiledRule):
+    each carries .regex, .title, .id, .confidence. Behaviorally identical to
+    scan_patterns (same severity-from-call-site, same description, same snippet,
+    same per-line/per-pattern emission order) but stamps the pack rule_id and
+    confidence onto every finding. Severity stays the call-site default to
+    preserve parity with the pre-extraction tuple-list scanners.
+
+    This function does NOT import rule_loader (KTD-14): it only consumes the
+    already-compiled rule objects the caller passes in.
+    """
+    findings = []
+    lines = content.split('\n')
+    _t0 = time.monotonic()
+    for i, line in enumerate(lines):
+        # C2: coarse per-file budget check every N lines.
+        if i % _SCAN_BUDGET_CHECK_INTERVAL == 0 and i > 0:
+            if time.monotonic() - _t0 > _SCAN_FILE_BUDGET_SEC:
+                print(
+                    f"[forensics_core] scan_rule_patterns: per-file budget exceeded "
+                    f"({_SCAN_FILE_BUDGET_SEC}s) scanning {rel_path!r} at line {i+1} "
+                    f"— aborting remainder of file",
+                    file=sys.stderr,
+                )
+                break
+        # C3: truncate instead of skip (same rationale as scan_patterns above).
+        if len(line) > MAX_LINE_LENGTH:
+            line = line[:MAX_LINE_LENGTH]
+        for rule in rules:
+            if rule.regex.search(line):
+                findings.append(Finding(
+                    scanner=scanner_name, severity=default_severity,
+                    title=rule.title,
+                    description=f"Matched in {category} scan",
+                    file=rel_path, line=i + 1,
+                    snippet=line.strip()[:120],
+                    category=category,
+                    rule_id=rule.id,
+                    confidence=rule.confidence,
+                    attacker=getattr(rule, "attacker", ""),
+                    boundary=getattr(rule, "boundary", ""),
+                    asset=getattr(rule, "asset", ""),
+                ))
+    return findings
+
+
+def parse_common_args(argv, scanner_name):
+    """Parse common CLI args for scanners: <repo_path> [--format text|json|summary]"""
+    import argparse
+    parser = argparse.ArgumentParser(description=f"repo-forensics: {scanner_name}")
+    parser.add_argument('repo_path', help="Path to repository to scan")
+    parser.add_argument('--format', choices=['text', 'json', 'summary'], default='text',
+                        help="Output format (default: text)")
+    args = parser.parse_args(argv[1:])
+    args.repo_path = os.path.abspath(args.repo_path)
+    return args
+
+
+def output_findings(findings, output_format="text", scanner_name=""):
+    """Standard output routine for scanners."""
+    if output_format == "json":
+        print(json.dumps([f.to_dict() for f in findings], indent=2))
+    elif output_format == "summary":
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        for f in findings:
+            counts[f.severity] = counts.get(f.severity, 0) + 1
+        total = sum(counts.values())
+        print(f"{scanner_name}: {total} findings ({counts['critical']}C {counts['high']}H {counts['medium']}M {counts['low']}L)")
+    else:
+        if findings:
+            print(f"\n[!] Found {len(findings)} issue(s):")
+            print(format_findings(findings, "text"))
+        else:
+            print("\n[+] No issues found.")
+
+
+# ---------------------------------------------------------------------------
+# Shared atomic-write helper (consolidates the four near-duplicate impls
+# previously scattered across vuln_feed, ioc_manager, session_scan, and
+# refresh_threat_dbs). Always temp+fsync+chmod+replace, mode 0o600,
+# explicit cleanup on any failure (including BaseException).
+# ---------------------------------------------------------------------------
+
+def _atomic_write_via(path, mode, write_fn):
+    """Internal atomic-write engine. write_fn(file_obj) does the actual write."""
+    import os as _os
+    import uuid as _uuid
+
+    dirpath = _os.path.dirname(path) or "."
+    _os.makedirs(dirpath, exist_ok=True)
+    tmp_path = f"{path}.tmp.{_os.getpid()}.{_uuid.uuid4().hex}"
+    try:
+        fd = _os.open(tmp_path, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL, mode)
+        try:
+            # Explicit fchmod beats umask interference on shared systems.
+            # os.fchmod is absent on Windows (AttributeError, NOT an OSError
+            # subclass); the O_CREAT mode above already set the bits there.
+            if hasattr(_os, "fchmod"):
+                try:
+                    _os.fchmod(fd, mode)
+                except OSError:
+                    pass
+            # newline="" prevents the text-mode translation layer from
+            # rewriting \n -> \r\n on Windows, which would otherwise corrupt
+            # any byte-exact (e.g. signature-verified) payload.
+            f = _os.fdopen(fd, "w", encoding="utf-8", newline="")
+        except BaseException:
+            # fdopen never took ownership of fd here: close it ourselves.
+            try:
+                _os.close(fd)
+            except OSError:
+                pass
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        try:
+            with f:
+                write_fn(f)
+                f.flush()
+                _os.fsync(f.fileno())
+        except BaseException:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _os.replace(tmp_path, path)
+    except OSError:
+        try:
+            _os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(path, data, mode=0o600):
+    """Write `data` (any JSON-serializable value) to `path` atomically with
+    fsync, fchmod, and rename. Mode defaults to 0o600 (user-only)."""
+    import json as _json
+    _atomic_write_via(path, mode, lambda f: _json.dump(data, f, indent=2))
+
+
+def atomic_write_text(path, text, mode=0o600):
+    """Write a plain text string atomically. Same guarantees as atomic_write_json."""
+    _atomic_write_via(path, mode, lambda f: f.write(text))
+
+
+def import_module_by_path(name, path):
+    """Load a Python module by absolute path without polluting sys.path.
+
+    Catches BaseException so SIGALRM / KeyboardInterrupt during exec_module
+    can't leave a half-imported module wedged in sys.modules.
+
+    Returns the module on success, None if the spec couldn't be built.
+    """
+    import importlib.util as _ilu
+    import sys as _sys
+
+    spec = _ilu.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        _sys.modules.pop(name, None)
+        raise
+    return mod

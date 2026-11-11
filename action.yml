@@ -1,0 +1,95 @@
+name: 'Repo Forensics'
+description: 'Deep security auditing for repositories, AI agent skills, and MCP servers'
+author: 'Alex Greenshpun'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Path to repository to scan (default: workspace root)'
+    required: false
+    default: '.'
+  mode:
+    description: 'Scan mode: full or skill-scan'
+    required: false
+    default: 'full'
+  format:
+    description: 'Output format: text, json, or summary'
+    required: false
+    default: 'text'
+  update-iocs:
+    description: 'Pull latest IOC database before scanning'
+    required: false
+    default: 'false'
+  watch:
+    description: 'Enable file integrity baseline tracking'
+    required: false
+    default: 'false'
+
+outputs:
+  exit-code:
+    description: 'Scanner exit code (0=clean, 1=high/medium, 2=critical)'
+  findings-count:
+    description: 'Total number of findings'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.11'
+
+    - name: Run Repo Forensics
+      id: scan
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_UPDATE_IOCS: ${{ inputs.update-iocs }}
+        INPUT_WATCH: ${{ inputs.watch }}
+        ACTION_PATH: ${{ github.action_path }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        SCAN_PATH="$INPUT_PATH"
+        if [ "$SCAN_PATH" = "." ]; then
+          SCAN_PATH="$WORKSPACE"
+        fi
+
+        # Build argv as a bash array so every element is passed as a single
+        # argv entry. Previous versions used string concatenation + unquoted
+        # $ARGS expansion, which word-split on whitespace — an untrusted
+        # INPUT_FORMAT value like 'json --extra-flag=/etc/passwd' would
+        # inject additional scanner flags when CI workflows wire any
+        # untrusted source (issue body, PR title, workflow_dispatch input)
+        # into the format: input. The array form makes every element one
+        # argv entry regardless of embedded whitespace.
+        ARGS=()
+        if [ "$INPUT_MODE" = "skill-scan" ]; then
+          ARGS+=("--skill-scan")
+        fi
+        ARGS+=("--format" "$INPUT_FORMAT")
+        if [ "$INPUT_UPDATE_IOCS" = "true" ]; then
+          ARGS+=("--update-iocs")
+        fi
+        if [ "$INPUT_WATCH" = "true" ]; then
+          ARGS+=("--watch")
+        fi
+
+        set +e
+        bash "$ACTION_PATH/skills/repo-forensics/scripts/run_forensics.sh" "$SCAN_PATH" "${ARGS[@]}"
+        EXIT_CODE=$?
+        set -e
+
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+        if [ "$EXIT_CODE" -eq 2 ]; then
+          echo "::error::Repo Forensics found CRITICAL findings"
+        elif [ "$EXIT_CODE" -eq 1 ]; then
+          echo "::warning::Repo Forensics found HIGH/MEDIUM findings"
+        fi
+
+        exit $EXIT_CODE

@@ -1,0 +1,22 @@
+name: Validate manifests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-manifests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      # --require-yaml fails the job if PyYAML is unavailable, so the frontmatter
+      # check always runs at full scope rather than the structural subset.
+      - name: Validate plugin manifests
+        run: python3 skills/repo-forensics/scripts/validate_manifests.py --require-yaml

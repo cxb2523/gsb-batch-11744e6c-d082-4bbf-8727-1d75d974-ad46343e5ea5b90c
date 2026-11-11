@@ -1,0 +1,1113 @@
+#!/usr/bin/env python3
+"""
+ioc_manager.py - IOC (Indicators of Compromise) management for repo-forensics v2.
+Handles loading, caching, and updating IOC lists from a hosted JSON feed.
+
+Usage:
+  from ioc_manager import get_iocs
+  iocs = get_iocs(repo_path)  # returns merged hardcoded + cached IOCs
+
+  # Or update from remote:
+  python3 ioc_manager.py --update [--cache-dir /path]
+
+IOC feed format (hosted JSON):
+{
+  "version": "2026-03-20",
+  "c2_ips": ["1.2.3.4", ...],
+  "malicious_domains": ["evil.com", ...],
+  "malicious_packages": {"npm": [...], "pypi": [...]},
+  "malicious_npm_packages": ["pkg1", ...],
+  "malicious_pypi_packages": ["pkg1", ...]
+}
+
+Created by Alex Greenshpun
+"""
+
+import os
+import re
+import sys
+import json
+import tempfile
+import time
+
+# Ensure sibling modules (forensics_core, etc.) are importable regardless of
+# how this module gets loaded — direct CLI, hook subprocess, or daemon
+# importlib bootstrap. Inserting our own dir at sys.path[0] is contained to
+# this process and aligns with session_scan/auto_scan's existing pattern.
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+# Default IOC feed URL (GitHub raw from repo-forensics releases)
+IOC_FEED_URL = "https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/iocs/latest.json"
+
+CACHE_FILENAME = ".forensics-iocs.json"
+# Detached signature for verify-on-load (KTD-11). The signature is verified over
+# the EXACT bytes of the .json cache that get parsed and trusted — NOT a separate
+# .raw file. Verifying a sibling file that nobody parses leaves the trusted bytes
+# unprotected (a same-user attacker could edit the .json and slip past the gate),
+# so the two are deliberately one and the same byte stream now.
+SIG_CACHE_FILENAME = ".forensics-iocs.sig"
+PREVIOUS_CACHE_FILENAME = ".forensics-iocs.previous.json"
+PREVIOUS_SIG_CACHE_FILENAME = ".forensics-iocs.previous.sig"
+# Sentinel recording that this install has seen a signed feed at least once. Its
+# presence means "a signature USED to be here": if the .sig later goes missing,
+# we degrade rather than silently trusting an unsigned (possibly stripped) cache.
+SIGNED_SEEN_FILENAME = ".forensics-iocs.signed-seen"
+CACHE_MAX_AGE_HOURS = 24
+
+# Pinned Ed25519 public key for the signed IOC feed (KTD-11). SAME keypair that
+# signs the rule-pack bundle (symmetric trust model). The private seed is held
+# OFFLINE; this module only ever VERIFIES.
+IOC_FEED_PUBKEY_HEX = (
+    "a6529e80619abaf38bec2b15154ca8f540f9a830e310f1a0c7a6771e85f1b76c"
+)
+# Detached-signature feed URL (sits beside IOC_FEED_URL).
+_SIG_MAX_BYTES = 256
+# Configurable TTL for the on-disk IOC cache. Adjusting this constant controls
+# how long a successfully-fetched remote feed is trusted before the scanner
+# considers itself degraded and emits a warning.
+_IOC_CACHE_TTL_HOURS = 24
+
+# Grace window for distinguishing an in-progress refresh (cache just written, sig
+# not yet) from a crashed/torn pair. A refresh completes both atomic renames in
+# well under a second, so any cache older than this with an invalid sig is a real
+# crash to recover; a fresher one means "a refresh is mid-flight, don't clobber it".
+_REFRESH_GRACE_SEC = 60
+
+# Shipped IOC database (version-pinned compromises). Loaded from
+# skills/repo-forensics/data/compromised_versions.json next to this script. This file ships
+# with the tool and is reviewable in git history — it is NOT cached or
+# downloaded at runtime. See --sync-osv (when implemented) for live updates.
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
+COMPROMISED_VERSIONS_FILE = os.path.normpath(
+    os.path.join(_DATA_DIR, 'compromised_versions.json')
+)
+COMPROMISED_VERSIONS_SCHEMA_VERSION = '1.0'
+
+# --- Hardcoded IOCs (fallback, always available) ---
+
+HARDCODED_C2_IPS = [
+    "91.92.242.30", "54.91.154.110", "157.245.55.238",
+    "45.77.240.42", "104.248.30.47", "159.65.147.111",
+    "142.11.206.73",  # Axios supply chain RAT C2 (March 2026)
+    "83.142.209.11",   # TeamPCP Wave 1 C2 (March 2026)
+    "91.195.240.123",  # TeamPCP Wave 3 C2 (April 2026)
+    "94.154.172.43",   # TeamPCP Wave 3 audit endpoint (April 2026)
+    "45.148.10.212",   # Trivy compromise exfil (March 2026)
+    "83.142.209.203",  # Telnyx WAV steganography exfil (March 2026)
+    "216.126.225.129",  # Megalodon CI campaign, May 2026
+]
+
+HARDCODED_MALICIOUS_DOMAINS = [
+    "install.app-distribution.net",
+    "dl.dropboxusercontent.com",
+    # raw.githubusercontent.com intentionally excluded: legitimate CDN used by this
+    # tool's own IOC feed. Flag only when combined with obfuscation/exec patterns
+    # (handled by correlation engine rules 1, 2, 9).
+    "socifiapp.com",
+    "hackmoltrepeat.com",
+    "giftshop.club",
+    "glot.io",
+    "api.telegram.org/bot",
+    "discord.com/api/webhooks",
+    "hooks.slack.com/services",
+    # liteLLM supply chain attack C2 (March 2026)
+    "eo1n0jq9qgggt.m.pipedream.net",
+    "sfrclak.com",  # Axios supply chain RAT C2 domain (March 2026)
+    "checkmarx.zone",          # TeamPCP Wave 1-2 C2 domain (March 2026)
+    "models.litellm.cloud",    # LiteLLM supply chain compromise (March 2026)
+    "litellm.dev",             # LiteLLM 1.107.0 credential-stealer exfil (www.litellm.dev), lookalike of litellm.ai (October 2026); apex covers every subdomain
+    "checkmarx.cx",            # TeamPCP Wave 3 C2 domain (April 2026)
+    "audit.checkmarx.cx",      # TeamPCP Wave 3 exfil endpoint (April 2026)
+    "scan.aquasecurity.org",   # Trivy compromise exfil domain (March 2026)
+    "npnjs.com",               # npm maintainer phishing (Chalk compromise, 2025)
+    "npmjs.help",              # npm maintainer phishing (2025)
+    "files.pypihosted.org",    # Fake PyPI mirror (top.gg attack, 2024)
+    "filev2.getsession.org",   # TanStack worm: Session P2P exfiltration (May 2026)
+    # AgentGate relay-driven agent-malware batch (verified 2026-09-09)
+    "syhzpqqvrplaqdipcymw.supabase.co",  # @addai/node relay/exfil
+    "vault.add.ai",                     # @addai/node vault endpoint
+    "entities.add.ai",                  # @addai/node entity sync
+    "node.add.ai",                      # @addai/node node pairing
+    "santaclaude.app",                  # @cliphijack/santaclaude C2
+    "primeradiant.com",                 # @cliphijack/santaclaude exfil
+    "canvas.xiaohhhh1.com",             # @xiaohhhh1/canvas-agent agent-relay
+    "agenthub-agent.fyenet.com",        # agenthub-ai relay
+    "agenthub.contetial.com",           # agenthub-multiagent-mcp relay
+    "agenttunnels-live.lakshman111.workers.dev",  # agenttunnels session server
+    "api.claude-cup.com",               # claude-cup leaderboard exfil
+    "newsradar.dreamdt.cn",             # claw-subagent-service relay
+    "mime-bind-border-using.trycloudflare.com",  # llm-interceptor tunnel C2
+    "mangomind-relay-production.up.railway.app",  # mangomind-agent relay
+    "rfsbovvvryfmgpoehlrc.supabase.co", # mangomind-agent backend
+    "relay.teleportus.ai",              # remote-claude-daemon relay
+    "trimprompt.ai",                    # trimprompt telemetry/exfil
+    "aclade.com",                       # aclade-agent relay
+    "seed1.getsession.org",    # TanStack worm: Session P2P seed node (May 2026)
+    "seed2.getsession.org",    # TanStack worm: Session P2P seed node (May 2026)
+    "seed3.getsession.org",    # TanStack worm: Session P2P seed node (May 2026)
+    "api.cloud-aws.adc-e.uk",  # Mini Shai-Hulud: TeamPCP C2 domain (May 2026)
+    "cjn37-uyaaa-aaaac-qgnva-cai.raw.icp0.io",  # CanisterWorm ICP blockchain C2, Apr 2026
+    "check.git-service.com",    # durabletask PyPI C2, May 2026
+    "t.m-kosche.com",           # Shared @antv/actions-cool C2, May 2026
+    "aab.sportsontheweb.net",   # vpmdhaj OpenSearch/Elastic typosquat C2, May 2026
+]
+
+HARDCODED_MALICIOUS_NPM = {
+    "rimarf", "yarsg", "suport-color", "naniod", "opencraw",
+    "claud-code", "cloude-code", "cloude", "mcp-cliient", "mcp-serever",
+    "anthropic-sdk-node", "claude-code-cli", "clawclient",
+    "plain-crypto-js",  # Axios supply chain RAT dropper (March 2026)
+    "@tanstack/setup",  # TanStack worm: entirely malicious package (May 2026)
+    "chalk-tempalte",   # Shai-Hulud copycat (May 2026)
+    "@deadcode09284814/axios-util",  # Shai-Hulud copycat (May 2026)
+    "axois-utils",      # Shai-Hulud copycat (May 2026)
+    "color-style-utils",  # Shai-Hulud copycat (May 2026)
+    "@vpmdhaj/elastic-helper",  # vpmdhaj OpenSearch/Elastic typosquat cluster (May 2026)
+    "@vpmdhaj/devops-tools",
+    "@vpmdhaj/opensearch-setup",
+    "@vpmdhaj/search-setup",
+    "opensearch-security-scanner",
+    "opensearch-setup",
+    "opensearch-setup-tool",
+    "opensearch-config-utility",
+    "search-engine-setup",
+    "search-cluster-setup",
+    "elastic-opensearch-helper",
+    "vpmdhaj-opensearch-setup",
+    "env-config-manager",
+    "app-config-utility",
+}
+
+HARDCODED_MALICIOUS_PYPI = {
+    "anthopic", "antrhopic", "claudes", "mcp-python-sdk",
+}
+
+HARDCODED_MALICIOUS_PTH_FILES = {
+    "litellm_init.pth", "litellm-init.pth", "litellm.pth",
+    "cook.pth",  # LiteLLM 1.107.0 startup hook that imports cook.py (October 2026)
+    "llm_init.pth", "init_hook.pth", "startup.pth",
+}
+
+
+# --- Shipped compromised-versions database loader ---
+
+_COMPROMISED_VERSIONS_CACHE = None
+
+
+def _load_compromised_versions_file(path=None):
+    """Load and flatten the shipped compromised_versions.json into scanner-
+    friendly structures.
+
+    Returns a tuple (version_map, entirely_malicious_names, raw_data) where:
+      - version_map: dict[str, dict[str, str]] keyed by lower-case package
+        name -> {version_string: campaign_id}. Only includes packages with
+        specific version entries (not wildcards).
+      - entirely_malicious_names: set[str] of lower-case package names where
+        ANY version is malicious (version list is ['*']).
+      - raw_data: the original parsed JSON (for callers that need campaign
+        metadata for reporting).
+
+    Returns ({}, set(), None) if the file is missing, unreadable, or has
+    an incompatible schema version. This is a soft failure — the scanner
+    will fall back to in-module defaults in that case.
+    """
+    target = path or COMPROMISED_VERSIONS_FILE
+    try:
+        with open(target, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[!] Could not load {target}: {e}", file=sys.stderr)
+        return {}, set(), None
+
+    # Top-level must be a dict (crafted JSON could be a list or scalar)
+    if not isinstance(data, dict):
+        print(f"[!] {target} top-level must be a JSON object", file=sys.stderr)
+        return {}, set(), None
+
+    # Schema version gate — future schema changes may add incompatible fields.
+    # The schema_version field MUST be a string; non-string types (int, float,
+    # null, list, dict from a hand-edited or poisoned feed) would crash the
+    # .split() call with AttributeError, which is not caught by the outer
+    # except clause and would kill the scanner. (Security review SS-F2,
+    # 2026-04-05.)
+    schema_version = data.get('schema_version', '')
+    if not isinstance(schema_version, str):
+        print(
+            f"[!] {target} schema_version must be a string, "
+            f"got {type(schema_version).__name__}",
+            file=sys.stderr,
+        )
+        return {}, set(), None
+    major = schema_version.split('.')[0] if schema_version else ''
+    expected_major = COMPROMISED_VERSIONS_SCHEMA_VERSION.split('.')[0]
+    if major != expected_major:
+        print(
+            f"[!] {target} schema version {schema_version!r} "
+            f"incompatible with expected {COMPROMISED_VERSIONS_SCHEMA_VERSION!r}",
+            file=sys.stderr,
+        )
+        return {}, set(), None
+
+    version_map = {}
+    entirely_malicious = set()
+    campaigns = data.get('campaigns', {})
+    if not isinstance(campaigns, dict):
+        return {}, set(), None
+
+    for campaign_id, campaign in campaigns.items():
+        if not isinstance(campaign, dict):
+            continue
+        packages = campaign.get('packages', {})
+        if not isinstance(packages, dict):
+            continue
+        for pkg_name, versions in packages.items():
+            if not isinstance(pkg_name, str) or not isinstance(versions, list):
+                continue
+            pkg_lower = pkg_name.lower()
+            if versions == ['*']:
+                entirely_malicious.add(pkg_lower)
+                continue
+            if pkg_lower not in version_map:
+                version_map[pkg_lower] = {}
+            for v in versions:
+                if not isinstance(v, str):
+                    continue
+                version_map[pkg_lower][v] = campaign_id
+
+    return version_map, entirely_malicious, data
+
+
+def _pypi_version_map(raw_data):
+    """{normalised PyPI name: {version: campaign_id}} from campaigns whose
+    ecosystem is "pypi". The flat map get_iocs() exposes mixes ecosystems, so a
+    package name shared with npm/composer/go would otherwise cross-match; PyPI
+    install checks read this one instead. Names use PEP 503 normalisation."""
+    out = {}
+    campaigns = raw_data.get('campaigns', {}) if isinstance(raw_data, dict) else {}
+    if not isinstance(campaigns, dict):
+        return out
+    for campaign_id, campaign in campaigns.items():
+        if not isinstance(campaign, dict) or str(campaign.get('ecosystem', '')).lower() != 'pypi':
+            continue
+        packages = campaign.get('packages', {})
+        if not isinstance(packages, dict):
+            continue
+        for pkg_name, versions in packages.items():
+            if not isinstance(pkg_name, str) or not isinstance(versions, list):
+                continue
+            if versions == ['*']:
+                continue
+            key = re.sub(r'[-_.]+', '-', pkg_name.strip()).lower()
+            for v in versions:
+                if isinstance(v, str):
+                    out.setdefault(key, {})[v] = campaign_id
+    return out
+
+
+def _get_compromised_versions():
+    """Return cached compromised-versions tuple, loading on first call."""
+    global _COMPROMISED_VERSIONS_CACHE
+    if _COMPROMISED_VERSIONS_CACHE is None:
+        _COMPROMISED_VERSIONS_CACHE = _load_compromised_versions_file()
+    return _COMPROMISED_VERSIONS_CACHE
+
+
+def _reset_compromised_versions_cache():
+    """Test helper: force a fresh load on next access."""
+    global _COMPROMISED_VERSIONS_CACHE
+    _COMPROMISED_VERSIONS_CACHE = None
+
+
+def _cache_path(cache_dir=None):
+    """Get path for IOC cache file."""
+    if cache_dir:
+        return os.path.join(cache_dir, CACHE_FILENAME)
+    return os.path.join(os.path.expanduser("~"), ".cache", "repo-forensics", CACHE_FILENAME)
+
+
+def _sig_cache_path(cache_dir=None):
+    base = cache_dir if cache_dir else os.path.join(
+        os.path.expanduser("~"), ".cache", "repo-forensics")
+    return os.path.join(base, SIG_CACHE_FILENAME)
+
+
+def _previous_cache_path(cache_dir=None):
+    return os.path.join(os.path.dirname(_cache_path(cache_dir)), PREVIOUS_CACHE_FILENAME)
+
+
+def _previous_sig_cache_path(cache_dir=None):
+    return os.path.join(os.path.dirname(_cache_path(cache_dir)), PREVIOUS_SIG_CACHE_FILENAME)
+
+
+def _signed_seen_path(cache_dir=None):
+    base = cache_dir if cache_dir else os.path.join(
+        os.path.expanduser("~"), ".cache", "repo-forensics")
+    return os.path.join(base, SIGNED_SEEN_FILENAME)
+
+
+REFUSED_MARKER_FILENAME = ".forensics-iocs.refused"
+
+
+def _refused_marker_path(cache_dir=None):
+    base = cache_dir if cache_dir else os.path.join(
+        os.path.expanduser("~"), ".cache", "repo-forensics")
+    return os.path.join(base, REFUSED_MARKER_FILENAME)
+
+
+def _mark_refresh_refused(reason, cache_dir=None):
+    """Record that the latest refresh was REFUSED (feed unverifiable). Persists
+    until a verified refresh succeeds, so the last-known-good cache reads as
+    stale/degraded even while its mtime is still fresh. Best-effort write."""
+    try:
+        path = _refused_marker_path(cache_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_bytes(path, json.dumps(
+            {"refused_at": time.time(), "reason": reason}).encode(), mode=0o600)
+    except OSError:
+        pass
+
+
+def _clear_refresh_refused(cache_dir=None):
+    try:
+        os.remove(_refused_marker_path(cache_dir))
+    except OSError:
+        pass
+
+
+def refresh_refused(cache_dir=None):
+    return os.path.isfile(_refused_marker_path(cache_dir))
+
+
+def _mark_signed_seen(cache_dir=None):
+    """Record that a valid signed feed was observed here at least once."""
+    try:
+        path = _signed_seen_path(cache_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic_write_bytes(path, b"1", mode=0o600)
+    except OSError:
+        pass
+
+
+def _has_seen_signed(cache_dir=None):
+    return os.path.isfile(_signed_seen_path(cache_dir))
+
+
+def _atomic_write_bytes(path, data, mode=0o600):
+    """Atomic binary write (temp + fsync + rename) for the detached signature."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".sig")
+    try:
+        f = os.fdopen(fd, "wb")
+    except BaseException:
+        # fdopen never took ownership of fd: close it ourselves before unlink.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        with f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _pair_signature_state(cache_path, sig_path):
+    """Verify one on-disk IOC payload/signature pair."""
+    if not (os.path.isfile(cache_path) and os.path.isfile(sig_path)):
+        return None
+    try:
+        with open(cache_path, "rb") as f:
+            raw = f.read()
+        with open(sig_path, "rb") as f:
+            sig = f.read()
+    except OSError:
+        return False
+    return _verify_ioc_bytes(raw, sig)
+
+
+def _restore_previous_signed_cache(cache_dir=None):
+    """Restore the last complete signed generation after an interrupted commit."""
+    previous_cache = _previous_cache_path(cache_dir)
+    previous_sig = _previous_sig_cache_path(cache_dir)
+    if _pair_signature_state(previous_cache, previous_sig) is not True:
+        return False
+    try:
+        with open(previous_cache, "rb") as f:
+            raw = f.read()
+        with open(previous_sig, "rb") as f:
+            sig = f.read()
+        # Keep the previous files intact until both authoritative writes finish,
+        # so another crash during recovery remains recoverable.
+        _atomic_write_bytes(_cache_path(cache_dir), raw, mode=0o600)
+        _atomic_write_bytes(_sig_cache_path(cache_dir), sig, mode=0o600)
+        return True
+    except OSError:
+        return False
+
+
+def _verify_ioc_cache_signature(cache_dir=None):
+    """Verify the cached IOC feed's detached signature over the EXACT bytes of
+    the .json cache that get parsed and trusted (KTD-11 verify-on-load). The
+    signature now protects the SAME byte stream the read path loads, closing the
+    gap where a separate .raw was signed but the .json was the file trusted.
+
+    Returns:
+        True  -> a valid signature is present over the .json cache (trusted)
+        False -> a .sig is present but verification over the .json bytes failed
+                 (tampered/invalid)
+        None  -> no .sig present (genuinely-legacy unsigned feed; caller decides
+                 whether that is acceptable via the signed-seen sentinel)
+    """
+    cache_path = _cache_path(cache_dir)
+    sig_path = _sig_cache_path(cache_dir)
+    state = _pair_signature_state(cache_path, sig_path)
+    if state is False and _restore_previous_signed_cache(cache_dir):
+        state = _pair_signature_state(cache_path, sig_path)
+    return state
+
+
+def _verify_ioc_bytes(raw, sig):
+    """Verify freshly downloaded bytes before they can replace trusted cache."""
+    if not isinstance(raw, (bytes, bytearray)) or not isinstance(sig, (bytes, bytearray)):
+        return False
+    try:
+        import _ed25519
+        return bool(_ed25519.verify(bytes(sig), bytes(raw),
+                                    bytes.fromhex(IOC_FEED_PUBKEY_HEX)))
+    except Exception:
+        return False
+
+
+def _load_cache(cache_dir=None, ttl_hours=None):
+    """Load cached IOCs if fresh enough.
+
+    ttl_hours overrides the module-level _IOC_CACHE_TTL_HOURS default.
+    Returns None when the cache is absent, unreadable, or stale.
+
+    Freshness source: the embedded `_cached_at` when present (legacy/unsigned
+    caches), else the file mtime. Signed caches persist the EXACT signed bytes,
+    which cannot carry a post-hoc `_cached_at` wrapper, so mtime is authoritative
+    there.
+    """
+    # A power loss between the two authoritative renames can leave a mismatched
+    # pair. Recover the prior complete generation before parsing trusted bytes.
+    if _pair_signature_state(_cache_path(cache_dir), _sig_cache_path(cache_dir)) is False:
+        _restore_previous_signed_cache(cache_dir)
+    path = _cache_path(cache_dir)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        # Check freshness. A non-numeric or future-dated _cached_at is treated as
+        # untrustworthy: an attacker with write access could otherwise set it just
+        # behind "now" to make a stale, poisoned cache look perpetually fresh.
+        # Fall back to the kernel-managed mtime in those cases (mirrors vuln_feed).
+        now = time.time()
+        cached_at = data.get('_cached_at')
+        if not isinstance(cached_at, (int, float)) or cached_at > now + 300:
+            try:
+                cached_at = os.path.getmtime(path)
+            except OSError:
+                return None
+        age_hours = (now - cached_at) / 3600
+        max_age = ttl_hours if ttl_hours is not None else _IOC_CACHE_TTL_HOURS
+        if age_hours > max_age:
+            return None
+        return data
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _read_pair_once(cache_path, sig_path):
+    """Read the cache bytes ONCE and verify the detached signature over THOSE
+    exact bytes. Returns (raw_bytes | None, sig_state) where sig_state is
+    True (valid) / False (present but invalid or unreadable) / None (no .sig).
+
+    This is the anti-TOCTOU primitive: the caller parses the SAME `raw` bytes it
+    got back, so an attacker with write access to the cache dir cannot swap the
+    .json between a verify-open and a load-open (there is only one open of the
+    cache file)."""
+    if not os.path.exists(cache_path):
+        return None, None
+    try:
+        with open(cache_path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None, None
+    sig_state = None
+    if os.path.isfile(sig_path):
+        try:
+            with open(sig_path, "rb") as f:
+                sig = f.read()
+        except OSError:
+            return raw, False
+        sig_state = _verify_ioc_bytes(raw, sig)
+    return raw, sig_state
+
+
+def _load_and_verify_cache(cache_dir=None, ttl_hours=None):
+    """TOCTOU-safe replacement for (_load_cache + _verify_ioc_cache_signature):
+    the bytes that are VERIFIED are the exact bytes that are PARSED, from a single
+    read. Returns (data | None, sig_state). Freshness (TTL) and the crash-recovery
+    restore-of-previous-generation are preserved from _load_cache."""
+    cache_path = _cache_path(cache_dir)
+    sig_path = _sig_cache_path(cache_dir)
+    raw, sig_state = _read_pair_once(cache_path, sig_path)
+    if raw is None:
+        return None, sig_state
+    # A present-but-invalid signature is either an IN-PROGRESS refresh (the writer
+    # writes cache then sig as two atomic renames, so there is a sub-second window
+    # of new-cache + old/absent-sig) or a genuinely CRASHED/torn pair. Distinguish
+    # by age, NOT by cache-vs-sig mtime ordering (which is always cache-newer given
+    # the write order, so an ordering test never fires for a real crash):
+    #   - fresh cache (within the grace window) -> a refresh is likely mid-flight;
+    #     do NOT restore (that would clobber the operator's just-written feed).
+    #     Degrade to hardcoded for this one read; the refresh finishes momentarily.
+    #   - old cache with a bad sig -> a crashed refresh; recover the last complete
+    #     signed generation once, then re-read+re-verify (still single-read trusted).
+    # The returned sig_state carries False through so get_iocs reports the invalid
+    # signature and REFUSES to merge the cache (its `cached and not
+    # ioc_signature_invalid` guard) — the bytes are parsed for the caller's
+    # degraded-reporting path but never trusted into the IOC set.
+    if sig_state is False:
+        try:
+            cache_age = time.time() - os.path.getmtime(cache_path)
+        except OSError:
+            cache_age = _REFRESH_GRACE_SEC + 1  # unknown age -> treat as old/eligible
+        if cache_age >= _REFRESH_GRACE_SEC and _restore_previous_signed_cache(cache_dir):
+            raw, sig_state = _read_pair_once(cache_path, sig_path)
+    if raw is None:
+        return None, sig_state
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            return None, sig_state
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, sig_state
+    # Freshness — identical policy to _load_cache (embedded _cached_at when a
+    # trustworthy value is present, else kernel mtime).
+    now = time.time()
+    cached_at = data.get("_cached_at")
+    if not isinstance(cached_at, (int, float)) or cached_at > now + 300:
+        try:
+            cached_at = os.path.getmtime(cache_path)
+        except OSError:
+            return None, sig_state
+    max_age = ttl_hours if ttl_hours is not None else _IOC_CACHE_TTL_HOURS
+    if (now - cached_at) / 3600 > max_age:
+        return None, sig_state
+    return data, sig_state
+
+
+def _save_cache(data, cache_dir=None):
+    """Save IOCs to local cache atomically. Delegates to forensics_core
+    for the shared atomic-write implementation (temp + fsync + os.replace,
+    mode 0o600, uuid-suffixed temp file)."""
+    if not isinstance(data, dict):
+        return
+    import forensics_core
+    to_save = dict(data)
+    to_save['_cached_at'] = time.time()
+    forensics_core.atomic_write_json(_cache_path(cache_dir), to_save, mode=0o600)
+
+
+# Hardened fetcher: HTTPS only, hostname allowlist, strict size cap.
+# Prevents SSRF / exfiltration via --feed-url on a shared CI runner.
+_IOC_HOST_ALLOWLIST = {
+    "raw.githubusercontent.com",
+    "github.com",
+    "objects.githubusercontent.com",
+}
+_IOC_MAX_BYTES = 5_000_000  # 5 MB
+
+
+def _validate_feed_url(url):
+    """Return True iff url is https:// and host is in the allowlist."""
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except (ValueError, TypeError):
+        return False
+    return host in _IOC_HOST_ALLOWLIST
+
+
+# Set True by _fetch_url_bytes ONLY when the server answered HTTP 404/410 (the
+# artifact is definitively absent). Timeouts, DNS/TLS/5xx and other transport
+# failures leave it False, so they never count as a refused feed.
+_last_fetch_absent = False
+# Set True when a COMPLETED response was definitively rejected (over the byte cap,
+# or not parseable as JSON). That is a verdict on the artifact, not a transport
+# failure, so it is treated like a refusal and never like "network unknown".
+_last_fetch_rejected = False
+
+
+def _pinned_opener():
+    """Opener whose redirect handler re-validates every redirect target with
+    _validate_feed_url (https + allowlisted host), so a redirect cannot move a
+    feed or signature fetch off the pinned hosts."""
+    import urllib.request
+    import urllib.error
+
+    class Handler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            global _last_fetch_rejected
+            if not _validate_feed_url(newurl):
+                _last_fetch_rejected = True
+                raise urllib.error.URLError(
+                    f"redirect to non-allowlisted or non-https target refused: {newurl!r}")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return urllib.request.build_opener(Handler)
+
+
+def _fetch_url_bytes(url, max_bytes):
+    """Fetch `url` returning raw bytes (capped) or None. https + allowlist only,
+    and every redirect target is re-validated against the same allowlist."""
+    global _last_fetch_absent, _last_fetch_rejected
+    # Reset on ENTRY so a rejected URL can never inherit a previous call's flags.
+    _last_fetch_absent = False
+    _last_fetch_rejected = False
+    if not _validate_feed_url(url):
+        print(f"[!] IOC feed URL rejected (non-https or host not allowlisted): {url!r}",
+              file=sys.stderr)
+        return None
+    try:
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(url, headers={'User-Agent': 'repo-forensics/v2'})
+        with _pinned_opener().open(req, timeout=10) as resp:
+            raw = resp.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                print(f"[!] IOC feed exceeded {max_bytes} byte cap", file=sys.stderr)
+                _last_fetch_rejected = True
+                return None
+            return raw
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        if isinstance(e, urllib.error.HTTPError) and e.code in (404, 410):
+            _last_fetch_absent = True
+        elif isinstance(e, urllib.error.HTTPError) and e.code in (301, 302, 303, 307, 308):
+            # urllib rejects forbidden schemes before redirect_request runs.
+            _last_fetch_rejected = True
+        print(f"[!] IOC fetch failed: {e}", file=sys.stderr)
+        return None
+
+
+def fetch_remote_iocs(feed_url=None, _return_raw=False):
+    """Fetch IOCs from remote feed. Returns dict or None on failure.
+
+    Security: URL must be HTTPS and point to an allowlisted host. Any
+    file://, http://, or unknown-host URL is rejected before the socket
+    is opened. Response is byte-capped and JSON-parsed before use.
+
+    When `_return_raw` is True, returns (dict, raw_bytes) so update_iocs can
+    persist the EXACT signed bytes for verify-on-load (KTD-11).
+    """
+    url = feed_url or IOC_FEED_URL
+    raw = _fetch_url_bytes(url, _IOC_MAX_BYTES)
+    if raw is None:
+        return (None, None) if _return_raw else None
+    try:
+        data = json.loads(raw.decode('utf-8'))
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[!] IOC fetch failed: {e}", file=sys.stderr)
+        global _last_fetch_rejected
+        _last_fetch_rejected = True
+        return (None, None) if _return_raw else None
+    return (data, raw) if _return_raw else data
+
+
+def _save_signed_cache(raw_bytes, sig_bytes, cache_dir=None):
+    """Persist the EXACT signed feed bytes AS the .json cache (binary write, no
+    decode/encode round-trip) plus the detached signature, so verify-on-load
+    re-checks the signature over the very bytes that get parsed and trusted.
+
+    The .json cache becomes byte-identical to the signed payload — this is the
+    single-file collapse that closes the "sign one file, trust another" gap.
+    """
+    if raw_bytes is None or sig_bytes is None:
+        return
+    cache_path = _cache_path(cache_dir)
+    sig_path = _sig_cache_path(cache_dir)
+
+    # Snapshot the current *verified pair* before touching either authoritative
+    # file. Read each file ONCE and verify those exact bytes, so the retained
+    # recovery generation can never be a TOCTOU-swapped unsigned payload (the
+    # old verify-then-reopen left a window to substitute the backup bytes).
+    try:
+        with open(cache_path, "rb") as f:
+            current_raw = f.read()
+        with open(sig_path, "rb") as f:
+            current_sig = f.read()
+    except OSError:
+        current_raw = current_sig = None
+    if (current_raw is not None and current_sig is not None
+            and _verify_ioc_bytes(current_raw, current_sig) is True):
+        _atomic_write_bytes(_previous_cache_path(cache_dir), current_raw, mode=0o600)
+        _atomic_write_bytes(_previous_sig_cache_path(cache_dir), current_sig, mode=0o600)
+
+    try:
+        _atomic_write_bytes(cache_path, bytes(raw_bytes), mode=0o600)
+        _atomic_write_bytes(sig_path, sig_bytes, mode=0o600)
+    except OSError:
+        _restore_previous_signed_cache(cache_dir)
+        raise
+    _mark_signed_seen(cache_dir)
+
+
+def _stale_note(cache_dir=None):
+    st = cache_status(cache_dir)
+    if not st["present"]:
+        return "no cache present, hardcoded IOCs only"
+    state = ("marked STALE" if st["stale"] else "still fresh")
+    if st.get("refresh_refused"):
+        state += ", latest refresh refused"
+    return f"cache age {st['age_hours']}h, {state}"
+
+
+def update_iocs(feed_url=None, cache_dir=None, sig_url=None):
+    """Pull latest IOCs from remote feed and cache locally.
+    Returns (success: bool, message: str).
+
+    Also fetches and verifies the detached `.sig` before replacing any cache.
+    Missing/invalid signatures fail closed and preserve the last known-good
+    cache; the aggregate refresher must never call untrusted bytes "fresh".
+    """
+    data, raw = fetch_remote_iocs(feed_url, _return_raw=True)
+    if data is None:
+        if _last_fetch_absent:
+            _mark_refresh_refused("feed missing (HTTP 404/410)", cache_dir)
+            return False, ("IOC feed missing (HTTP 404/410): refresh refused, "
+                           "last known-good cache preserved - " + _stale_note(cache_dir))
+        if _last_fetch_rejected:
+            _mark_refresh_refused("feed oversized, not valid JSON, or redirect rejected", cache_dir)
+            return False, ("IOC feed rejected: response was oversized or not valid JSON, or a redirect was rejected "
+                           "(a verdict on the published artifact, not a network failure). "
+                           "Refresh refused, last known-good cache preserved - "
+                           + _stale_note(cache_dir))
+        return False, "Failed to fetch IOCs from remote feed (using hardcoded fallback)"
+
+    # Fetch the detached signature. When present, persist the EXACT signed bytes
+    # AS the .json cache so verify-on-load checks the same bytes it parses.
+    sig = _fetch_url_bytes(sig_url or (feed_url or IOC_FEED_URL) + ".sig",
+                           _SIG_MAX_BYTES)
+    if sig is None or raw is None:
+        # Only a definitive HTTP 404/410 for the .sig is a refusal. A timeout or
+        # other transport failure is a network failure and must not mark stale.
+        if sig is None and _last_fetch_rejected:
+            _mark_refresh_refused("signature oversized or redirect rejected", cache_dir)
+            return False, ("IOC signature rejected: response exceeded the signature size cap or a redirect was rejected "
+                           "(a verdict on the published artifact, not a network failure). "
+                           "Refresh refused, last known-good cache preserved - "
+                           + _stale_note(cache_dir))
+        if sig is None and _last_fetch_absent:
+            _mark_refresh_refused("signature missing", cache_dir)
+        if sig is None and _last_fetch_absent:
+            return False, ("IOC signature missing (HTTP 404/410): refresh refused, "
+                           "last known-good cache preserved - " + _stale_note(cache_dir))
+        return False, ("IOC refresh failed: could not download the feed signature "
+                       "(network failure, not a verdict on the feed). Cache state "
+                       "unchanged - " + _stale_note(cache_dir))
+    if not _verify_ioc_bytes(raw, sig):
+        _mark_refresh_refused("signature invalid", cache_dir)
+        return False, ("IOC signature invalid - the PUBLISHED feed does not verify "
+                       "against the pinned release key; it was refused, not installed. "
+                       "Last known-good cache preserved - "
+                       + _stale_note(cache_dir) + ". A maintainer must re-sign the feed.")
+    required_lists = ("c2_ips", "malicious_domains", "malicious_npm_packages",
+                      "malicious_pypi_packages")
+    if (not isinstance(data, dict) or not isinstance(data.get("version"), str)
+            or any(not isinstance(data.get(key), list) for key in required_lists)
+            or sum(len(data[key]) for key in required_lists) == 0):
+        _mark_refresh_refused("feed structure invalid", cache_dir)
+        return False, ("IOC feed structure invalid: refresh refused, last known-good "
+                       "cache preserved - " + _stale_note(cache_dir))
+    _save_signed_cache(raw, sig, cache_dir)
+    _clear_refresh_refused(cache_dir)
+    version = data.get('version', 'unknown')
+    c2_count = len(data.get('c2_ips', []))
+    domain_count = len(data.get('malicious_domains', []))
+    pkg_count = len(data.get('malicious_npm_packages', [])) + len(data.get('malicious_pypi_packages', []))
+    return True, f"IOCs updated: v{version} ({c2_count} C2 IPs, {domain_count} domains, {pkg_count} packages)"
+
+
+_PUBLISHED_FEED_FILES = ("latest.json", "rulepacks.json")
+# Each artifact is repaired by a DIFFERENT command: --ioc-only deliberately
+# cannot touch the rule-pack bundle.
+_RESIGN_HINT = {
+    "latest.json": "python3 scripts/sign_rulepacks.py --ioc-only --seed-file <offline-seed-file>",
+    "rulepacks.json": ("python3 scripts/sign_rulepacks.py --allow-unchanged "
+                       "--seed-file <offline-seed-file>  (rebuilds and re-signs the bundle, "
+                       "then also re-signs latest.json)"),
+}
+
+
+def verify_published_feed(iocs_dir):
+    """Verify every published feed file against its detached signature using the
+    PINNED key only. Returns (ok, results) where results is a list of
+    (filename, ok, reason). A missing, oversized, truncated, or non-verifying
+    signature, an unreadable/non-JSON feed, or a missing feed file all fail.
+    There is deliberately no bypass, alternate-key, or skip option."""
+    results = []
+    for name in _PUBLISHED_FEED_FILES:
+        feed_path = os.path.join(iocs_dir, name)
+        sig_path = feed_path + ".sig"
+        if not os.path.isfile(feed_path):
+            results.append((name, False, "feed file missing"))
+            continue
+        if not os.path.isfile(sig_path):
+            results.append((name, False, "signature file missing"))
+            continue
+        try:
+            with open(feed_path, "rb") as f:
+                raw = f.read()
+            with open(sig_path, "rb") as f:
+                sig = f.read(_SIG_MAX_BYTES + 1)
+        except OSError as e:
+            results.append((name, False, f"unreadable: {type(e).__name__}"))
+            continue
+        if len(sig) != 64:
+            results.append((name, False, f"signature is {len(sig)} bytes, expected 64"))
+            continue
+        try:
+            json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            results.append((name, False, "feed is not valid JSON"))
+            continue
+        if not _verify_ioc_bytes(raw, sig):
+            results.append((name, False,
+                            "signature does not verify against the pinned release key "
+                            "(a maintainer must re-sign: " + _RESIGN_HINT[name] + ")"))
+            continue
+        results.append((name, True, "ok"))
+    return all(r[1] for r in results), results
+
+
+_LIVE_FEEDS = (
+    ("latest.json", "https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/iocs/latest.json"),
+    ("rulepacks.json", "https://raw.githubusercontent.com/alexgreensh/repo-forensics/main/iocs/rulepacks.json"),
+)
+
+
+def verify_live_feed(urls=None):
+    """Fetch the LIVE published feeds and signatures and verify against the
+    pinned key. Returns (code, results): 0 all verify, 1 any verifiably bad
+    (signature does not verify / definitively absent), 3 only transport failures
+    (verdict unknown, never reported as a verification failure)."""
+    results, bad, unknown = [], False, False
+    for name, url in (urls or _LIVE_FEEDS):
+        raw = _fetch_url_bytes(url, 5 * 1024 * 1024)
+        raw_absent, raw_rej = _last_fetch_absent, _last_fetch_rejected
+        sig = _fetch_url_bytes(url + ".sig", _SIG_MAX_BYTES)
+        sig_absent, sig_rej = _last_fetch_absent, _last_fetch_rejected
+        if raw is None or sig is None:
+            if raw_rej or sig_rej:
+                bad = True
+                results.append((name, False, "published artifact REJECTED: response exceeded the size cap or a redirect was rejected"))
+            elif raw_absent or sig_absent:
+                bad = True
+                results.append((name, False, "published artifact missing (HTTP 404/410)"))
+            else:
+                unknown = True
+                results.append((name, None, "could not download (network failure, verdict unknown)"))
+            continue
+        if len(sig) != 64 or not _verify_ioc_bytes(raw, sig):
+            bad = True
+            results.append((name, False, "LIVE signature does not verify against the pinned release key (a maintainer must re-sign: " + _RESIGN_HINT[name] + ")"))
+        else:
+            results.append((name, True, "ok"))
+    return (1 if bad else 3 if unknown else 0), results
+
+
+def cache_status(cache_dir=None):
+    """Explicit last-known-good cache state for surfacing to the user:
+    {'present': bool, 'age_hours': float|None, 'stale': bool}. Stale means older
+    than CACHE_MAX_AGE_HOURS, absent, OR the latest refresh was refused (marker
+    persists until a verified refresh succeeds). It never implies the cache is
+    untrusted: its own signature is still checked on load."""
+    path = _cache_path(cache_dir)
+    try:
+        age = (time.time() - os.path.getmtime(path)) / 3600
+    except OSError:
+        return {"present": False, "age_hours": None, "stale": True,
+                "refresh_refused": refresh_refused(cache_dir)}
+    refused = refresh_refused(cache_dir)
+    return {"present": True, "age_hours": round(age, 1),
+            "stale": refused or age > CACHE_MAX_AGE_HOURS,
+            "refresh_refused": refused}
+
+
+def get_iocs(cache_dir=None):
+    """Get merged IOC set: shipped JSON + cached remote feed + hardcoded fallback.
+
+    Returns dict with:
+      - c2_ips: list[str]
+      - malicious_domains: list[str]
+      - malicious_npm: set[str] (includes both hardcoded and wildcard-version
+        packages from the shipped compromised_versions.json)
+      - malicious_pypi: set[str]
+      - malicious_pth_files: set[str]
+      - compromised_versions: dict[str, dict[str, str]] keyed by lower-case
+        package name -> {version_string: campaign_id}. Only populated from
+        the shipped JSON file; the hardcoded sets do not carry version info.
+      - _ioc_degraded: bool — True when no fresh remote-feed cache is available.
+        Callers should surface a warning to the user when this is True, since
+        threat intelligence is limited to hardcoded fallback data only.
+    """
+    # TOCTOU-safe load: verify the signature over the SAME bytes we parse, from a
+    # single read of the cache file (see _load_and_verify_cache). Previously the
+    # cache was opened once to parse and again to verify, letting an attacker with
+    # cache-dir write access swap the .json between the two opens (poison parsed,
+    # old-signed bytes verified).
+    cached, sig_state = _load_and_verify_cache(cache_dir)
+
+    # Track whether we are operating with a fresh remote feed. When degraded,
+    # callers should emit a warning: new IOCs published since the last
+    # successful update will not be detected.
+    ioc_degraded = cached is None
+
+    # KTD-11 verify-on-load semantics (unchanged): a cached feed whose .sig FAILS
+    # verification, OR whose .sig is MISSING on an install that has previously seen
+    # a signature, is treated as degraded (the intelligence channel may be poisoned
+    # or the .sig stripped). Hardcoded fallback IOCs still apply regardless. When
+    # there is no fresh cache at all, the signature is irrelevant (None), matching
+    # the prior `... if cached else None` behavior.
+    if cached is None:
+        sig_state = None
+    if sig_state is True and not _has_seen_signed(cache_dir):
+        # First valid verification on this install: arm the strip-detection
+        # sentinel so a later .sig removal degrades instead of silently trusting.
+        _mark_signed_seen(cache_dir)
+    # Strip-detection. The sentinel alone is co-deletable by an attacker with
+    # cache-dir write access (delete .sig AND .signed-seen, drop an unsigned
+    # poisoned .json). Also treat a missing sig as stripped when a PREVIOUS signed
+    # generation (.previous.sig) exists — that is independent evidence this install
+    # has carried a signed feed, so the attacker must also delete .previous.sig.
+    signed_history = (_has_seen_signed(cache_dir)
+                      or os.path.isfile(_previous_sig_cache_path(cache_dir)))
+    sig_stripped = (sig_state is None and cached is not None and signed_history)
+    ioc_signature_invalid = (sig_state is False) or sig_stripped
+    if ioc_signature_invalid:
+        why = ("signature MISSING (previously signed; .sig stripped)"
+               if sig_stripped else "signature INVALID")
+        print(f"[!] Cached IOC feed {why} — intelligence channel "
+              "untrusted (using hardcoded fallback IOCs).", file=sys.stderr)
+
+    refused = refresh_refused(cache_dir)
+
+    # Start with hardcoded
+    result = {
+        'c2_ips': list(HARDCODED_C2_IPS),
+        'malicious_domains': list(HARDCODED_MALICIOUS_DOMAINS),
+        'malicious_npm': set(HARDCODED_MALICIOUS_NPM),
+        'malicious_pypi': set(HARDCODED_MALICIOUS_PYPI),
+        'malicious_pth_files': set(HARDCODED_MALICIOUS_PTH_FILES),
+        'compromised_versions': {},
+        'compromised_versions_pypi': {},
+        '_ioc_degraded': ioc_degraded or ioc_signature_invalid or refused,
+        # True when the latest refresh was refused (published feed unverifiable);
+        # the cached feed that still verifies is merged but reads as stale.
+        '_ioc_refresh_refused': refused,
+        # True only when a verified, in-TTL cached feed is actually merged into
+        # this result (so callers can word warnings truthfully).
+        '_ioc_cache_served': bool(cached) and not ioc_signature_invalid,
+        # Distinct sub-flag so callers can emit the IOC-signature-specific
+        # message (vs the plain "no fresh cache" degraded message).
+        '_ioc_signature_invalid': ioc_signature_invalid,
+    }
+
+    # Merge remote IOCs if available. When the signature is INVALID we refuse to
+    # trust the cached feed contents (an attacker could have DELETED a malicious
+    # domain); only hardcoded IOCs are kept. A merely-absent signature (legacy)
+    # still merges, preserving old-feed behavior.
+    if cached and not ioc_signature_invalid:
+        result['c2_ips'] = list(set(result['c2_ips'] + cached.get('c2_ips', [])))
+        result['malicious_domains'] = list(set(result['malicious_domains'] + cached.get('malicious_domains', [])))
+        result['malicious_npm'].update(cached.get('malicious_npm_packages', []))
+        result['malicious_pypi'].update(cached.get('malicious_pypi_packages', []))
+
+    # Merge shipped compromised_versions.json
+    version_map, entirely_malicious, _raw = _get_compromised_versions()
+    # Wildcard-version packages become name-only IOCs in the npm set
+    result['malicious_npm'].update(entirely_malicious)
+    # Version-pinned IOCs get their own key
+    result['compromised_versions'] = version_map
+    # PyPI-only view (pip/uv install gate, requirements pins)
+    result['compromised_versions_pypi'] = _pypi_version_map(_raw)
+
+    return result
+
+
+def main():
+    """CLI: python3 ioc_manager.py --update [--feed-url URL] [--cache-dir DIR]"""
+    import argparse
+    parser = argparse.ArgumentParser(description="repo-forensics IOC Manager")
+    parser.add_argument('--update', action='store_true', help="Fetch latest IOCs from remote feed")
+    parser.add_argument('--feed-url', default=None, help="Custom IOC feed URL")
+    parser.add_argument('--cache-dir', default=None, help="Cache directory")
+    parser.add_argument('--verify-published', nargs='?', const='iocs', default=None,
+                        metavar='DIR', help="Verify published feed files in DIR "
+                        "(default ./iocs) against the pinned key; exit 1 on any failure")
+    parser.add_argument('--verify-live', action='store_true',
+                        help="Fetch the LIVE published feeds + signatures and verify them "
+                        "against the pinned key; exit 1 verifiably bad, 3 network failure only")
+    parser.add_argument('--show', action='store_true', help="Show current IOC counts")
+    args = parser.parse_args()
+
+    if args.verify_published is not None:
+        ok, results = verify_published_feed(args.verify_published)
+        for name, good, reason in results:
+            print(f"{'[+]' if good else '[!]'} {name}: {reason}")
+        sys.exit(0 if ok else 1)
+
+    if args.verify_live:
+        code, results = verify_live_feed()
+        for name, good, reason in results:
+            print(f"{'[+]' if good else '[?]' if good is None else '[!]'} {name}: {reason}")
+        sys.exit(code)
+
+    if args.update:
+        success, msg = update_iocs(args.feed_url, args.cache_dir)
+        print(f"{'[+]' if success else '[!]'} {msg}")
+        sys.exit(0 if success else 1)
+
+    if args.show:
+        iocs = get_iocs(args.cache_dir)
+        print(f"C2 IPs: {len(iocs['c2_ips'])}")
+        print(f"Malicious domains: {len(iocs['malicious_domains'])}")
+        print(f"Malicious NPM: {len(iocs['malicious_npm'])}")
+        print(f"Malicious PyPI: {len(iocs['malicious_pypi'])}")
+        print(f"Malicious .pth files: {len(iocs.get('malicious_pth_files', set()))}")
+        cached = _load_cache(args.cache_dir)
+        if cached:
+            age = (time.time() - cached.get('_cached_at', 0)) / 3600
+            print(f"Cache age: {age:.1f}h (max {CACHE_MAX_AGE_HOURS}h)")
+        else:
+            print("Cache: none (using hardcoded only)")
+        sys.exit(0)
+
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" fill="none">
+  <defs>
+    <linearGradient id="afbg" x1="0" y1="0" x2="900" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0a0e14"/>
+      <stop offset="100%" stop-color="#111921"/>
+    </linearGradient>
+    <filter id="g">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="c"><rect width="900" height="400" rx="12"/></clipPath>
+    <path id="p1" d="M310,108 L570,108"/>
+    <path id="p2" d="M310,158 L570,158"/>
+    <path id="p3" d="M310,208 L570,208"/>
+    <path id="p4" d="M310,258 L570,258"/>
+    <path id="p5" d="M310,308 L570,308"/>
+    <path id="p6" d="M310,358 L570,358"/>
+  </defs>
+
+  <rect width="900" height="400" rx="12" fill="url(#afbg)"/>
+
+  <!-- Grid -->
+  <g opacity="0.03" clip-path="url(#c)">
+    <line x1="300" y1="0" x2="300" y2="400" stroke="#58a6ff" stroke-width="0.5"/>
+    <line x1="580" y1="0" x2="580" y2="400" stroke="#58a6ff" stroke-width="0.5"/>
+  </g>
+
+  <!-- Title -->
+  <text x="450" y="36" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#58a6ff" text-anchor="middle" letter-spacing="4" font-weight="700">ATTACK CHAINS</text>
+  <line x1="320" y1="46" x2="580" y2="46" stroke="#58a6ff" stroke-width="1" opacity="0.2"/>
+
+  <!-- Column headers -->
+  <text x="160" y="72" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="10" fill="#b1bac4" text-anchor="middle" letter-spacing="3" opacity="0.5">ATTACK</text>
+  <text x="440" y="72" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="10" fill="#b1bac4" text-anchor="middle" letter-spacing="3" opacity="0.5">SCANNERS</text>
+  <text x="740" y="72" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="10" fill="#b1bac4" text-anchor="middle" letter-spacing="3" opacity="0.5">SEVERITY</text>
+  <line x1="40" y1="80" x2="860" y2="80" stroke="#1c2940" stroke-width="1"/>
+
+  <!-- ROW 1: prompt injection -->
+  <circle cx="52" cy="105" r="5" fill="#f85149" opacity="0.8"/>
+  <text x="68" y="102" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#f85149" font-weight="700">prompt injection</text>
+  <text x="68" y="118" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">MCP tool description poisoning</text>
+  <line x1="310" y1="108" x2="570" y2="108" stroke="#f85149" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,103 577,108 567,113" fill="#f85149" opacity="0.5"/>
+  <circle r="3" fill="#f85149" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#p1"/></animateMotion></circle>
+  <circle r="3" fill="#f85149" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="1s"><mpath href="#p1"/></animateMotion></circle>
+  <text x="590" y="112" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#c9d1d9">skill_threats + mcp_security</text>
+  <rect x="810" y="94" width="80" height="26" rx="4" fill="#f8514920" stroke="#f85149" stroke-width="1.5"/>
+  <text x="850" y="112" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#f85149" text-anchor="middle" font-weight="700">CRITICAL</text>
+
+  <!-- ROW 2: supply chain -->
+  <circle cx="52" cy="155" r="5" fill="#3fb950" opacity="0.8"/>
+  <text x="68" y="152" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#3fb950" font-weight="700">supply chain attack</text>
+  <text x="68" y="168" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">Install hooks + typosquatted packages</text>
+  <line x1="310" y1="158" x2="570" y2="158" stroke="#3fb950" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,153 577,158 567,163" fill="#3fb950" opacity="0.5"/>
+  <circle r="3" fill="#3fb950" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite" begin="0.3s"><mpath href="#p2"/></animateMotion></circle>
+  <circle r="3" fill="#3fb950" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="1.3s"><mpath href="#p2"/></animateMotion></circle>
+  <text x="590" y="162" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="12" fill="#c9d1d9">lifecycle + dependencies</text>
+  <rect x="810" y="144" width="80" height="26" rx="4" fill="#f8514920" stroke="#f85149" stroke-width="1.5"/>
+  <text x="850" y="162" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#f85149" text-anchor="middle" font-weight="700">CRITICAL</text>
+
+  <!-- ROW 3: credential theft -->
+  <circle cx="52" cy="205" r="5" fill="#a78bfa" opacity="0.8"/>
+  <text x="68" y="202" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#a78bfa" font-weight="700">credential theft</text>
+  <text x="68" y="218" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">Env vars to exfil + hardcoded secrets</text>
+  <line x1="310" y1="208" x2="570" y2="208" stroke="#a78bfa" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,203 577,208 567,213" fill="#a78bfa" opacity="0.5"/>
+  <circle r="3" fill="#a78bfa" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite" begin="0.6s"><mpath href="#p3"/></animateMotion></circle>
+  <circle r="3" fill="#a78bfa" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="1.6s"><mpath href="#p3"/></animateMotion></circle>
+  <text x="590" y="212" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="12" fill="#c9d1d9">secrets + dataflow</text>
+  <rect x="810" y="194" width="80" height="26" rx="4" fill="#d2992220" stroke="#d29922" stroke-width="1.5"/>
+  <text x="850" y="212" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#d29922" text-anchor="middle" font-weight="700">HIGH</text>
+
+  <!-- ROW 4: obfuscated execution -->
+  <circle cx="52" cy="255" r="5" fill="#d29922" opacity="0.8"/>
+  <text x="68" y="252" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#d29922" font-weight="700">obfuscated execution</text>
+  <text x="68" y="268" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">Base64 payloads, AST backdoors</text>
+  <line x1="310" y1="258" x2="570" y2="258" stroke="#d29922" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,253 577,258 567,263" fill="#d29922" opacity="0.5"/>
+  <circle r="3" fill="#d29922" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite" begin="0.9s"><mpath href="#p4"/></animateMotion></circle>
+  <circle r="3" fill="#d29922" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="1.9s"><mpath href="#p4"/></animateMotion></circle>
+  <text x="590" y="262" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#c9d1d9">entropy + ast + sast</text>
+  <rect x="810" y="244" width="80" height="26" rx="4" fill="#f8514920" stroke="#f85149" stroke-width="1.5"/>
+  <text x="850" y="262" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#f85149" text-anchor="middle" font-weight="700">CRITICAL</text>
+
+  <!-- ROW 5: runtime behavior -->
+  <circle cx="52" cy="305" r="5" fill="#f85149" opacity="0.8"/>
+  <text x="68" y="302" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#f85149" font-weight="700">runtime behavior</text>
+  <text x="68" y="318" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">Time bombs, rug pulls, deferred payloads</text>
+  <line x1="310" y1="308" x2="570" y2="308" stroke="#f85149" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,303 577,308 567,313" fill="#f85149" opacity="0.5"/>
+  <circle r="3" fill="#f85149" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite" begin="1.2s"><mpath href="#p5"/></animateMotion></circle>
+  <circle r="3" fill="#f85149" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="2.2s"><mpath href="#p5"/></animateMotion></circle>
+  <text x="590" y="312" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#c9d1d9">runtime_dynamism + drift</text>
+  <rect x="810" y="294" width="80" height="26" rx="4" fill="#f8514920" stroke="#f85149" stroke-width="1.5"/>
+  <text x="850" y="312" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#f85149" text-anchor="middle" font-weight="700">CRITICAL</text>
+
+  <!-- ROW 6: repo integrity -->
+  <circle cx="52" cy="355" r="5" fill="#79c0ff" opacity="0.8"/>
+  <text x="68" y="352" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="14" fill="#79c0ff" font-weight="700">repo integrity</text>
+  <text x="68" y="368" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#8b949e">History forgery, polyglot files</text>
+  <line x1="310" y1="358" x2="570" y2="358" stroke="#79c0ff" stroke-width="1.5" opacity="0.2"/>
+  <polygon points="567,353 577,358 567,363" fill="#79c0ff" opacity="0.5"/>
+  <circle r="3" fill="#79c0ff" filter="url(#g)" opacity="0.9"><animateMotion dur="2s" repeatCount="indefinite" begin="1.5s"><mpath href="#p6"/></animateMotion></circle>
+  <circle r="3" fill="#79c0ff" filter="url(#g)" opacity="0.6"><animateMotion dur="2s" repeatCount="indefinite" begin="2.5s"><mpath href="#p6"/></animateMotion></circle>
+  <text x="590" y="362" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="12" fill="#c9d1d9">git_forensics + binary</text>
+  <rect x="810" y="344" width="80" height="26" rx="4" fill="#f8514920" stroke="#f85149" stroke-width="1.5"/>
+  <text x="850" y="362" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#f85149" text-anchor="middle" font-weight="700">CRITICAL</text>
+
+  <!-- Separator lines between rows -->
+  <line x1="40" y1="130" x2="860" y2="130" stroke="#1c2940" stroke-width="0.5" opacity="0.5"/>
+  <line x1="40" y1="180" x2="860" y2="180" stroke="#1c2940" stroke-width="0.5" opacity="0.5"/>
+  <line x1="40" y1="230" x2="860" y2="230" stroke="#1c2940" stroke-width="0.5" opacity="0.5"/>
+  <line x1="40" y1="280" x2="860" y2="280" stroke="#1c2940" stroke-width="0.5" opacity="0.5"/>
+  <line x1="40" y1="330" x2="860" y2="330" stroke="#1c2940" stroke-width="0.5" opacity="0.5"/>
+
+  <!-- Footer -->
+  <text x="450" y="393" font-family="'SF Mono','Fira Code',Consolas,monospace" font-size="11" fill="#b1bac4" text-anchor="middle" opacity="0.6">41 correlation rules cross-reference findings across all 29 scanners</text>
+
+  <!-- Border -->
+  <rect width="900" height="400" rx="12" fill="none" stroke="#1c2940" stroke-width="1"/>
+</svg>

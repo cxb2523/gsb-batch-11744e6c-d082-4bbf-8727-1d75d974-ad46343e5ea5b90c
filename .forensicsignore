@@ -1,0 +1,57 @@
+# Test fixtures contain intentionally malicious patterns for scanner validation
+skills/repo-forensics/tests/*
+skills/forensify/tests/*
+
+# Integrity checksums (SHA256 hashes trigger entropy scanner)
+skills/repo-forensics/checksums.json
+
+# Threat pattern references (documentation describes the attacks we detect)
+skills/repo-forensics/references/*.md
+
+# Scanner scripts and core (contain regex patterns for the attacks they detect)
+skills/repo-forensics/scripts/scan_*.py
+skills/repo-forensics/scripts/parse_pnpm_lock.py
+skills/repo-forensics/scripts/aggregate_json.py
+skills/repo-forensics/scripts/forensics_core.py
+skills/repo-forensics/scripts/ioc_manager.py
+
+# IOC inventories and rulepacks (carry attack literals as DATA, same reason as
+# the scanner scripts above). Without these, scanning this repo with its own
+# scanners reports the IOC list itself as an infection. The data/ globs are
+# covered by checksums.json / *.sig, so tampering there is caught by integrity
+# verification. Added 2026-08-06 with the Shai-Hulud family behavioral-coverage
+# expansion, which widened the self-match surface.
+skills/repo-forensics/data/*.json
+skills/repo-forensics/data/rulepacks/*.json
+# iocs/ is NOT in checksums.json, so a wildcard here would let a dropped payload
+# (e.g. iocs/actionsSecrets.json) be silently ignored by BOTH content scanning
+# and integrity. List ONLY the two known-legit inventories by exact name so any
+# other JSON appearing under iocs/ is still scanned as content.
+iocs/latest.json
+iocs/rulepacks.json
+
+# SKILL.md (documents the attack types we catch)
+skills/repo-forensics/SKILL.md
+
+# README describes the attack types we detect — without this, the newly
+# wired correlation engine flags meta-documentation as install-time exfil.
+# Added 2026-04-05 with the aggregate_json.py correlation wiring.
+README.md
+CHANGELOG.md
+
+# CLA workflow has a legitimate bot-signing webhook the scanner mis-flags
+# as install-time exfiltration (lifecycle + network keyword co-occurrence).
+.github/workflows/cla.yml
+
+# Generated Codex marketplace mirror; root skills/hooks remain canonical.
+plugins/repo-forensics/
+
+# Vendor directories — common build/cache paths that generate false positives.
+# Users scanning vendored dependencies should remove these lines.
+node_modules/
+dist/
+build/
+vendor/
+.venv/
+__pycache__/
+.pytest_cache/

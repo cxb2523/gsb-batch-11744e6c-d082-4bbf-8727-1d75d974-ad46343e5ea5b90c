@@ -1,0 +1,36 @@
+{
+  "signedContributors": [
+    {
+      "name": "MaTriXy",
+      "id": 3080139,
+      "comment_id": 4187407533,
+      "created_at": "2026-04-04T16:58:05Z",
+      "repoId": 1168786009,
+      "pullRequestNo": 2
+    },
+    {
+      "name": "MaTriXy",
+      "id": 3080139,
+      "comment_id": 4187408703,
+      "created_at": "2026-04-04T16:58:55Z",
+      "repoId": 1168786009,
+      "pullRequestNo": 2
+    },
+    {
+      "name": "marcgadsdon",
+      "id": 185905550,
+      "comment_id": 4187575542,
+      "created_at": "2026-04-04T18:51:21Z",
+      "repoId": 1168786009,
+      "pullRequestNo": 6
+    },
+    {
+      "name": "danikdanik",
+      "id": 8233041,
+      "comment_id": 4647095165,
+      "created_at": "2026-06-08T09:09:05Z",
+      "repoId": 1168786009,
+      "pullRequestNo": 18
+    }
+  ]
+}

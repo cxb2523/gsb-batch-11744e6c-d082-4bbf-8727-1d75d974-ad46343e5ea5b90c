@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/repo-forensics/scripts/cursor_pre_scan.py\"",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/cursor/run_auto_scan.sh\"",
+        "timeout": 30
+      }
+    ],
+    "sessionStart": [
+      {
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/cursor/run_session_scan.sh\"",
+        "timeout": 25
+      }
+    ]
+  }
+}

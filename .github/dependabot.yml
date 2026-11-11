@@ -1,0 +1,24 @@
+# repo-forensics has no runtime dependencies. This keeps the pinned CI actions
+# and the hash-locked CI tool files current. Monthly and grouped, so it opens
+# at most one pull request per ecosystem. The Python 3.8 lock lives in
+# .github/requirements-py38 on purpose: Dependabot is not pointed at it,
+# because newer pytest releases drop 3.8 and would break that job.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
+
+  - package-ecosystem: pip
+    directory: /.github/requirements
+    schedule:
+      interval: monthly
+    groups:
+      ci-tools:
+        patterns: ["*"]
+    open-pull-requests-limit: 1

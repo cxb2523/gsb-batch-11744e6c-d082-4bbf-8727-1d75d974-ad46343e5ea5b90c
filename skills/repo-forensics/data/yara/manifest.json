@@ -1,0 +1,147 @@
+{
+  "schema_version": "1.0",
+  "pack": "yara",
+  "pack_version": 1,
+  "generated": "2026-08-04",
+  "files": [
+    {
+      "path": "malware.yar",
+      "sha256": "a6c773232622e6b4bd1b236c9bf0e8ac453cd406f7ecaf07a16f25129a3f1300"
+    },
+    {
+      "path": "webshells.yar",
+      "sha256": "b3157112732722063e56819e4c3e73d298edb245a8a284474e69a258847d005f"
+    },
+    {
+      "path": "cryptominers.yar",
+      "sha256": "0764524179a3dcebad0ee2f2db95bc168ecc8941a079876a5655d2edc4b99bb9"
+    },
+    {
+      "path": "hacktools.yar",
+      "sha256": "e8fadf1a37140d05da6ba9bb0eafb91d83ef1cc024d4a69ab84792f21d701dbb"
+    }
+  ],
+  "rule_meta": {
+    "Webshell_PHP_Eval_Inflate": {
+      "id": "YR-WEB-001",
+      "severity": "critical",
+      "confidence": 0.95,
+      "category": "webshell",
+      "title": "PHP webshell (eval/assert + gzinflate + base64 chain)",
+      "explanation": "Conjunctive match of an executor (eval( or assert() with a decode primitive (gzinflate/base64_decode) is the canonical PHP obfuscated-webshell chain. v2.13.1 reclaims assert() as an alternative executor (the prior `not $assert` exclusion existed only to spare legit assert(decode(...)) unit-test code, which the context gate now demotes). Multi-string conjunction makes this a confirmed family indicator, not a single-token guess.",
+      "attacker": "Operator with upload access planting a webshell",
+      "boundary": "Web server process executes attacker PHP",
+      "asset": "Host execution + data on the web server"
+    },
+    "Webshell_PHP_Exec_Passthru": {
+      "id": "YR-WEB-002",
+      "severity": "critical",
+      "confidence": 0.9,
+      "category": "webshell",
+      "title": "PHP webshell (system/passthru/shell_exec/exec/popen exec chain)",
+      "explanation": "Two command-execution primitives (system/passthru/shell_exec/proc_open/exec/popen) co-occurring with a request input binding ($_REQUEST/$_GET/$_POST) is the shape of a PHP command-execution webshell. v2.13.1 widens the exec set (exec(/popen() and the input set ($_POST); $_POST in PHP-tutorials/tests is absorbed by the context gate (prose-doc/test-fixture -> inferred).",
+      "attacker": "Operator with upload access planting a webshell",
+      "boundary": "Web server process executes attacker PHP",
+      "asset": "Host execution + data on the web server"
+    },
+    "Webshell_JSP_Runtime_Exec": {
+      "id": "YR-WEB-003",
+      "severity": "critical",
+      "confidence": 0.92,
+      "category": "webshell",
+      "title": "JSP webshell (Runtime.exec + request.getParameter chain)",
+      "explanation": "Runtime.getRuntime().exec combined with request.getParameter is the canonical JSP command-execution webshell pattern.",
+      "attacker": "Operator with upload access planting a webshell",
+      "boundary": "Web container executes attacker JSP",
+      "asset": "Host execution + data on the application server"
+    },
+    "Malware_Reverse_Shell_Stager": {
+      "id": "YR-MAL-001",
+      "severity": "high",
+      "confidence": 0.85,
+      "category": "malware",
+      "title": "Reverse shell stager (socket + dup2 + shell spawn)",
+      "explanation": "socket.socket + dup2 + a shell binary (/bin/sh or cmd.exe) is the classic Python reverse-shell stager. The conjunction is a confirmed indicator, not a benign network client.",
+      "attacker": "Malware operator establishing a callback",
+      "boundary": "Host process opens outbound socket to attacker",
+      "asset": "Interactive shell access on the host"
+    },
+    "Malware_Powershell_Encoded_Stager": {
+      "id": "YR-MAL-002",
+      "severity": "high",
+      "confidence": 0.85,
+      "category": "malware",
+      "title": "PowerShell encoded-command stager",
+      "explanation": "powershell with an encoded-command flag (-EncodedCommand or the short -enc/-ec/-e) paired with a stealth flag (-WindowStyle Hidden / -NoProfile or the shorthand -w hidden / -nop) is the standard dropper/stager invocation. v2.13.1 accepts the short-flag encodings and shorthand stealth flags real droppers use; PS droppers documented in prose/tutorials are demoted by the context gate. EncodedCommand hides the payload from plain-text inspection.",
+      "attacker": "Malware operator invoking an obfuscated stager",
+      "boundary": "User-context PowerShell executes attacker payload",
+      "asset": "Host execution under the user context"
+    },
+    "Malware_HTA_Dropper": {
+      "id": "YR-MAL-003",
+      "severity": "high",
+      "confidence": 0.8,
+      "category": "malware",
+      "title": "HTA dropper (mshta + WScript.Shell.Run)",
+      "explanation": "mshta paired with WScript.Shell and a Run/Shell.Application invocation is the shape of an HTA dropper executing a remote or local payload.",
+      "attacker": "Malware operator delivering an HTA dropper",
+      "boundary": "User-context script host executes attacker payload",
+      "asset": "Host execution under the user context"
+    },
+    "Cryptominer_XMRig_Stratum": {
+      "id": "YR-CRY-001",
+      "severity": "high",
+      "confidence": 0.9,
+      "category": "cryptominer",
+      "title": "XMRig / stratum cryptominer pool indicator",
+      "explanation": "A stratum pool URI (stratum+tcp:// or stratum+ssl://) co-occurring with an XMRig/cryptonight/randomx marker (incl. the quoted \"rx/0\" config form and common public Monero pool hosts: pool.supportxmr.com/xmrpool./nanopool./moneroocean/hashvault) is a confirmed cryptominer pool indicator. v2.13.1 widens the pool/algorithm marker set; mining-ops docs and pool lists in blocklists are demoted by the context gate.",
+      "attacker": "Malware operator hijacking CPU for mining",
+      "boundary": "Host process connects to a mining pool",
+      "asset": "CPU cycles + electricity on the host"
+    },
+    "Cryptominer_Coinhive_Browser": {
+      "id": "YR-CRY-002",
+      "severity": "medium",
+      "confidence": 0.8,
+      "category": "cryptominer",
+      "title": "In-browser cryptominer (CoinHive / WASM wrapper)",
+      "explanation": "Two CoinHive/WASM-wrapper markers co-occurring indicate an in-browser cryptominer payload. Medium severity: browser-context, lower host impact than a native miner.",
+      "attacker": "Site operator hijacking visitor CPU for mining",
+      "boundary": "Visitor browser executes miner script",
+      "asset": "Visitor CPU cycles"
+    },
+    "Hacktool_Mimikatz": {
+      "id": "YR-HCK-001",
+      "severity": "medium",
+      "confidence": 0.8,
+      "category": "hacktool",
+      "title": "Mimikatz credential-dumper indicator",
+      "explanation": "Two Mimikatz markers (sekurlsa/logonpasswords/mimikatz/gentilkiwi) co-occurring indicate the Mimikatz credential-dumping tool. Medium: a hacktool presence, not an active exploit by itself.",
+      "attacker": "Operator running a credential-dumper",
+      "boundary": "Operator process reads LSASS credential material",
+      "asset": "Cached credentials on the host"
+    },
+    "Hacktool_Metasploit": {
+      "id": "YR-HCK-002",
+      "severity": "medium",
+      "confidence": 0.75,
+      "category": "hacktool",
+      "title": "Metasploit framework indicator",
+      "explanation": "Two Metasploit markers (metasploit/msfconsole/exploit-multi-handler/msfvenom) co-occurring, OR a meterpreter payload alongside msfvenom, indicate the Metasploit exploitation framework. v2.13.1 adds the meterpreter payload alternative. Medium: framework presence, not an active exploit.",
+      "attacker": "Operator running an exploitation framework",
+      "boundary": "Operator process launches exploit modules",
+      "asset": "Target services on the network"
+    },
+    "Hacktool_LSASS_Dump": {
+      "id": "YR-HCK-003",
+      "severity": "medium",
+      "confidence": 0.8,
+      "category": "hacktool",
+      "title": "LSASS credential-dump indicator",
+      "explanation": "lsass.exe paired with a dump primitive (MiniDump/OpenProcess/comsvcs.dll/procdump) is the shape of an LSASS credential-dump. v2.13.1 adds procdump as a dump primitive. Medium: hacktool presence with credential-theft intent.",
+      "attacker": "Operator dumping LSASS credential material",
+      "boundary": "Operator process reads LSASS memory",
+      "asset": "Cached credentials on the host"
+    }
+  }
+}
