@@ -1,0 +1,1211 @@
+# ==============================================================================
+# 1. SCENE METADATA, VIDEO BINDING & GLOBAL OPTICS
+# ==============================================================================
+version: "1.0"
+id: "vector-field-taruma-sakti"
+title: "Vector Field"
+subtitle: "Cornered in a rural cornfield, a loyal getaway driver refuses to leave his injured partner just as their stolen relic suddenly activates."
+video: "https://www.youtube.com/watch?v=1ly8QX31Uqw"
+aspect_ratio: "21:9"
+duration: 61.625
+continuous: false
+
+optics:
+  dof_blur: true
+  dof: "medium"
+  aperture: "f/4.0"
+
+# ==============================================================================
+# 2. STAGE GEOMETRY & BASELINE CAMERAS
+# ==============================================================================
+stage:
+  width: 32
+  depth: 32
+  grid_step: 2
+  show_rigs: true
+
+  observer_camera:
+    target: [-11.5, 1.0, 0]
+    distance: 12.0
+    pitch: 22
+    yaw: 10
+    roll: 0
+    lens: 35mm
+
+  stage_camera:
+    target: "ruby"
+    distance: 1.8
+    pitch: 4
+    yaw: 90
+    roll: 0
+    lens: 50mm
+
+# ==============================================================================
+# 3. SCENE ENTITIES (WITH 3D SHAPES, STYLES & DIMENSIONS)
+# ==============================================================================
+entities:
+  - id: "ruby"
+    label: "Ruby"
+    kind: "character"
+    style: "mannequin"
+    position: [-11.5, 0, 0]
+    rotation: 90
+    size: [0.48, 1.70, 0.36]
+    color: "#f97316"
+
+  - id: "evan"
+    label: "Evan"
+    kind: "character"
+    style: "mannequin"
+    position: [-13.2, 0, 0]
+    rotation: 90
+    size: [0.54, 1.80, 0.40]
+    color: "#38bdf8"
+
+  - id: "artifact"
+    label: "Vector Disc"
+    kind: "prop"
+    shape: "cylinder"
+    style: "solid"
+    position: [-11.5, 0.9, 0]
+    rotation: 0
+    size: [0.36, 0.08, 0.36]
+    color: "#f59e0b"
+
+  - id: "bag_cloth"
+    label: "Cloth Wrap"
+    kind: "marker"
+    shape: "puck"
+    style: "tape"
+    position: [0, 0, 0]
+    rotation: 0
+    size: [0.45, 0.04, 0.45]
+    color: "#d6d3d1"
+
+  - id: "node_north"
+    label: "North Glyph Node"
+    kind: "marker"
+    shape: "circle"
+    style: "glow"
+    position: [0, 0, -10.0]
+    height: 0.10
+    radius: 0.80
+    color: "#fb923c"
+
+  - id: "node_south"
+    label: "South Glyph Node"
+    kind: "marker"
+    shape: "circle"
+    style: "glow"
+    position: [0, 0, 10.0]
+    height: 0.10
+    radius: 0.80
+    color: "#fb923c"
+
+  - id: "node_east"
+    label: "East Glyph Node"
+    kind: "marker"
+    shape: "circle"
+    style: "glow"
+    position: [10.0, 0, 0]
+    height: 0.10
+    radius: 0.80
+    color: "#fb923c"
+
+  - id: "node_west"
+    label: "West Glyph Node"
+    kind: "marker"
+    shape: "circle"
+    style: "glow"
+    position: [-10.0, 0, 0]
+    height: 0.10
+    radius: 0.80
+    color: "#fb923c"
+
+# ==============================================================================
+# 4. DECOUPLED BLOCKING TIMELINE (blocking:)
+# ==============================================================================
+blocking:
+  # --- Initial Visibility Setup ---
+  - id: "init-props-hidden"
+    start: 0.000
+    end: 0.100
+    entities:
+      artifact: { cut: true, position: [-11.5, 0.9, 0], visible: false }
+      bag_cloth: { cut: true, position: [0, 0, 0], visible: false }
+      node_north: { cut: true, position: [0, 0, -10.0], visible: false }
+      node_south: { cut: true, position: [0, 0, 10.0], visible: false }
+      node_east: { cut: true, position: [10.0, 0, 0], visible: false }
+      node_west: { cut: true, position: [-10.0, 0, 0], visible: false }
+
+  # --- Shots 1–3: Cornfield Chase Sprint ---
+  - id: "chase-sprint-1"
+    start: 0.000
+    end: 4.042
+    easing: "linear"
+    entities:
+      ruby:
+        from: [-11.5, 0, 0]
+        position: [-6.0, 0, 0]
+        rotation: 90
+      evan:
+        from: [-13.2, 0, 0]
+        position: [-6.8, 0, 0]
+        rotation: 90
+        look_at: "ruby"
+
+  # --- Shots 4–6: Evan Grabs Ruby's Injured Arm ---
+  - id: "arm-grab-stop"
+    start: 4.042
+    end: 6.792
+    easing: "ease-out"
+    entities:
+      ruby:
+        from: [-6.0, 0, 0]
+        position: [-5.5, 0, 0]
+        rotation: 65
+      evan:
+        from: [-6.8, 0, 0]
+        position: [-6.1, 0, 0.15]
+        look_at: "ruby"
+
+  # --- Shots 7–9: Ruby Confronts Evan & Turns to Run ---
+  - id: "ruby-confronts-evan"
+    start: 6.792
+    end: 8.875
+    easing: "smooth"
+    entities:
+      ruby:
+        position: [-5.5, 0, 0]
+        look_at: "evan"
+      evan:
+        position: [-6.1, 0, 0.15]
+        look_at: "ruby"
+
+  # --- Shots 10–11: Sprint into the Central Clearing ---
+  - id: "sprint-into-clearing"
+    start: 8.875
+    end: 11.400
+    easing: "deccel"
+    entities:
+      ruby:
+        from: [-5.5, 0, 0]
+        position: [1.1, 0, 0]
+        rotation: 90
+      evan:
+        from: [-6.1, 0, 0.15]
+        position: [-1.0, 0, 0]
+        rotation: 90
+
+  # --- Shot 11 Tail & Shot 12: Evan Bends Over Catching Breath & Ruby Opens Bag ---
+  - id: "clearing-recovery"
+    start: 11.400
+    end: 14.417
+    easing: "smooth"
+    entities:
+      ruby:
+        position: [1.0, 0, 0]
+        look_at: "evan"
+      evan:
+        position: [-0.9, 0, 0]
+        from_height: 1.80
+        height: 1.35
+        look_at: "ruby"
+
+  # --- Shots 13–17: Stepping Together & Handing Over the Artifact ---
+  - id: "artifact-handoff"
+    start: 14.417
+    end: 17.208
+    easing: "smooth"
+    entities:
+      ruby:
+        from: [1.0, 0, 0]
+        position: [0.42, 0, 0.05]
+        look_at: "evan"
+      evan:
+        from: [-0.9, 0, 0]
+        position: [-0.42, 0, 0]
+        from_height: 1.35
+        height: 1.80
+        look_at: "ruby"
+      artifact:
+        cut: true
+        position: [0, 1.15, 0.02]
+        size: [0.36, 0.24, 0.12]
+        visible: true
+
+  # --- Shots 14–18: Argument Over the Artifact ---
+  - id: "argument-hold"
+    start: 17.208
+    end: 25.042
+    easing: "smooth"
+    entities:
+      ruby:
+        position: [0.42, 0, 0.05]
+        look_at: "evan"
+      evan:
+        position: [-0.42, 0, 0]
+        height: 1.80
+        look_at: "ruby"
+      artifact:
+        position: [0, 1.12, 0.02]
+        visible: true
+
+  # --- Shot 18: Dropping the Activating Artifact ---
+  - id: "artifact-drop"
+    start: 25.042
+    end: 25.667
+    easing: "accel"
+    entities:
+      ruby:
+        from: [0.42, 0, 0.05]
+        position: [0.85, 0, 0]
+        look_at: "evan"
+      evan:
+        from: [-0.42, 0, 0]
+        position: [-0.85, 0, 0]
+        look_at: "ruby"
+      artifact:
+        from: [0, 1.12, 0.02]
+        position: [0, 0.22, 0]
+        size: [0.36, 0.36, 0.08]
+        visible: true
+      bag_cloth:
+        cut: true
+        position: [0, 0, 0]
+        visible: true
+
+  # --- Shot 19: Artifact Levitates Between Them ---
+  - id: "artifact-levitate"
+    start: 25.667
+    end: 30.208
+    easing: "cruise"
+    entities:
+      ruby:
+        from: [0.85, 0, 0]
+        position: [1.05, 0, 0]
+        look_at: "artifact"
+      evan:
+        from: [-0.85, 0, 0]
+        position: [-1.05, 0, 0]
+        look_at: "artifact"
+      artifact:
+        from: [0, 0.22, 0]
+        position: [0, 1.25, 0]
+        from_size: [0.36, 0.36, 0.08]
+        size: [0.36, 0.08, 0.36]
+        rotation: 180
+        visible: true
+
+  # --- Shots 20–26: Hovering Standoff in the Clearing ---
+  - id: "artifact-hover-standoff"
+    start: 30.208
+    end: 42.083
+    easing: "smooth"
+    entities:
+      ruby:
+        from: [1.05, 0, 0]
+        position: [1.20, 0, 0]
+        look_at: "evan"
+      evan:
+        from: [-1.05, 0, 0]
+        position: [-1.20, 0, 0]
+        look_at: "ruby"
+      artifact:
+        position: [0, 1.25, 0]
+        size: [0.36, 0.36, 0.08]
+        rotation: 0
+        visible: true
+
+  # --- Shot 27: Artifact Slams Down & Shockwave Recoil (Actors Brace/Crouch) ---
+  - id: "artifact-slam-shockwave"
+    start: 42.083
+    end: 43.292
+    easing: "pop"
+    entities:
+      artifact:
+        from: [0, 1.25, 0]
+        position: [0, 0.05, 0]
+        from_size: [0.36, 0.36, 0.08]
+        size: [0.36, 0.08, 0.36]
+        visible: true
+      evan:
+        from: [-1.20, 0, 0]
+        position: [-1.65, 0, 0]
+        from_height: 1.80
+        height: 1.40
+        look_at: "artifact"
+      ruby:
+        from: [1.20, 0, 0]
+        position: [1.65, 0, 0]
+        from_height: 1.70
+        height: 1.35
+        look_at: "artifact"
+      node_north: { cut: true, position: [0, 0, -10.0], visible: true }
+      node_south: { cut: true, position: [0, 0, 10.0], visible: true }
+      node_east: { cut: true, position: [10.0, 0, 0], visible: true }
+      node_west: { cut: true, position: [-10.0, 0, 0], visible: true }
+
+  # --- Shots 28–32: Final Clearing Hold Under Crop Circle ---
+  - id: "final-clearing-hold"
+    start: 43.292
+    end: 61.625
+    easing: "smooth"
+    entities:
+      evan:
+        position: [-1.65, 0, 0]
+        from_height: 1.40
+        height: 1.75
+        look_at: "artifact"
+      ruby:
+        position: [1.65, 0, 0]
+        from_height: 1.35
+        height: 1.68
+        look_at: "artifact"
+      artifact:
+        position: [0, 0.45, 0]
+        size: [0.36, 0.08, 0.36]
+        visible: true
+
+# ==============================================================================
+# 5. FILM COVERAGE SHOTS & STAGE CAMERA (32 Shots with Rigs, Centroids & DoF)
+# ==============================================================================
+shots:
+  # --- SHOT 1 (0.000s - 1.042s) ---
+  - id: "shot-01"
+    shot: 1
+    label: "Lead Track on Ruby Sprinting"
+    description: "Handheld backward lead track in front of Ruby running through corn stalks."
+    start: 0.000
+    end: 1.042
+    stage_camera:
+      target: "ruby"
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.8"
+      maneuver: "dolly"
+      easing: "linear"
+      distance_start: 1.7
+      distance_end: 1.5
+      pitch: -4
+      yaw: 90
+      roll: 2
+      lens: 35mm
+    entities:
+      ruby: { highlighted: true, note: "Sprinting through corn row" }
+
+  # --- SHOT 2 (1.042s - 2.708s) ---
+  - id: "shot-02"
+    shot: 2
+    label: "Lead Track on Evan Chasing Ruby"
+    description: "Camera leads Evan past Ruby's shoulder as she crosses foreground right."
+    start: 1.042
+    end: 2.708
+    stage_camera:
+      target: "evan"
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.8"
+      maneuver: "dolly"
+      easing: "linear"
+      distance_start: 2.4
+      distance_end: 1.8
+      pitch: 2
+      yaw_start: 80
+      yaw_end: 68
+      lens: 50mm
+    entities:
+      evan: { highlighted: true, note: "Chasing behind Ruby" }
+      ruby: { highlighted: false }
+
+  # --- SHOT 3 (2.708s - 4.042s) ---
+  - id: "shot-03"
+    shot: 3
+    label: "Lateral Side-Profile Dolly Track"
+    description: "Parallel linear dolly track through dense corn stalks framing both runners' centroid."
+    start: 2.708
+    end: 4.042
+    stage_camera:
+      target: ["evan", "ruby"]
+      focus: ["evan", "ruby"]
+      dof: "medium"
+      aperture: "f/5.6"
+      rig:
+        type: "track"
+        from: [-10.5, 1.35, 4.2]
+        to: [-6.4, 1.35, 4.2]
+      easing: "linear"
+      lens: 35mm
+    entities:
+      ruby: { highlighted: true }
+      evan: { highlighted: true }
+
+  # --- SHOT 4 (4.042s - 4.583s) ---
+  - id: "shot-04"
+    shot: 4
+    label: "Evan Grabs Ruby's Arm"
+    description: "Medium tracking shot from front as Evan reaches out to stop Ruby."
+    start: 4.042
+    end: 4.583
+    stage_camera:
+      target: "evan"
+      target_offset: [0.3, -0.15, 0]
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.8"
+      maneuver: "dolly"
+      easing: "deccel"
+      distance_start: 1.9
+      distance_end: 1.6
+      pitch: 4
+      yaw: 75
+      lens: 50mm
+    entities:
+      evan: { highlighted: true, note: "Grabs Ruby's right arm" }
+
+  # --- SHOT 5 (4.583s - 6.208s) ---
+  - id: "shot-05"
+    shot: 5
+    label: "Two-Shot Centroid: Checking the Wound"
+    description: "Medium two-shot on Evan and Ruby's centroid as he inspects her bloody arm bandage."
+    start: 4.583
+    end: 6.208
+    stage_camera:
+      target: ["evan", "ruby"]
+      target_offset: [0, -0.12, 0]
+      focus: ["evan", "ruby"]
+      dof: "medium"
+      aperture: "f/4.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.7
+      distance_end: 1.5
+      pitch: 6
+      yaw_start: 42
+      yaw_end: 32
+      lens: 50mm
+    entities:
+      ruby: { highlighted: true }
+      evan: { highlighted: true }
+
+  # --- SHOT 6 (6.208s - 6.792s) ---
+  - id: "shot-06"
+    shot: 6
+    label: "Insert CU: Bloodied Arm Bandage"
+    description: "Tight insert on Evan's hand gripping Ruby's blood-soaked arm bandage."
+    start: 6.208
+    end: 6.792
+    stage_camera:
+      target: "ruby"
+      target_offset: [-0.15, -0.38, 0.1]
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "cut"
+      distance: 1.1
+      pitch: 8
+      yaw: 38
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true, note: "Bleeding arm wound" }
+
+  # --- SHOT 7 (6.792s - 7.250s) ---
+  - id: "shot-07"
+    shot: 7
+    label: "OTS Past Evan onto Ruby: 'It's Just—'"
+    description: "Over-the-shoulder from Evan's side (-X) focused sharply on Ruby (+X)."
+    start: 6.792
+    end: 7.250
+    stage_camera:
+      target: "ruby"
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 2
+      yaw: -55
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true }
+
+  # --- SHOT 8 (7.250s - 7.708s) ---
+  - id: "shot-08"
+    shot: 8
+    label: "Reverse OTS Past Ruby onto Evan: '—Dirt!'"
+    description: "Reverse OTS from Ruby's side (+X) past her red hair focused on Evan (-X)."
+    start: 7.250
+    end: 7.708
+    stage_camera:
+      target: "evan"
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 4
+      yaw: 62
+      lens: 85mm
+    entities:
+      evan: { highlighted: true }
+
+  # --- SHOT 9 (7.708s - 8.875s) ---
+  - id: "shot-09"
+    shot: 9
+    label: "OTS Past Evan onto Ruby: 'They're Circling Back!'"
+    description: "OTS from Evan's side (-X) onto Ruby (+X) warning him before turning to sprint."
+    start: 7.708
+    end: 8.875
+    stage_camera:
+      target: "ruby"
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.6
+      distance_end: 1.8
+      pitch: 4
+      yaw_start: -58
+      yaw_end: -45
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true, note: "Turns back to run" }
+
+  # --- SHOT 10 (8.875s - 9.875s) ---
+  - id: "shot-10"
+    shot: 10
+    label: "Lateral Stalks Dolly Track: Resuming Sprint"
+    description: "Wide parallel dolly track through corn stalks following their centroid toward clearing."
+    start: 8.875
+    end: 9.875
+    stage_camera:
+      target: ["evan", "ruby"]
+      focus: ["evan", "ruby"]
+      dof: "medium"
+      aperture: "f/5.6"
+      rig:
+        type: "track"
+        from: [-5.8, 1.35, 4.0]
+        to: [-1.5, 1.35, 4.0]
+      easing: "linear"
+      lens: 35mm
+    entities:
+      ruby: { highlighted: true }
+      evan: { highlighted: true }
+
+  # --- SHOT 11 (9.875s - 13.375s) ---
+  - id: "shot-11"
+    shot: 11
+    label: "Wide Tripod Master: Emerging into the Clearing"
+    description: "Locked-off tripod wide master framed through foreground corn stalks as Evan crouches to catch breath."
+    start: 9.875
+    end: 13.375
+    stage_camera:
+      target: "center"
+      focus: ["evan", "ruby"]
+      dof: "medium"
+      aperture: "f/5.6"
+      rig:
+        type: "tripod"
+        position: [0, 1.35, 5.4]
+      maneuver: "cut"
+      lens: 35mm
+    entities:
+      evan: { highlighted: true, note: "Crouches hands-on-knees catching breath" }
+      ruby: { highlighted: true, note: "Scans perimeter" }
+
+  # --- SHOT 12 (13.375s - 14.417s) ---
+  - id: "shot-12"
+    shot: 12
+    label: "Insert CU: Unbuckling Waist Bag"
+    description: "Close-up on Ruby's tactical waist pouch as she unbuckles it."
+    start: 13.375
+    end: 14.417
+    stage_camera:
+      target: "ruby"
+      target_offset: [0, -0.52, 0]
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.2
+      distance_end: 1.05
+      pitch: 6
+      yaw: -25
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true, note: "Opens waist pouch" }
+
+  # --- SHOT 13 (14.417s - 17.208s) ---
+  - id: "shot-13"
+    shot: 13
+    label: "Ruby-Side OTS onto Evan: Handing Over the Disc"
+    description: "High-angle OTS from Ruby's side (+X) past her shoulder as she presses the wrapped disc into Evan's hands."
+    start: 14.417
+    end: 17.208
+    stage_camera:
+      target: "evan"
+      target_offset: [0.15, -0.22, 0]
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.65
+      distance_end: 1.45
+      pitch_start: 16
+      pitch_end: 10
+      yaw_start: 48
+      yaw_end: 56
+      lens: 85mm
+    entities:
+      evan: { highlighted: true }
+      artifact: { highlighted: true, note: "Cloth-wrapped disc revealed" }
+
+  # --- SHOT 14 (17.208s - 19.208s) ---
+  - id: "shot-14"
+    shot: 14
+    label: "Ruby-Side OTS onto Evan: 'I Drove the Getaway Car!'"
+    description: "Eye-level OTS from Ruby's side (+X) past Ruby onto Evan (-X) refusing to leave."
+    start: 17.208
+    end: 19.208
+    stage_camera:
+      target: "evan"
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.60
+      distance_end: 1.50
+      pitch: 4
+      yaw: 54
+      lens: 85mm
+    entities:
+      evan: { highlighted: true }
+
+  # --- SHOT 15 (19.208s - 21.542s) ---
+  - id: "shot-15"
+    shot: 15
+    label: "Evan-Side OTS onto Ruby: 'They Have Mine. GO!'"
+    description: "Reverse tight OTS from Evan's side (-X) past Evan onto Ruby (+X) pleading with him."
+    start: 19.208
+    end: 21.542
+    stage_camera:
+      target: "ruby"
+      focus: "ruby"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "ease-out"
+      distance_start: 1.50
+      distance_end: 1.25
+      pitch: 4
+      yaw_start: -50
+      yaw_end: -58
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true }
+
+  # --- SHOT 16 (21.542s - 23.375s) ---
+  - id: "shot-16"
+    shot: 16
+    label: "Profile Two-Shot Centroid: 'I Am Not Leaving You'"
+    description: "Tight side-profile two-shot locked onto Evan and Ruby's eye-level centroid."
+    start: 21.542
+    end: 23.375
+    stage_camera:
+      target: ["evan", "ruby"]
+      target_offset: [0, -0.10, 0]
+      focus: ["evan", "ruby"]
+      dof: "medium"
+      aperture: "f/4.0"
+      maneuver: "cut"
+      distance: 1.75
+      pitch: -4
+      yaw: 0
+      lens: 50mm
+    entities:
+      evan: { highlighted: true }
+      ruby: { highlighted: true }
+
+  # --- SHOT 17 (23.375s - 25.042s) ---
+  - id: "shot-17"
+    shot: 17
+    label: "Ruby-Side OTS Tilt & Rack Focus: Artifact Illuminates"
+    description: "OTS from Ruby's side (+X) tilting down and racking focus from Evan onto the illuminating disc."
+    start: 23.375
+    end: 25.042
+    stage_camera:
+      from: "evan"
+      target: "artifact"
+      focus_start: "evan"
+      focus_end: "artifact"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.55
+      distance_end: 1.25
+      pitch_start: 14
+      pitch_end: 30
+      yaw_start: 55
+      yaw_end: 48
+      lens: 85mm
+    entities:
+      artifact: { highlighted: true, note: "Orange circuit rings illuminate" }
+      evan: { highlighted: true }
+
+  # --- SHOT 18 (25.042s - 25.667s) ---
+  - id: "shot-18"
+    shot: 18
+    label: "Ruby-Side OTS CU: Evan Drops the Disc"
+    description: "Quick reaction cut from Ruby's side (+X) onto Evan gasping and releasing the vibrating disc."
+    start: 25.042
+    end: 25.667
+    stage_camera:
+      target: "evan"
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.0"
+      maneuver: "cut"
+      distance: 1.40
+      pitch: 12
+      yaw: 52
+      lens: 85mm
+    entities:
+      evan: { highlighted: true, note: "Drops activating disc" }
+
+  # --- SHOT 19 (25.667s - 30.208s) ---
+  - id: "shot-19"
+    shot: 19
+    label: "Low-Angle Pedestal: Disc Levitates Between Legs"
+    description: "Low-angle shot framed between Evan and Ruby's boots as the disc rises from the cloth wrap."
+    start: 25.667
+    end: 30.208
+    stage_camera:
+      target: "artifact"
+      focus: "artifact"
+      dof: "shallow"
+      aperture: "f/2.8"
+      maneuver: "dolly"
+      easing: "cruise"
+      distance_start: 1.4
+      distance_end: 1.65
+      pitch_start: -14
+      pitch_end: -4
+      yaw: 0
+      lens: 35mm
+    entities:
+      artifact: { highlighted: true, note: "Levitates to chest height & tilts horizontal" }
+
+  # --- SHOT 20 (30.208s - 32.833s) ---
+  - id: "shot-20"
+    shot: 20
+    label: "Ruby-Side OTS Past Floating Disc onto Evan"
+    description: "OTS from Ruby's side (+X) looking past Ruby and the hovering disc onto Evan (-X) asking 'What is it doing?'"
+    start: 30.208
+    end: 32.833
+    stage_camera:
+      target: "evan"
+      target_offset: [0.35, -0.15, 0]
+      focus_start: "artifact"
+      focus_end: "evan"
+      dof: "medium"
+      aperture: "f/4.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 2.75
+      distance_end: 2.55
+      pitch: 4
+      yaw_start: 62
+      yaw_end: 58
+      lens: 85mm
+    entities:
+      evan: { highlighted: true }
+      artifact: { highlighted: true }
+
+  # --- SHOT 21 (32.833s - 34.667s) ---
+  - id: "shot-21"
+    shot: 21
+    label: "Reverse Evan-Side OTS Past Disc onto Ruby"
+    description: "Reverse OTS from Evan's side (-X) looking past Evan and the glowing disc onto Ruby (+X) saying 'It's alive.'"
+    start: 32.833
+    end: 34.667
+    stage_camera:
+      target: "ruby"
+      target_offset: [-0.35, -0.15, 0]
+      focus: "ruby"
+      dof: "medium"
+      aperture: "f/4.0"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 2.70
+      distance_end: 2.50
+      pitch: 4
+      yaw_start: -62
+      yaw_end: -58
+      lens: 85mm
+    entities:
+      ruby: { highlighted: true }
+      artifact: { highlighted: true }
+
+  # --- SHOT 22 (34.667s - 37.167s) ---
+  - id: "shot-22"
+    shot: 22
+    label: "Wide Tripod Master Through Stalks: Hovering Disc"
+    description: "Locked-off tripod wide master behind foreground corn stalks with the disc hovering between them."
+    start: 34.667
+    end: 37.167
+    stage_camera:
+      target: ["evan", "ruby", "artifact"]
+      focus: "artifact"
+      dof: "medium"
+      aperture: "f/5.6"
+      rig:
+        type: "tripod"
+        position: [0, 1.35, 5.2]
+      maneuver: "cut"
+      lens: 35mm
+    entities:
+      artifact: { highlighted: true }
+      evan: { highlighted: true }
+      ruby: { highlighted: true }
+
+  # --- SHOT 23 (37.167s - 38.667s) ---
+  - id: "shot-23"
+    shot: 23
+    label: "Ruby-Side OTS MCU onto Evan: 'NOW!'"
+    description: "Camera on Ruby's side (+X) pushes in past the hovering disc in lower-right foreground onto Evan (-X) yelling 'NOW!'"
+    start: 37.167
+    end: 38.667
+    stage_camera:
+      target: "evan"
+      target_offset: [0.30, -0.15, 0]
+      focus: "evan"
+      dof: "shallow"
+      aperture: "f/2.8"
+      maneuver: "dolly"
+      easing: "accel"
+      distance_start: 2.30
+      distance_end: 1.95
+      pitch: 4
+      yaw_start: 56
+      yaw_end: 52
+      lens: 85mm
+    entities:
+      evan: { highlighted: true }
+      artifact: { highlighted: true }
+
+  # --- SHOT 24 (38.667s - 39.333s) ---
+  - id: "shot-24"
+    shot: 24
+    label: "ECU: Vector Disc Rings Pulse"
+    description: "Extreme close-up on the hovering black disc at f/1.4 as its orange rings surge."
+    start: 38.667
+    end: 39.333
+    stage_camera:
+      target: "artifact"
+      focus: "artifact"
+      dof: "shallow"
+      aperture: "f/1.4"
+      maneuver: "dolly"
+      easing: "accel"
+      distance_start: 0.75
+      distance_end: 0.62
+      pitch: 0
+      yaw: 12
+      lens: 85mm
+    entities:
+      artifact: { highlighted: true, note: "Energy rings surge" }
+
+  # --- SHOT 25 (39.333s - 40.167s) ---
+  - id: "shot-25"
+    shot: 25
+    label: "ECU: Blinding Orange Energy Flare"
+    description: "Tight frontal ECU on the artifact flaring with blinding orange light at f/1.4."
+    start: 39.333
+    end: 40.167
+    stage_camera:
+      target: "artifact"
+      focus: "artifact"
+      dof: "shallow"
+      aperture: "f/1.4"
+      maneuver: "dolly"
+      easing: "expo"
+      distance_start: 0.62
+      distance_end: 0.48
+      pitch: 0
+      yaw: 0
+      lens: 85mm
+    entities:
+      artifact: { highlighted: true, note: "Blinding energy discharge" }
+
+  # --- SHOT 26 (40.167s - 42.083s) ---
+  - id: "shot-26"
+    shot: 26
+    label: "Wide Tripod Master: Calm Before Impact"
+    description: "Locked-off tripod wide master through stalks as the flare subsides and the disc hangs suspended."
+    start: 40.167
+    end: 42.083
+    stage_camera:
+      target: ["evan", "ruby", "artifact"]
+      focus: "artifact"
+      dof: "medium"
+      aperture: "f/5.6"
+      rig:
+        type: "tripod"
+        position: [0, 1.35, 5.2]
+      maneuver: "cut"
+      lens: 35mm
+    entities:
+      artifact: { highlighted: true }
+
+  # --- SHOT 27 (42.083s - 43.292s) ---
+  - id: "shot-27"
+    shot: 27
+    label: "Wide Shockwave Impact & Camera Recoil"
+    description: "Disc slams into the dirt floor; shockwave blasts dust outward as Evan and Ruby duck and brace."
+    start: 42.083
+    end: 43.292
+    stage_camera:
+      target: ["evan", "ruby", "artifact"]
+      focus: "artifact"
+      dof: "medium"
+      aperture: "f/5.6"
+      maneuver: "recoil"
+      easing: "pop"
+      breathe: 1.18
+      distance_start: 4.8
+      distance_end: 4.5
+      pitch: 5
+      yaw: 0
+      roll: -3
+      lens: 35mm
+    entities:
+      artifact: { highlighted: true, note: "Slams into ground triggering vector wave" }
+      evan: { highlighted: true, note: "Ducks & braces against shockwave" }
+      ruby: { highlighted: true, note: "Ducks & braces against shockwave" }
+
+  # --- SHOT 28 (43.292s - 44.083s) ---
+  - id: "shot-28"
+    shot: 28
+    label: "Low Trench Rush: North Radial Corridor Parting"
+    description: "Fast low-altitude forward rush along the newly flattened north (-Z) radial corn trench."
+    start: 43.292
+    end: 44.083
+    stage_camera:
+      from: "center"
+      target: "node_north"
+      dof: "deep"
+      maneuver: "dolly"
+      easing: "accel"
+      distance_start: 8.5
+      distance_end: 4.0
+      pitch: 8
+      yaw: 0
+      lens: 24mm
+    entities:
+      node_north: { highlighted: true, note: "North radial corridor flattening" }
+
+  # --- SHOT 29 (44.083s - 45.667s) ---
+  - id: "shot-29"
+    shot: 29
+    label: "High-Angle South Trench Flyover"
+    description: "Elevated tracking flight looking down into the parted south (+Z) corn trench."
+    start: 44.083
+    end: 45.667
+    stage_camera:
+      from: "center"
+      target: "node_south"
+      dof: "deep"
+      maneuver: "dolly"
+      easing: "linear"
+      distance_start: 9.0
+      distance_end: 3.5
+      pitch_start: 28
+      pitch_end: 35
+      yaw: 180
+      lens: 24mm
+    entities:
+      node_south: { highlighted: true, note: "South radial corridor flattening" }
+
+  # --- SHOT 30 (45.667s - 47.292s) ---
+  - id: "shot-30"
+    shot: 30
+    label: "Aerial Arc Over Outer Glyph Ring"
+    description: "Sweeping high-angle arc as circular crop rings flatten across the field."
+    start: 45.667
+    end: 47.292
+    stage_camera:
+      target: "node_east"
+      dof: "deep"
+      maneuver: "arc"
+      easing: "smooth"
+      distance: 6.5
+      pitch_start: 34
+      pitch_end: 46
+      yaw_start: -35
+      yaw_end: 30
+      roll: 6
+      lens: 24mm
+    entities:
+      node_east: { highlighted: true, note: "Outer glyph node carved into stalks" }
+
+  # --- SHOT 31 (47.292s - 56.000s) ---
+  - id: "shot-31"
+    shot: 31
+    label: "God's-Eye Crane Pullback: The Vector Field"
+    description: "Vertical boom from ground-level corn stalks up to an 85° top-down reveal of the giant glowing crop circle."
+    start: 47.292
+    end: 56.000
+    stage_camera:
+      target: "center"
+      dof: "deep"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 3.6
+      distance_end: 40.0
+      pitch_start: 4
+      pitch_end: 85
+      yaw_start: 0
+      yaw_end: 0
+      lens_start: 24mm
+      lens_end: 18mm
+    entities:
+      artifact: { highlighted: true, note: "Central vector nexus" }
+      evan: { highlighted: true }
+      ruby: { highlighted: true }
+      node_north: { highlighted: true }
+      node_south: { highlighted: true }
+      node_east: { highlighted: true }
+      node_west: { highlighted: true }
+
+  # --- SHOT 32 (56.000s - 61.625s) ---
+  - id: "shot-32"
+    shot: 32
+    label: "Zenith Hold: Vector Field Title Card"
+    description: "Holds peak 40m God's-Eye overhead pose above the cloud layer through the title card fade-out."
+    start: 56.000
+    end: 61.625
+    stage_camera:
+      target: "center"
+      dof: "deep"
+      maneuver: "cut"
+      distance: 40.0
+      pitch: 85
+      yaw: 0
+      lens: 18mm
+    entities:
+      artifact: { highlighted: true, note: "Peak overhead hold" }
+      node_north: { highlighted: true }
+      node_south: { highlighted: true }
+      node_east: { highlighted: true }
+      node_west: { highlighted: true }
+
+# ==============================================================================
+# 6. DECOUPLED DIORAMA VIEWPORT MOVES (observer_shots:)
+# ==============================================================================
+observer_shots:
+  # --- Shots #1 to #10 (0.000s - 9.875s): Opposite Stage Camera, Tracking Ruby ---
+  - id: "obs-01-track-ruby-opposite"
+    label: "Opposite-Side Follow on Ruby"
+    start: 0.000
+    end: 9.875
+    target: "ruby"
+    maneuver: "dolly"
+    easing: "cruise"
+    distance_start: 12.0
+    distance_end: 15.0
+    pitch_start: 22
+    pitch_end: 25
+    yaw_start: 10
+    yaw_end: -155
+    lens: 35mm
+
+  # --- Shots #11 to #13 (9.875s - 14.417s): Glide from Ruby to Stage Center ---
+  - id: "obs-02-settle-to-center"
+    label: "Settle from Ruby to Stage Center"
+    continuous: true
+    end: 14.417
+    from: "ruby"
+    target: "center"
+    maneuver: "dolly"
+    easing: "cruise"
+    distance_start: 15.0
+    distance_end: 8.5
+    pitch: 25
+    yaw_start: -155
+    yaw_end: -135
+    lens: 35mm
+
+  # --- Shots #13 to #20 (14.417s - 30.208s): Opposite Stage Camera, Slow Zoom Out ---
+  - id: "obs-03-opposite-slow-zoom-out"
+    label: "Opposite-Angle Slow Pullback"
+    continuous: true
+    end: 30.208
+    target: "center"
+    maneuver: "dolly"
+    easing: "cruise"
+    distance_start: 8.5
+    distance_end: 13.5
+    pitch_start: 25
+    pitch_end: 28
+    yaw_start: -135
+    yaw_end: -178.5
+    lens_start: 35mm
+    lens_end: 28mm
+
+  # --- Shots #20 to #24 (30.208s - 39.333s): Orbit & Elevate to Higher Ground ---
+  - id: "obs-04-orbit-and-elevate"
+    label: "Ascending Master Orbit"
+    continuous: true
+    end: 39.333
+    target: "center"
+    maneuver: "orbit"
+    direction: "ccw"
+    easing: "cruise"
+    distance_start: 13.5
+    distance_end: 18.0
+    pitch_start: 28
+    pitch_end: 53.7
+    yaw_start: -178.5
+    yaw_end: -25.0
+    lens: 28mm
+
+  # --- Shots #25 to #30 (39.333s - 47.292s): Immediate Wide Pullout for Field Trench Moves ---
+  - id: "obs-05-immediate-wide-zoom-out"
+    label: "Rapid Zoom Out for Shockwave & Trenches"
+    continuous: true
+    end: 47.292
+    target: "center"
+    maneuver: "dolly"
+    easing: "cruise"
+    distance_start: 18.0
+    distance_end: 46.0
+    pitch_start: 53.7
+    pitch_end: 26
+    yaw_start: -25.0
+    yaw_end: 20.0
+    lens_start: 28mm
+    lens_end: 20mm
+
+  # --- Shots #31 to #32 (47.292s - 61.625s): Far Distance, Low-Angle Full-Stage Vista ---
+  - id: "obs-06-far-low-vista"
+    label: "Far Low-Angle Vista of 40m Vertical Crane"
+    continuous: true
+    end: 61.625
+    target: "center"
+    target_offset_start: [0, 0.0, 0]
+    target_offset_end: [0, 12.0, 0]
+    maneuver: "dolly"
+    easing: "ease-out"
+    distance_start: 46.0
+    distance_end: 70.0
+    pitch_start: 26
+    pitch_end: 10
+    yaw_start: 20.0
+    yaw_end: 35.0
+    lens: 20mm

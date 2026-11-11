@@ -1,0 +1,294 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 03 — THE LONG DISTANCE PASS
+# ==============================================================================
+# A dynamic 30-meter multi-actor choreography sequence demonstrating:
+#   1. Wide-Span Spatial Staging (Arthur [-15m] -> Ruby [+5m] -> Mark [+15m])
+#   2. Parabolic Projectile Trajectory with Gravity Decel/Accel (Ease-Out -> Ease-In)
+#   3. Centrifugal Prop Orbit around Actor (Ruby) with Dynamic Character Gaze Tracking
+#   4. High-Speed Straight-Line Bullet Pass across a 10-meter Gap
+#   5. Sole Ball Tracking with Varied Cinematographic Framing (28mm to 85mm)
+#   6. Expressive Camera Roll (Dutch Angles from -18° to +22°, Dynamic Roll Swings)
+#   7. Free Diorama Orbit (No Scripted Observer Camera Cuts)
+#
+# Units:
+#   - Spatial Coordinates & Distances: Metric Meters (1 unit = 1m)
+#   - Angles (pitch, yaw, roll, rotation): Human Degrees (deg)
+#   - Optics (lens): Full-Frame Equivalent Focal Length in Millimeters (mm)
+
+version: "1.0"
+id: "blueprint-03-ball-pass"
+title: "The Long-Distance Pass"
+subtitle: "3 Actors Across 30m Span · Parabolic Gravity Arc, Performer Orbit & Dynamic Dutch Roll"
+video: "procedural://ball-pass"
+aspect_ratio: "16:9"
+duration: 16.0
+
+stage:
+  width: 44
+  depth: 18
+  grid_step: 1
+  observer_camera:
+    target: [2.5, 1.5, 0]
+    distance: 38.0
+    pitch: 24
+    yaw: 25
+    lens: 35mm
+  stage_camera:
+    target: "ball"
+    distance: 3.5
+    pitch: -8
+    yaw: -70
+    roll: 14
+    lens: 35mm
+
+entities:
+  # Actor 1: Arthur (Initial Thrower at Stage Left)
+  - id: "arthur"
+    label: "Arthur (Thrower)"
+    kind: "character"
+    position: [-15, 0, 0]
+    rotation: 90
+    color: "#38bdf8"
+
+  # Actor 2: Ruby (Relay Center, 20m from Arthur)
+  - id: "ruby"
+    label: "Ruby (Relay)"
+    kind: "character"
+    position: [5, 0, 0]
+    rotation: -90
+    color: "#f43f5e"
+
+  # Actor 3: Mark (Final Receiver, 10m from Ruby at Stage Right)
+  - id: "mark"
+    label: "Mark (Receiver)"
+    kind: "character"
+    position: [15, 0, 0]
+    rotation: -90
+    color: "#10b981"
+
+  # Dynamic Prop: Kinetic Ball
+  - id: "ball"
+    label: "Kinetic Sphere"
+    kind: "prop"
+    shape: "sphere"
+    position: [-14.5, 1.25, 0.2]
+    radius: 0.18
+    height: 0.36
+    color: "#f59e0b"
+
+# ==============================================================================
+# FILM COVERAGE SHOTS (Physical Stage Camera Solely Tracking the Ball)
+# ==============================================================================
+shots:
+  # Shot 1: Arthur Launches High Parabolic Lob (Ascent to Apex)
+  - id: "shot-1"
+    shot: 1
+    label: "Shot 01 · Parabolic Lob: Skyward Ascent"
+    description: "Arthur launches the kinetic ball high toward Ruby. Low-angle 35mm tracking push with a +14° Dutch roll, tracking the ball as it decelerates toward its 5.2m apex."
+    start: 0.0
+    end: 3.0
+    stage_camera:
+      target: "ball"
+      maneuver: "dolly"
+      easing: "ease-out"
+      distance_start: 3.5
+      distance_end: 2.8
+      pitch_start: -8
+      pitch_end: -18
+      yaw_start: -70
+      yaw_end: -50
+      roll: 14
+      lens: 35mm
+      frustum_color: "#38bdf8"
+    entities:
+      arthur:
+        highlighted: true
+        look_at: "ball"
+      ruby:
+        highlighted: false
+        look_at: "ball"
+      mark:
+        highlighted: false
+        look_at: "ruby"
+      ball:
+        from: [-14.5, 1.25, 0.2]
+        position: [-5.0, 5.2, 0.0]
+        easing: "ease-out"
+        highlighted: true
+
+  # Shot 2: Steep Parabolic Descent into Ruby's Space
+  - id: "shot-2"
+    shot: 2
+    label: "Shot 02 · Parabolic Lob: High-Angle Fall"
+    description: "Camera cuts to a 50mm high-angle sweep with a counter -18° Dutch bank, descending with gravity as the ball accelerates from its crest into Ruby's hands."
+    start: 3.0
+    end: 6.0
+    stage_camera:
+      target: "ball"
+      maneuver: "swoop"
+      easing: "ease-in"
+      distance_start: 4.0
+      distance_end: 2.6
+      pitch_start: 28
+      pitch_end: 12
+      yaw_start: 120
+      yaw_end: 80
+      roll: -18
+      lens: 50mm
+      frustum_color: "#f43f5e"
+    entities:
+      arthur:
+        highlighted: false
+        look_at: "ball"
+      ruby:
+        highlighted: true
+        look_at: "ball"
+      mark:
+        highlighted: false
+        look_at: "ball"
+      ball:
+        from: [-5.0, 5.2, 0.0]
+        position: [4.6, 1.25, 0.1]
+        easing: "ease-in"
+        highlighted: true
+
+  # Shot 3: Centrifugal Orbit around Ruby (Downstage Front to Flank)
+  - id: "shot-3"
+    shot: 3
+    label: "Shot 03 · Ruby Orbit: Centrifugal Arc"
+    description: "Ball curls in a tight orbit around Ruby. Close 65mm tracking arc banking with a steep +22° Dutch roll as Ruby tracks the swirling sphere."
+    start: 6.0
+    end: 8.5
+    stage_camera:
+      target: "ball"
+      maneuver: "arc"
+      easing: "smooth"
+      distance_start: 2.0
+      distance_end: 1.6
+      pitch: 8
+      yaw_start: -30
+      yaw_end: 40
+      roll: 22
+      lens: 65mm
+      frustum_color: "#eab308"
+    entities:
+      arthur:
+        highlighted: false
+        look_at: "ruby"
+      ruby:
+        highlighted: true
+        look_at: "ball"
+      mark:
+        highlighted: false
+        look_at: "ruby"
+      ball:
+        from: [4.6, 1.25, 0.1]
+        position: [6.4, 1.4, 0.2]
+        easing: "smooth"
+        highlighted: true
+
+  # Shot 4: Orbit Completion & Vector Alignment (Behind Ruby to Launch Gate)
+  - id: "shot-4"
+    shot: 4
+    label: "Shot 04 · Ruby Orbit: Telephoto Wrap"
+    description: "Ball whips behind Ruby and enters the launch corridor toward Mark. Telephoto 85mm compression with a -16° Dutch angle as Ruby squares up to throw."
+    start: 8.5
+    end: 11.0
+    stage_camera:
+      target: "ball"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 2.6
+      distance_end: 2.0
+      pitch: -6
+      yaw_start: 165
+      yaw_end: 140
+      roll: -16
+      lens: 85mm
+      frustum_color: "#f59e0b"
+    entities:
+      arthur:
+        highlighted: false
+        look_at: "ruby"
+      ruby:
+        highlighted: true
+        look_at: "ball"
+      mark:
+        highlighted: false
+        look_at: "ruby"
+      ball:
+        from: [6.4, 1.4, 0.2]
+        position: [5.6, 1.25, 0.0]
+        easing: "smooth"
+        highlighted: true
+
+  # Shot 5: High-Speed Straight-Line Bullet Pass to Mark
+  - id: "shot-5"
+    shot: 5
+    label: "Shot 05 · Bullet Pass: 10m Direct Chase"
+    description: "Ruby snaps the ball into a high-speed straight-line pass across the 10m divide. Wide 28mm chase camera dollies directly behind the ball with dynamic roll swing (-12° to +12°)."
+    start: 11.0
+    end: 13.5
+    stage_camera:
+      target: "ball"
+      maneuver: "dolly"
+      easing: "linear"
+      distance: 2.2
+      pitch: 4
+      yaw: -90
+      roll_start: -12
+      roll_end: 12
+      lens: 28mm
+      frustum_color: "#06b6d4"
+    entities:
+      arthur:
+        highlighted: false
+        look_at: "mark"
+      ruby:
+        highlighted: false
+        rotation: 90
+        look_at: "mark"
+      mark:
+        highlighted: true
+        look_at: "ball"
+      ball:
+        from: [5.6, 1.25, 0.0]
+        position: [12.0, 1.25, 0.0]
+        easing: "linear"
+        highlighted: true
+
+  # Shot 6: Terminal Catch at Mark with Shockwave Recoil
+  - id: "shot-6"
+    shot: 6
+    label: "Shot 06 · Terminal Catch: Recoil Lock"
+    description: "Mark catches the bullet pass cleanly. 50mm frontal hero angle executes a kinetic shockwave recoil on impact, settling to a level horizon (0° roll)."
+    start: 13.5
+    end: 16.0
+    stage_camera:
+      target: "ball"
+      maneuver: "recoil"
+      easing: "pop"
+      breathe: 1.25
+      distance_start: 2.4
+      distance_end: 1.7
+      pitch: 10
+      yaw: 75
+      roll: 0
+      lens: 50mm
+      frustum_color: "#10b981"
+    entities:
+      arthur:
+        highlighted: false
+        look_at: "mark"
+      ruby:
+        highlighted: false
+        rotation: 90
+        look_at: "mark"
+      mark:
+        highlighted: true
+        look_at: "ball"
+      ball:
+        from: [12.0, 1.25, 0.0]
+        position: [14.6, 1.25, 0.0]
+        easing: "ease-out"
+        highlighted: true

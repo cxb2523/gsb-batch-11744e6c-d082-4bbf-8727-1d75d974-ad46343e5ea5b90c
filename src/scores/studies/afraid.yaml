@@ -1,0 +1,682 @@
+version: "1.0"
+id: "afraid-taruma-sakti"
+title: "Afraid"
+subtitle: "In an overgrown field at twilight, a woman confronts her partner over a secret he kept throughout their travels together."
+video: "https://www.youtube.com/watch?v=01ToYKcx8K4"
+aspect_ratio: "16:9"
+duration: 45.375
+offset: 0.0
+
+optics:
+  dof_blur: true
+  dof: "shallow"
+  aperture: "f/2.8"
+
+stage:
+  width: 16
+  depth: 20
+  grid_step: 1
+  observer_camera:
+    target: [0, 1.0, -1.0]
+    distance: 11.0
+    pitch: 26
+    yaw: 40
+    roll: 0
+  stage_camera:
+    target: "sarah"
+    target_offset: [0.45, -0.1, 0]
+    distance: 3.4
+    pitch: 4
+    yaw: 0
+    roll: 0
+    lens: 35mm
+
+entities:
+  - id: "sarah"
+    label: "Sarah"
+    kind: "character"
+    style: "mannequin"
+    position: [-0.45, 0, -5.0]
+    rotation: 0
+    height: 1.70
+    radius: 0.25
+    color: "#38bdf8"
+
+  - id: "robbie"
+    label: "Robbie"
+    kind: "character"
+    style: "mannequin"
+    position: [0.45, 0, -5.3]
+    rotation: 0
+    height: 1.80
+    radius: 0.27
+    color: "#f59e0b"
+
+  # --- Field Teasel / Thistle Clusters (Left & Right of Path) ---
+  - id: "teasel_upstage_l"
+    label: "Teasels (Upstage L)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [-1.8, 0, -6.2]
+    height: 1.35
+    radius: 0.30
+    color: "#a16207"
+
+  - id: "teasel_upstage_r"
+    label: "Teasels (Upstage R)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [1.9, 0, -5.8]
+    height: 1.40
+    radius: 0.32
+    color: "#a16207"
+
+  - id: "teasel_stop1_l"
+    label: "Teasels (Stop 1 L)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [-1.6, 0, -2.2]
+    height: 1.30
+    radius: 0.28
+    color: "#ca8a04"
+
+  - id: "teasel_stop1_r"
+    label: "Teasels (Stop 1 R)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [1.7, 0, -1.4]
+    height: 1.45
+    radius: 0.30
+    color: "#ca8a04"
+
+  - id: "teasel_mid_l"
+    label: "Teasels (Mid L)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [-1.5, 0, 0.8]
+    height: 1.50
+    radius: 0.26
+    color: "#a16207"
+
+  - id: "teasel_mid_r"
+    label: "Teasels (Mid R)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [1.6, 0, 1.5]
+    height: 1.35
+    radius: 0.28
+    color: "#a16207"
+
+  # Foreground stalks framed in Shot 12 (Low-Angle Deep Two-Shot)
+  - id: "teasel_fg_center"
+    label: "Foreground Stalks"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [-0.1, 0, 5.1]
+    height: 1.55
+    radius: 0.22
+    color: "#eab308"
+
+  - id: "teasel_downstage_l"
+    label: "Teasels (Downstage L)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [-1.8, 0, 4.8]
+    height: 1.40
+    radius: 0.30
+    color: "#ca8a04"
+
+  - id: "teasel_downstage_r"
+    label: "Teasels (Downstage R)"
+    kind: "prop"
+    shape: "cylinder"
+    style: "edges"
+    position: [1.5, 0, 4.2]
+    height: 1.45
+    radius: 0.28
+    color: "#ca8a04"
+
+  # --- Dirt Path Beat Markers ---
+  - id: "mark_stop_1"
+    label: "Stop 1 (Venice Line)"
+    kind: "marker"
+    shape: "t"
+    style: "tape"
+    position: [0.0, 0, -1.8]
+    color: "#64748b"
+
+  - id: "mark_stop_2"
+    label: "Stop 2 (Argument)"
+    kind: "marker"
+    shape: "t"
+    style: "tape"
+    position: [0.0, 0, 1.0]
+    color: "#64748b"
+
+  - id: "mark_stop_3"
+    label: "Stop 3 (Resolution)"
+    kind: "marker"
+    shape: "t"
+    style: "tape"
+    position: [-0.15, 0, 3.85]
+    color: "#64748b"
+
+blocking:
+  # Phase 1: Opening walk down the path (Shots 1-2)
+  - id: "sarah-walk-1"
+    entity: "sarah"
+    start: 0.000
+    end: 5.000
+    from: [-0.45, 0, -5.0]
+    position: [-0.45, 0, -1.6]
+    rotation: 0
+    easing: "linear"
+    note: "Walks down path with arms crossed."
+
+  - id: "robbie-walk-1"
+    entity: "robbie"
+    start: 0.000
+    end: 5.000
+    from: [0.45, 0, -5.3]
+    position: [0.45, 0, -2.0]
+    rotation: 0
+    easing: "linear"
+    note: "Walks beside Sarah."
+
+  # Phase 2: First stop and confrontation (Shots 3-4)
+  - id: "sarah-stop-1"
+    entity: "sarah"
+    start: 5.000
+    end: 11.292
+    position: [-0.45, 0, -1.6]
+    look_at: "robbie"
+    easing: "smooth"
+    note: "Stops, pushes Robbie's hand away."
+
+  - id: "robbie-stop-1"
+    entity: "robbie"
+    start: 5.000
+    end: 11.292
+    position: [0.45, 0, -2.0]
+    look_at: "sarah"
+    easing: "smooth"
+    note: "Stops and confesses timing."
+
+  # Phase 3: Resumed walk through field (Shot 5)
+  - id: "sarah-walk-2"
+    entity: "sarah"
+    start: 11.292
+    end: 15.250
+    position: [-0.45, 0, 1.3]
+    rotation: 0
+    easing: "linear"
+    note: "Walks ahead through field."
+
+  - id: "robbie-walk-2"
+    entity: "robbie"
+    start: 11.292
+    end: 15.250
+    position: [0.45, 0, 0.6]
+    look_at: "sarah"
+    easing: "linear"
+    note: "Follows behind Sarah."
+
+  # Phase 4: Second stop and argument (Shots 6-9)
+  - id: "sarah-confront-2"
+    entity: "sarah"
+    start: 15.250
+    end: 28.500
+    position: [-0.45, 0, 1.3]
+    look_at: "robbie"
+    easing: "smooth"
+    note: "Turns to confront Robbie about Venice."
+
+  - id: "robbie-confront-hold"
+    entity: "robbie"
+    start: 15.250
+    end: 19.125
+    position: [0.45, 0, 0.6]
+    look_at: "sarah"
+    easing: "smooth"
+
+  - id: "robbie-step-in"
+    entity: "robbie"
+    start: 19.125
+    end: 22.917
+    position: [0.35, 0, 0.8]
+    look_at: "sarah"
+    easing: "smooth"
+    note: "Steps closer while pleading."
+
+  - id: "robbie-listen-hold"
+    entity: "robbie"
+    start: 22.917
+    end: 31.542
+    position: [0.35, 0, 0.8]
+    look_at: "sarah"
+    easing: "smooth"
+
+  # Phase 5: Sarah walks away then turns back (End of Shot 9 to Shot 11)
+  - id: "sarah-walk-away"
+    entity: "sarah"
+    start: 28.500
+    end: 30.600
+    position: [-0.55, 0, 4.4]
+    rotation: 0
+    easing: "ease-out"
+    note: "Walks briskly away down path."
+
+  - id: "sarah-turn-back"
+    entity: "sarah"
+    start: 30.600
+    end: 31.542
+    position: [-0.55, 0, 4.4]
+    look_at: "robbie"
+    easing: "smooth"
+    note: "Stops and turns when Robbie calls out."
+
+  # Phase 6: Robbie walks forward to close distance (Shots 12-13)
+  - id: "sarah-hold-final"
+    entity: "sarah"
+    start: 31.542
+    end: 45.375
+    position: [-0.55, 0, 4.4]
+    look_at: "robbie"
+    easing: "smooth"
+
+  - id: "robbie-step-forward"
+    entity: "robbie"
+    start: 31.542
+    end: 34.917
+    position: [0.30, 0, 1.6]
+    look_at: "sarah"
+    easing: "smooth"
+    note: "Steps forward through teasels."
+
+  - id: "robbie-close-gap"
+    entity: "robbie"
+    start: 34.917
+    end: 38.792
+    position: [0.20, 0, 3.3]
+    look_at: "sarah"
+    easing: "smooth"
+    note: "Approaches Sarah during confession."
+
+  - id: "robbie-hold-final"
+    entity: "robbie"
+    start: 38.792
+    end: 45.375
+    position: [0.20, 0, 3.3]
+    look_at: "sarah"
+    easing: "smooth"
+
+shots:
+  - id: "shot-01"
+    shot: 1
+    label: "Frontal Tracking Two-Shot"
+    description: "35mm frontal lead track as Sarah and Robbie walk along the field path."
+    start: 0.000
+    end: 3.208
+    stage_camera:
+      target: "sarah"
+      target_offset: [0.45, -0.1, 0]
+      maneuver: "dolly"
+      easing: "linear"
+      distance: 3.4
+      pitch: 4
+      yaw: 0
+      lens: 35mm
+      focus: "sarah"
+      dof: "medium"
+      aperture: "f/4.0"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+  - id: "shot-02"
+    shot: 2
+    label: "Profile MCU on Sarah"
+    description: "85mm lateral tracking profile as Sarah asks when he found out."
+    start: 3.208
+    end: 5.000
+    stage_camera:
+      target: "sarah"
+      maneuver: "dolly"
+      easing: "linear"
+      distance: 1.4
+      pitch: 2
+      yaw: 82
+      lens: 85mm
+      focus: "sarah"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-03"
+    shot: 3
+    label: "OTS Past Robbie onto Sarah"
+    description: "50mm OTS as Sarah stops abruptly and pushes Robbie's arm away."
+    start: 5.000
+    end: 6.667
+    stage_camera:
+      target: "sarah"
+      target_offset: [0.15, -0.05, -0.1]
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 4
+      yaw: 105
+      lens: 50mm
+      focus: "sarah"
+      dof: "shallow"
+      aperture: "f/2.8"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-04"
+    shot: 4
+    label: "MCU on Robbie"
+    description: "85mm single on Robbie sighing and admitting he knew before Venice."
+    start: 6.667
+    end: 11.292
+    stage_camera:
+      target: "robbie"
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 2
+      yaw: -45
+      lens: 85mm
+      focus: "robbie"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      robbie: { highlighted: true }
+
+  - id: "shot-05"
+    shot: 5
+    label: "Wide Profile Tracking Shot"
+    description: "35mm wide lateral track as Sarah walks ahead and Robbie follows."
+    start: 11.292
+    end: 15.250
+    stage_camera:
+      target: "sarah"
+      target_offset: [0.3, -0.15, -0.3]
+      maneuver: "dolly"
+      easing: "linear"
+      distance: 4.6
+      pitch: 3
+      yaw: 85
+      lens: 35mm
+      focus: "sarah"
+      dof: "medium"
+      aperture: "f/5.6"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+  - id: "shot-06"
+    shot: 6
+    label: "Tight OTS onto Sarah"
+    description: "85mm OTS past Robbie as Sarah turns back to confront him."
+    start: 15.250
+    end: 19.125
+    stage_camera:
+      target: "sarah"
+      maneuver: "cut"
+      distance: 1.5
+      pitch: 3
+      yaw: 118
+      lens: 85mm
+      focus: "sarah"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-07"
+    shot: 7
+    label: "Medium Profile Two-Shot"
+    description: "50mm profile two-shot as Robbie gestures and pleads his case."
+    start: 19.125
+    end: 22.917
+    stage_camera:
+      target: "sarah"
+      target_offset: [0.4, -0.1, -0.25]
+      maneuver: "cut"
+      distance: 2.6
+      pitch: 3
+      yaw: 40
+      lens: 50mm
+      focus: "sarah"
+      dof: "medium"
+      aperture: "f/4.0"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+  - id: "shot-08"
+    shot: 8
+    label: "Close-Up OTS on Sarah"
+    description: "85mm tight OTS on Sarah shouting about living in a false world."
+    start: 22.917
+    end: 26.292
+    stage_camera:
+      target: "sarah"
+      maneuver: "cut"
+      distance: 1.3
+      pitch: 2
+      yaw: 115
+      lens: 85mm
+      focus: "sarah"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-09"
+    shot: 9
+    label: "Reverse OTS onto Robbie"
+    description: "85mm reverse OTS past Sarah onto Robbie reacting as she turns to leave."
+    start: 26.292
+    end: 28.958
+    stage_camera:
+      target: "robbie"
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 3
+      yaw: -48
+      lens: 85mm
+      focus: "robbie"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      robbie: { highlighted: true }
+
+  - id: "shot-10"
+    shot: 10
+    label: "Wide Frontal Walk-Away"
+    description: "35mm wide frontal shot as Sarah walks rapidly downstage away from Robbie."
+    start: 28.958
+    end: 29.833
+    stage_camera:
+      target: "sarah"
+      target_offset: [0.3, -0.1, -0.5]
+      maneuver: "dolly"
+      easing: "linear"
+      distance: 5.2
+      pitch: 4
+      yaw: 0
+      lens: 35mm
+      focus: "sarah"
+      dof: "medium"
+      aperture: "f/5.6"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-11"
+    shot: 11
+    label: "MCU on Robbie Calling Out"
+    description: "85mm push-in on Robbie calling out to Sarah."
+    start: 29.833
+    end: 31.542
+    stage_camera:
+      target: "robbie"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.7
+      distance_end: 1.5
+      pitch: 2
+      yaw: -12
+      lens: 85mm
+      focus: "robbie"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      robbie: { highlighted: true }
+
+  - id: "shot-12"
+    shot: 12
+    label: "Low-Angle Deep Two-Shot"
+    description: "35mm low-angle wide shot past Sarah's back toward Robbie in the field."
+    start: 31.542
+    end: 34.917
+    stage_camera:
+      target: "robbie"
+      target_offset: [-0.35, -0.15, 1.2]
+      maneuver: "cut"
+      distance: 4.2
+      pitch: -6
+      yaw: 12
+      lens: 35mm
+      focus: "robbie"
+      dof: "medium"
+      aperture: "f/5.6"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+  - id: "shot-13"
+    shot: 13
+    label: "Close-Up Tracking Robbie"
+    description: "85mm close-up tracking backward as Robbie walks toward Sarah confessing his fear."
+    start: 34.917
+    end: 38.792
+    stage_camera:
+      target: "robbie"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 1.25
+      pitch: -2
+      yaw: -10
+      lens: 85mm
+      focus: "robbie"
+      dof: "shallow"
+      aperture: "f/1.8"
+    entities:
+      robbie: { highlighted: true }
+
+  - id: "shot-14"
+    shot: 14
+    label: "OTS Past Robbie onto Sarah"
+    description: "85mm OTS past Robbie on left onto Sarah softening on right."
+    start: 38.792
+    end: 39.958
+    stage_camera:
+      target: "sarah"
+      maneuver: "cut"
+      distance: 1.6
+      pitch: 2
+      yaw: 158
+      lens: 85mm
+      focus: "sarah"
+      dof: "shallow"
+      aperture: "f/2.0"
+    entities:
+      sarah: { highlighted: true }
+
+  - id: "shot-15"
+    shot: 15
+    label: "Medium Profile Two-Shot"
+    description: "50mm two-shot with Robbie on left and Sarah on right asking how much time remains."
+    start: 39.958
+    end: 43.042
+    stage_camera:
+      target: "robbie"
+      target_offset: [-0.35, 0, 0.55]
+      maneuver: "cut"
+      distance: 2.1
+      pitch: 2
+      yaw: -125
+      lens: 50mm
+      focus: "sarah"
+      dof: "medium"
+      aperture: "f/4.0"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+  - id: "shot-16"
+    shot: 16
+    label: "Extreme Wide Horizon Hold"
+    description: "35mm extreme wide profile shot of the couple standing together in the field."
+    start: 43.042
+    end: 45.375
+    stage_camera:
+      target: "robbie"
+      target_offset: [-0.35, 0.2, 0.55]
+      maneuver: "cut"
+      distance: 8.5
+      pitch: 2
+      yaw: 55
+      lens: 35mm
+      focus: "robbie"
+      dof: "deep"
+      aperture: "f/11"
+    entities:
+      sarah: { highlighted: true }
+      robbie: { highlighted: true }
+
+observer_shots:
+  - id: "obs-1-opening-follow"
+    start: 0.000
+    end: 15.250
+    target: "sarah"
+    target_offset: [0.4, -0.3, 0]
+    maneuver: "orbit"
+    easing: "smooth"
+    distance_start: 10.5
+    distance_end: 14
+    pitch_start: 28
+    pitch_end: 22
+    yaw_start: 35
+    yaw_end: 75
+
+  - id: "obs-2-confrontation-orbit"
+    continuous: true
+    end: 31.542
+    target: "sarah"
+    target_offset: [0.4, -0.3, -0.5]
+    maneuver: "orbit"
+    easing: "cruise"
+    distance: 12
+    pitch: 24
+    yaw_end: -45
+
+  - id: "obs-3-resolution-pullback"
+    continuous: true
+    end: 45.375
+    target: "robbie"
+    target_offset: [-0.35, -0.2, 0.5]
+    maneuver: "dolly"
+    easing: "smooth"
+    distance: 16
+    pitch: 20
+    yaw: 45

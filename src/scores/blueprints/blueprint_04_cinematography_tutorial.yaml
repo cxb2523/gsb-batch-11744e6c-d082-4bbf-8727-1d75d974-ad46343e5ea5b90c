@@ -1,0 +1,468 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 04 — CINEMATOGRAPHY & FRAMING MASTERCLASS
+# ==============================================================================
+# A 20-second fast-paced tutorial sequence demonstrating core filmmaking grammar:
+#   1. Classic Framing Sizes (EWS -> WS -> MFS -> MS -> MCU -> ECU)
+#   2. Dynamic Camera Movement Tracking (Dolly Push, Lateral Truck, Arc, Crane Swoop)
+#   3. Expressive Camera Roll (Static Dutch Angle -> Dynamic Banking Swing)
+#   4. Off-Frame Target Offsets (Rule-of-Thirds Lead Room, Headroom Bias, Pedestal Reveal)
+#   5. Varied Subject Staging (Single Actor -> Two-Shot -> 3-Actor Ensemble)
+#
+# Units:
+#   - Spatial Coordinates & Distances: Metric Meters (1 unit = 1m)
+#   - Angles (pitch, yaw, roll, rotation): Human Degrees (deg)
+#   - Optics (lens): Full-Frame Equivalent Focal Length in Millimeters (mm)
+
+version: "1.0"
+id: "blueprint-04-cinematography-tutorial"
+title: "Cinematography & Framing"
+subtitle: "16 Rapid Shots · Standard Sizes (EWS to ECU), 3D Tracking, Dutch Roll & Lead-Room Offsets"
+video: "procedural://cinematography-tutorial"
+aspect_ratio: "16:9"
+duration: 20.0
+
+stage:
+  width: 14
+  depth: 12
+  grid_step: 1
+  observer_camera:
+    target: [0.00, 1.20, 0.00]
+    distance: 35.93
+    pitch: 24.8
+    yaw: 69.2
+    lens: 35mm
+  stage_camera:
+    target: [0, 1.2, 0]
+    distance: 9.5
+    pitch: 15
+    yaw: 0
+    lens: 18mm
+
+entities:
+  # Subject 1: Lead Character
+  - id: "hero"
+    label: "Subject A (Lead)"
+    kind: "character"
+    position: [-1.2, 0, 0]
+    rotation: 90
+    color: "#38bdf8"
+
+  # Subject 2: Partner Character
+  - id: "partner"
+    label: "Subject B (Partner)"
+    kind: "character"
+    position: [1.2, 0, 0]
+    rotation: -90
+    color: "#a78bfa"
+
+  # Subject 3: Director / Observer
+  - id: "director"
+    label: "Subject C (Director)"
+    kind: "character"
+    position: [0, 0, 2.6]
+    rotation: 180
+    color: "#34d399"
+
+  # Prop: Production Slate
+  - id: "slate"
+    label: "Film Slate"
+    kind: "prop"
+    position: [0, 0.45, 0.2]
+    radius: 0.22
+    height: 0.32
+    color: "#f59e0b"
+
+# ==============================================================================
+# FILM COVERAGE SHOTS (16 Shots in 20 Seconds · 1.25s per Shot)
+# ==============================================================================
+shots:
+  # ----------------------------------------------------------------------------
+  # PART 1: THE FRAMING LADDER (Standard Shot Sizes · Normal Perspective)
+  # ----------------------------------------------------------------------------
+
+  # Shot 1: Extreme Wide Shot (EWS) / Group Master
+  - id: "shot-01"
+    shot: 1
+    label: "01 · Extreme Wide Shot (EWS) · 18mm Group Master"
+    description: "Ultra-wide 18mm master establishing full stage geometry, spatial relationships, and all three subjects."
+    start: 0.00
+    end: 1.25
+    stage_camera:
+      target: [0, 1.2, 0]
+      maneuver: "cut"
+      distance: 9.5
+      pitch: 15
+      yaw: 0
+      lens: 18mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: false
+      partner:
+        highlighted: false
+      director:
+        highlighted: false
+
+  # Shot 2: Wide Full Shot (WS) · Head-to-Toe Single
+  - id: "shot-02"
+    shot: 2
+    label: "02 · Wide Shot (WS) · 28mm Full-Length Hero"
+    description: "Full-body framing showing Lead subject head-to-toe with ground contact and stage environment."
+    start: 1.25
+    end: 2.50
+    stage_camera:
+      target: "hero"
+      maneuver: "cut"
+      distance: 4.6
+      pitch: 4
+      yaw: -15
+      lens: 28mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: false
+
+  # Shot 3: Medium Full Shot (MFS) · Cowboy Two-Shot
+  - id: "shot-03"
+    shot: 3
+    label: "03 · Medium Full (Cowboy) · 35mm Two-Shot"
+    description: "American/Cowboy shot cut at mid-thigh, capturing dynamic interpersonal tension between Lead and Partner."
+    start: 2.50
+    end: 3.75
+    stage_camera:
+      target: "hero"
+      maneuver: "cut"
+      distance: 3.4
+      pitch: 6
+      yaw: 22
+      lens: 35mm
+      frustum_color: "#a78bfa"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: true
+
+  # Shot 4: Medium Shot (MS) · Waist-Up Dialogue Framing
+  - id: "shot-04"
+    shot: 4
+    label: "04 · Medium Shot (MS) · 50mm Waist-Up Single"
+    description: "Classic 50mm human-eye perspective framing Subject A from the waist up for standard narrative delivery."
+    start: 3.75
+    end: 5.00
+    stage_camera:
+      target: "hero"
+      maneuver: "cut"
+      distance: 2.5
+      pitch: 6
+      yaw: -12
+      lens: 50mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: false
+
+  # Shot 5: Medium Close-Up (MCU) · Chest-Up Intimacy
+  - id: "shot-05"
+    shot: 5
+    label: "05 · Medium Close-Up (MCU) · 65mm Chest-Up Partner"
+    description: "Chest-level framing on Subject B with gentle background compression, emphasizing facial emotion."
+    start: 5.00
+    end: 6.25
+    stage_camera:
+      target: "partner"
+      maneuver: "cut"
+      distance: 1.85
+      pitch: 5
+      yaw: 15
+      lens: 65mm
+      frustum_color: "#a78bfa"
+    entities:
+      hero:
+        highlighted: false
+      partner:
+        highlighted: true
+
+  # Shot 6: Extreme Close-Up (ECU) · 100mm Telephoto Compression
+  - id: "shot-06"
+    shot: 6
+    label: "06 · Extreme Close-Up (ECU) · 100mm Macro Focus"
+    description: "Tight telephoto macro framing isolating eyes and expression, blurring all background geometry."
+    start: 6.25
+    end: 7.50
+    stage_camera:
+      target: "hero"
+      maneuver: "cut"
+      distance: 1.25
+      pitch: 2
+      yaw: -6
+      lens: 100mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: false
+
+  # ----------------------------------------------------------------------------
+  # PART 2: 3D CAMERA MOVEMENT TRACKING (Physical Camera Translation)
+  # ----------------------------------------------------------------------------
+
+  # Shot 7: Dolly Push-In · Dramatic Momentum
+  - id: "shot-07"
+    shot: 7
+    label: "07 · Dolly Push-In · 50mm Dramatic Zoom"
+    description: "Physical camera translates forward from 3.6m to 1.7m, intensifying dramatic intimacy on the subject."
+    start: 7.50
+    end: 8.75
+    stage_camera:
+      target: "hero"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 3.6
+      distance_end: 1.7
+      pitch: 6
+      yaw: -10
+      lens: 50mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: true
+
+  # Shot 8: Lateral Truck Tracking · Moving Subject
+  - id: "shot-08"
+    shot: 8
+    label: "08 · Lateral Truck · 35mm Parallel Tracking"
+    description: "Camera tracks laterally along a straight vector parallel to the walking subject."
+    start: 8.75
+    end: 10.00
+    stage_camera:
+      target: "partner"
+      maneuver: "straight"
+      easing: "linear"
+      distance: 2.8
+      pitch: 4
+      yaw: -80
+      lens: 35mm
+      frustum_color: "#a78bfa"
+    entities:
+      partner:
+        highlighted: true
+        position: [0.6, 0, 0.4]
+        easing: "linear"
+
+  # Shot 9: Dynamic 3D Arc · Conversational Orbital Sweep
+  - id: "shot-09"
+    shot: 9
+    label: "09 · Dynamic Arc · 40mm Quadratic Sweep"
+    description: "Camera executes a curved Bezier arc with elevation lift, rotating 70° around both characters."
+    start: 10.00
+    end: 11.25
+    stage_camera:
+      target: "hero"
+      maneuver: "arc"
+      easing: "smooth"
+      distance_start: 3.2
+      distance_end: 2.4
+      pitch_start: 6
+      pitch_end: 4
+      yaw_start: -35
+      yaw_end: 35
+      lens: 40mm
+      breathe: 1.15
+      frustum_color: "#34d399"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: true
+
+  # Shot 10: Crane / Pedestal Swoop · High-to-Low Elevation Descent
+  - id: "shot-10"
+    shot: 10
+    label: "10 · Crane Swoop · 28mm Elevation Descent"
+    description: "Sweeping crane move descending from high overhead 34° down to chest-level 8° elevation."
+    start: 11.25
+    end: 12.50
+    stage_camera:
+      target: "director"
+      maneuver: "swoop"
+      easing: "ease-out"
+      distance_start: 4.2
+      distance_end: 2.5
+      pitch_start: 34
+      pitch_end: 8
+      yaw_start: -25
+      yaw_end: 10
+      lens: 28mm
+      frustum_color: "#34d399"
+    entities:
+      director:
+        highlighted: true
+
+  # ----------------------------------------------------------------------------
+  # PART 3: CAMERA ROLL & DUTCH ANGLES (Optical Axis Rotation)
+  # ----------------------------------------------------------------------------
+
+  # Shot 11: Static Dutch Angle · Psychological Disorientation
+  - id: "shot-11"
+    shot: 11
+    label: "11 · Static Dutch Angle · 50mm +16° Cant"
+    description: "Camera banks +16° clockwise on the optical axis, breaking the level horizon to express psychological tension."
+    start: 12.50
+    end: 13.75
+    stage_camera:
+      target: "hero"
+      maneuver: "cut"
+      distance: 2.2
+      pitch: -6
+      yaw: -20
+      roll: 16
+      lens: 50mm
+      frustum_color: "#f59e0b"
+    entities:
+      hero:
+        highlighted: true
+
+  # Shot 12: Dynamic Roll Banking · Kinetic Roll Swing
+  - id: "shot-12"
+    shot: 12
+    label: "12 · Dynamic Roll Swing · 35mm -18° to +18° Bank"
+    description: "Camera pushes forward while dynamically banking 36° from -18° to +18°, creating thrilling action momentum."
+    start: 13.75
+    end: 15.00
+    stage_camera:
+      target: "hero"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 3.2
+      distance_end: 1.8
+      pitch: 4
+      yaw: 15
+      roll_start: -18
+      roll_end: 18
+      lens: 35mm
+      frustum_color: "#f59e0b"
+    entities:
+      hero:
+        highlighted: true
+
+  # ----------------------------------------------------------------------------
+  # PART 4: OFF-FRAME & TARGET OFFSETS (Directorial Framing & Negative Space)
+  # ----------------------------------------------------------------------------
+
+  # Shot 13: Rule-of-Thirds Lead Room · Horizontal Target Offset
+  - id: "shot-13"
+    shot: 13
+    label: "13 · Rule-of-Thirds Lead Room · 50mm [+0.45m X Offset]"
+    description: "Aim point shifted +45cm Stage Right; Hero is framed on the left third with spacious looking room."
+    start: 15.00
+    end: 16.25
+    stage_camera:
+      target: "hero"
+      target_offset: [0.45, 0.08, 0.0]
+      maneuver: "cut"
+      distance: 2.4
+      pitch: 4
+      yaw: -15
+      roll: 0
+      lens: 50mm
+      frustum_color: "#06b6d4"
+    entities:
+      hero:
+        highlighted: true
+
+  # Shot 14: Headroom & Negative Space Bias · Vertical Target Offset
+  - id: "shot-14"
+    shot: 14
+    label: "14 · Headroom Bias · 35mm Low Target Offset [-0.4m Y]"
+    description: "Aim point shifted -40cm down; Subject sits low in frame with vast architectural headroom above."
+    start: 16.25
+    end: 17.50
+    stage_camera:
+      target: "partner"
+      target_offset: [-0.25, -0.40, 0.0]
+      maneuver: "cut"
+      distance: 2.6
+      pitch: 10
+      yaw: 20
+      lens: 35mm
+      frustum_color: "#06b6d4"
+    entities:
+      partner:
+        highlighted: true
+
+  # Shot 15: Vertical Pedestal Reveal · Animated Offset (Boots to Eyes)
+  - id: "shot-15"
+    shot: 15
+    label: "15 · Vertical Reveal · 65mm Pedestal [Boots to Eyes]"
+    description: "Look-at target smoothly pedestals up from boots (-1.15m) to eyes (+0.25m) over the shot."
+    start: 17.50
+    end: 18.75
+    stage_camera:
+      target: "hero"
+      target_offset_start: [0.0, -1.15, 0.0]
+      target_offset_end: [0.0, 0.25, 0.0]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 2.2
+      pitch: 4
+      yaw: -10
+      lens: 65mm
+      frustum_color: "#06b6d4"
+    entities:
+      hero:
+        highlighted: true
+
+  # Shot 16: Grand Master Resolve · 3-Actor Ensemble
+  - id: "shot-16"
+    shot: 16
+    label: "16 · Ensemble Master · 24mm Wide Resolve"
+    description: "Full stage pullback framing all 3 characters and film slate, executing a subtle recoil settle."
+    start: 18.75
+    end: 20.00
+    stage_camera:
+      target: [0, 1.1, 0]
+      target_offset: [0, 0, 0]
+      maneuver: "recoil"
+      easing: "pop"
+      breathe: 1.18
+      distance_start: 7.8
+      distance_end: 6.8
+      pitch: 16
+      yaw: 15
+      roll: 0
+      lens: 24mm
+      frustum_color: "#38bdf8"
+    entities:
+      hero:
+        highlighted: true
+      partner:
+        highlighted: true
+      director:
+        highlighted: true
+      slate:
+        highlighted: true
+
+# ==============================================================================
+# DECOUPLED OBSERVER DIORAMA TRACK (Smooth Continuous Orbit Across All 16 Cuts)
+# ==============================================================================
+observer_shots:
+  - id: "obs-move-01"
+    label: "Continuous Diorama Overview Orbit"
+    start: 0.0
+    end: 20.0
+    target: [0.00, 1.20, 0.00]
+    maneuver: "orbit"
+    easing: "smooth"
+    distance_start: 35.93
+    distance_end: 19.63
+    pitch_start: 24.8
+    pitch_end: 28.0
+    yaw_start: 69.2
+    yaw_end: 171.7
+    lens: 35mm

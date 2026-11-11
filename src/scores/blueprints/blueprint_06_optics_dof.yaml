@@ -1,0 +1,347 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT: OPTICS, RACK FOCUS & DEPTH OF FIELD MASTERCLASS
+# ==============================================================================
+# Showcases every Focus Distance, Rack Focus, and Thin-Lens DoF configuration:
+#   - Root `optics:` defaults (`dof_blur: true`, `dof`, `aperture`)
+#   - Shot 01: Off-axis Subject Focus (`target: "center"` + `focus: "alice"`)
+#   - Shot 02: Subject-to-Subject Rack Focus (`focus_start` -> `focus_end`)
+#   - Shot 03: Manual Metric Focus Pull (`focus_distance_start` -> `focus_distance_end`)
+#   - Shot 04: Live Focus Follow on a Walking Actor (`blocking:` + `focus: "claire"`)
+#   - Shot 05: Dynamic Iris / Aperture Ramp (`aperture_start: "f/1.4"` -> `aperture_end: "f/11"`)
+#   - Shot 06: Multi-Stop Catmull-Rom Spline with Per-Waypoint Focus & DoF
+#   - Shot 07: Flat Shot-Level Polymorphic Syntax (`focus` & `dof` at shot root)
+#   - Shot 08: Deep Focus Master (`dof: "deep"`, infinite sharp zone)
+# ==============================================================================
+
+version: "1.0"
+id: "blueprint-06-optics-dof"
+title: "Optics, Rack Focus & DoF"
+subtitle: "Thin-Lens Depth of Field · Off-Axis Focus Tether, Dynamic Aperture Ramp & Subject Rack Focus"
+video: "procedural://optics-dof-masterclass"
+aspect_ratio: "2.39:1"
+duration: 36.0
+
+# 1. ROOT OPTICS CONFIGURATION (Opt-in Stage Cam Bokeh + Scene Default DoF)
+optics:
+  dof_blur: true          # Automatically enables Stage Cam bokeh blur on load (toggle with [B])
+  dof: "medium"           # Scene-wide fallback preset ("shallow" | "medium" | "deep")
+  aperture: "f/5.6"       # Optional explicit scene-wide fallback f-stop
+
+# 2. STAGE & BASELINE CAMERAS
+stage:
+  width: 14
+  depth: 12
+  grid_step: 1
+  observer_camera:
+    target: [0, 1.2, 0]
+    distance: 17.5
+    pitch: 28
+    yaw: 38
+    lens: 35mm
+  stage_camera:
+    target: "center"
+    distance: 4.5
+    pitch: 6
+    yaw: 0
+    lens: 50mm
+
+# 3. SCENE ENTITIES (Foreground, Midground, Background & Props)
+entities:
+  - id: "alice"
+    label: "Alice (Foreground Left)"
+    kind: "character"
+    style: "mannequin"
+    position: [-1.4, 0, 2.2]
+    rotation: 145
+    color: "#38bdf8"
+
+  - id: "bob"
+    label: "Bob (Background Right)"
+    kind: "character"
+    style: "mannequin"
+    position: [1.5, 0, -2.6]
+    rotation: -35
+    color: "#a78bfa"
+
+  - id: "claire"
+    label: "Claire (Courier)"
+    kind: "character"
+    style: "silhouette"
+    position: [0.0, 0, -3.8]
+    rotation: 0
+    color: "#f43f5e"
+
+  - id: "desk"
+    label: "Glass Table"
+    kind: "prop"
+    shape: "box"
+    style: "edges"
+    position: [0.0, 0, 0.2]
+    height: 0.78
+    radius: 0.55
+    color: "#94a3b8"
+
+  - id: "briefcase"
+    label: "Evidence Case"
+    kind: "prop"
+    shape: "box"
+    style: "solid"
+    position: [0.0, 0.78, 0.2]
+    height: 0.32
+    radius: 0.24
+    color: "#f59e0b"
+
+  - id: "spike_fg"
+    label: "FG Focus Mark"
+    kind: "marker"
+    shape: "t"
+    style: "glow"
+    position: [-1.4, 0, 2.2]
+    color: "#10b981"
+
+# 4. DECOUPLED ACTOR BLOCKING
+blocking:
+  # Claire holds upstage until 13.0s, then walks downstage through the center aisle (13.0s -> 18.5s)
+  - id: "claire-approach"
+    entity: "claire"
+    start: 13.0
+    end: 18.5
+    from: [0.0, 0, -3.8]
+    position: [0.2, 0, 1.8]
+    look_at: "briefcase"
+    easing: "cruise"
+    highlighted: true
+
+  # Alice turns toward Claire as she arrives
+  - id: "alice-react"
+    entity: "alice"
+    start: 15.0
+    end: 18.5
+    look_at: "claire"
+    easing: "smooth"
+
+# 5. DECOUPLED DIORAMA OBSERVER CAMERA (Smoothly orbits the frustum so you can inspect the 3D DoF brackets)
+observer_shots:
+  - id: "obs-1-side-frustum-inspection"
+    start: 0.0
+    end: 18.5
+    target: [0, 1.2, 0.5]
+    maneuver: "orbit"
+    easing: "smooth"
+    distance: 17.0
+    pitch: 24
+    yaw_start: 55
+    yaw_end: 115
+    lens: 35mm
+
+  - id: "obs-2-overhead-spline-inspection"
+    continuous: true
+    end: 36.0
+    target: [0, 1.1, 0]
+    maneuver: "orbit"
+    easing: "cruise"
+    distance: 18.5
+    pitch: 34
+    yaw_end: 30
+    lens: 35mm
+
+# 6. FILM COVERAGE SHOTS (8-Shot Optical Showcase)
+shots:
+  # ----------------------------------------------------------------------------
+  # SHOT 01: Off-Axis Subject Focus & Emerald Focus Tether
+  # Camera frames "center", but focuses orthogonally on "alice" on the left third.
+  # ----------------------------------------------------------------------------
+  - id: "shot-01-off-axis-focus"
+    shot: 1
+    label: "Off-Axis Subject Focus (Alice)"
+    description: "50mm f/2.8 aimed at center, focused on Alice in foreground. Shows emerald focus tether."
+    start: 0.0
+    end: 4.5
+    stage_camera:
+      target: "center"
+      target_offset: [0, 0.35, 0]
+      maneuver: "cut"
+      distance: 4.8
+      pitch: 6
+      yaw: 0
+      lens: 50mm
+      focus: "alice"            # Orthogonal projection onto optical axis (no cosine overshoot)
+      dof: "shallow"            # Preset: f/2.8 -> renders Near & Far 3D DoF brackets
+    entities:
+      alice: { highlighted: true }
+
+  # ----------------------------------------------------------------------------
+  # SHOT 02: Classic Subject-to-Subject Rack Focus (focus_start -> focus_end)
+  # Smoothly pulls focus plane from Alice (foreground) to Bob (background) on 85mm.
+  # ----------------------------------------------------------------------------
+  - id: "shot-02-subject-rack-focus"
+    shot: 2
+    label: "85mm Rack Focus: Alice -> Bob"
+    description: "85mm telephoto shallow rack focus pulling from foreground Alice to background Bob."
+    start: 4.5
+    end: 9.0
+    stage_camera:
+      target: "center"
+      target_offset: [0, 0.4, 0]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 5.2
+      distance_end: 4.8
+      pitch: 4
+      yaw: -8
+      lens: 85mm
+      focus_start: "alice"      # Starts locked on Alice's eye-level plane
+      focus_end: "bob"          # Smoothly racks to Bob's eye-level plane
+      dof: "shallow"            # 85mm at f/2.8 compresses the DoF band dramatically
+    entities:
+      alice: { highlighted: true }
+      bob: { highlighted: true }
+
+  # ----------------------------------------------------------------------------
+  # SHOT 03: Manual Metric Focus Distance Pull & Ultra-Fast Numeric f/1.4 Stop
+  # Uses explicit metric distances (focus_distance_start / end) and aperture: "f/1.4".
+  # ----------------------------------------------------------------------------
+  - id: "shot-03-metric-focus-pull"
+    shot: 3
+    label: "Metric Focus Pull (1.6m -> 6.8m @ f/1.4)"
+    description: "Manual focus barrel pull from 1.6m to 6.8m using a razor-thin f/1.4 prime."
+    start: 9.0
+    end: 13.0
+    stage_camera:
+      target: "briefcase"
+      maneuver: "dolly"
+      easing: "ease-in-out"
+      distance: 4.2
+      pitch: 8
+      yaw: 12
+      lens: 50mm
+      focus_distance_start: "1.6m"  # Accepts metric strings ("1.6m") or numbers (1.6)
+      focus_distance_end: 6.8
+      aperture: "f/1.4"             # Explicit f-stop overrides preset (clamped to [0.7, 64.0])
+
+  # ----------------------------------------------------------------------------
+  # SHOT 04: Continuous Focus Puller Tracking a Moving Actor
+  # Camera holds still while Claire walks 5.6m downstage; focus tracks her automatically.
+  # ----------------------------------------------------------------------------
+  - id: "shot-04-moving-actor-focus-track"
+    shot: 4
+    label: "1st AC Follow-Focus on Moving Actor"
+    description: "Camera holds composition while focus: 'claire' tracks her walk from z=-3.8m to +1.8m."
+    start: 13.0
+    end: 18.5
+    stage_camera:
+      target: "briefcase"
+      target_offset: [0, 0.45, 0]
+      maneuver: "dolly"
+      easing: "cruise"
+      distance: 4.4
+      pitch: 7
+      yaw: 18
+      lens: 50mm
+      focus: "claire"           # Evaluates Claire's live blocking position at 60fps
+      aperture: 2.0             # Numeric f/2.0
+
+  # ----------------------------------------------------------------------------
+  # SHOT 05: Dynamic Iris / Aperture Ramp (aperture_start -> aperture_end)
+  # Focus stays locked on the briefcase while the iris closes from f/1.4 to f/11.
+  # ----------------------------------------------------------------------------
+  - id: "shot-05-aperture-iris-ramp"
+    shot: 5
+    label: "Iris Stop-Down Ramp (f/1.4 -> f/11)"
+    description: "Focus locked on Briefcase while aperture stops down from f/1.4 to f/11, expanding the DoF zone."
+    start: 18.5
+    end: 23.0
+    stage_camera:
+      target: "briefcase"
+      maneuver: "arc"
+      easing: "smooth"
+      distance: 3.2
+      pitch_start: 14
+      pitch_end: 8
+      yaw_start: -25
+      yaw_end: 25
+      lens: 35mm
+      focus: "briefcase"
+      aperture_start: "f/1.4"   # Starts with narrow DoF brackets around briefcase
+      aperture_end: "f/11"      # Expands Near & Far DoF brackets across the room
+    entities:
+      briefcase: { highlighted: true }
+
+  # ----------------------------------------------------------------------------
+  # SHOT 06: Multi-Waypoint Catmull-Rom Spline with Per-Waypoint Focus & DoF
+  # Camera flies through 3 waypoints while shifting focus: Briefcase -> Alice -> Bob.
+  # ----------------------------------------------------------------------------
+  - id: "shot-06-spline-waypoint-focus"
+    shot: 6
+    label: "3-Stop Spline with Waypoint Rack Focus"
+    description: "Catmull-Rom spline shifting focus from Briefcase to Alice to Bob across waypoints."
+    start: 23.0
+    end: 29.0
+    stage_camera:
+      maneuver: "spline"
+      easing: "cruise"
+      lens: 50mm
+      dof: "shallow"
+      waypoints:
+        - target: "briefcase"
+          distance: 3.6
+          pitch: 12
+          yaw: 20
+          focus: "briefcase"
+          aperture: 2.0
+        - target: "center"
+          distance: 4.2
+          pitch: 6
+          yaw: -15
+          focus: "alice"
+          dof: "shallow"
+        - target: "bob"
+          distance: 3.0
+          pitch: 4
+          yaw: -35
+          focus: "bob"
+          dof: "medium"
+
+  # ----------------------------------------------------------------------------
+  # SHOT 07: Flat Shot-Level Polymorphic Syntax & 3D Coordinate Focus Point
+  # Demonstrates authoring focus and dof flat on the shot cue (Rule 2.6).
+  # ----------------------------------------------------------------------------
+  - id: "shot-07-flat-polymorphic-focus"
+    shot: 7
+    label: "Flat Polymorphic Syntax & 3D Vec3 Focus"
+    description: "Authors focus: [0, 1.1, 0.2] and dof: 'medium' directly at the shot root."
+    start: 29.0
+    end: 32.5
+    focus: [0.0, 1.1, 0.2]      # Flat shot-level 3D coordinate focus point
+    dof: "medium"               # Flat shot-level DoF preset (f/5.6)
+    stage_camera:
+      target: "alice"
+      maneuver: "orbit"
+      easing: "smooth"
+      distance: 3.8
+      pitch: 10
+      yaw_start: -35
+      yaw_end: 15
+      lens: 35mm
+
+  # ----------------------------------------------------------------------------
+  # SHOT 08: Deep Focus Establishing Master (dof: "deep")
+  # 24mm wide master with infinite depth of field—everything is tack-sharp.
+  # ----------------------------------------------------------------------------
+  - id: "shot-08-deep-focus-master"
+    shot: 8
+    label: "24mm Deep Focus Master (f/Infinity)"
+    description: "Wide 24mm master with dof: 'deep'—all actors from z=+2.2m to -2.6m are crisp."
+    start: 32.5
+    end: 36.0
+    stage_camera:
+      target: "center"
+      maneuver: "dolly"
+      easing: "ease-out"
+      distance_start: 4.5
+      distance_end: 6.2
+      pitch: 16
+      yaw: 0
+      lens: 24mm
+      focus: "center"
+      dof: "deep"               # Disables DoF blur & brackets (infinite hyperfocal sharpness)

@@ -1,0 +1,176 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 07 — CAMERA RIGS, DOLLY TRACKS & TRUCKING
+# ==============================================================================
+# Demonstrates physical studio camera mounts:
+#   1. Stationary Tripod Stand: Camera nodal point is locked at a fixed floor coordinate
+#      while the fluid head swivels (pan/tilt) to track an actor walking across stage.
+#   2. Linear Dolly Track (Single-to-Two-Shot Glide): Camera cart rolls along a 6.4m straight rail
+#      parallel to the action, smoothly gliding from a single lead lock into a dynamic two-shot centroid.
+#   3. Fixed-Gaze Sideways Truck: Dolly cart glides along the rail with a locked heading
+#      (no target lock), letting actors enter, traverse, and exit the cinematic frame.
+#   4. Curved Spline Track & Two-Shot Rack Focus: Camera rolls along a multi-point Catmull-Rom rail
+#      circling the staging area with dynamic two-shot centroid tracking and rack focus.
+# ==============================================================================
+
+version: "1.0"
+id: "blueprint-07-camera-rigs"
+title: "Camera Rigs & Dolly Tracks"
+subtitle: "Physical Tripod Stands · 6.4m Straight Rails, Curved Dolly Splines & Two-Shot Centroids"
+video: "procedural://camera-rigs"
+aspect_ratio: "2.39:1"
+duration: 24.0
+
+stage:
+  width: 14
+  depth: 12
+  grid_step: 1
+  observer_camera:
+    target: [0, 1.1, 0]
+    distance: 16.5
+    pitch: 28
+    yaw: 35
+    lens: 35mm
+  stage_camera:
+    target: ["protagonist", "interlocutor"]
+    distance: 4.5
+    pitch: 6
+    yaw: 0
+    lens: 50mm
+
+entities:
+  - id: "protagonist"
+    label: "Lead Actor (Walking)"
+    kind: "character"
+    position: [-3.0, 0, 0]
+    rotation: 90
+    color: "#38bdf8"
+  - id: "interlocutor"
+    label: "Interlocutor (Standing)"
+    kind: "character"
+    position: [2.5, 0, 0.5]
+    rotation: -90
+    color: "#f59e0b"
+  - id: "terminal"
+    label: "Studio Set Piece"
+    kind: "prop"
+    shape: "box"
+    width: 1.2
+    depth: 0.6
+    height: 0.9
+    position: [0, 0, -1.5]
+    color: "#94a3b8"
+
+blocking:
+  - id: "protagonist-cross"
+    entity: "protagonist"
+    start: 0.0
+    end: 12.0
+    position: [2.0, 0, 0]
+    look_at: "interlocutor"
+    easing: "smooth"
+  - id: "protagonist-return"
+    entity: "protagonist"
+    start: 12.0
+    end: 24.0
+    position: [-2.0, 0, 0]
+    look_at: "interlocutor"
+    easing: "smooth"
+
+shots:
+  - id: "shot-01-tripod"
+    shot: 1
+    label: "Shot 01 · Stationary Tripod Pan"
+    description: "Fixed tripod stand on the studio floor. Camera operator swivels the head to track the lead walking from left to right."
+    start: 0.0
+    end: 6.0
+    stage_camera:
+      rig:
+        type: "tripod"
+        position: [0.0, 1.55, 5.2]
+      target: "protagonist"
+      lens: 50mm
+      dof: "shallow"
+      aperture: 2.8
+    observer_camera:
+      target: [0, 1.1, 0]
+      distance: 16.5
+      pitch: 28
+      yaw: 35
+      lens: 35mm
+
+  - id: "shot-02-dolly-track"
+    shot: 2
+    label: "Shot 02 · Linear Dolly Track (Two-Shot Glide)"
+    description: "Camera cart rolls along a 6.4m floor rail, smoothly gliding from a single lead tracking lock (from: protagonist) into a dynamic two-shot centroid master (target: [protagonist, interlocutor]) as the actors meet."
+    start: 6.0
+    end: 12.0
+    stage_camera:
+      rig:
+        type: "track"
+        from: [-3.2, 1.35, 4.4]
+        to: [3.2, 1.35, 4.4]
+      from: "protagonist"
+      target: ["protagonist", "interlocutor"]
+      focus_start: "protagonist"
+      focus_end: ["protagonist", "interlocutor"]
+      lens: 35mm
+      easing: "smooth"
+      dof: "shallow"
+      aperture: 2.8
+    observer_camera:
+      target: [0, 1.1, 0]
+      distance: 16.5
+      pitch: 28
+      yaw: 35
+      lens: 35mm
+
+  - id: "shot-03-sideways-truck"
+    shot: 3
+    label: "Shot 03 · Fixed-Gaze Sideways Truck"
+    description: "Dolly cart slides sideways in reverse with fixed downstage gaze (no target tracking). Actors pass through the visual frame."
+    start: 12.0
+    end: 18.0
+    stage_camera:
+      rig:
+        type: "track"
+        from: [3.2, 1.35, 4.4]
+        to: [-2.5, 1.35, 4.4]
+      yaw: 0deg
+      pitch: 3deg
+      lens: 40mm
+      easing: "smooth"
+    observer_camera:
+      target: [0, 1.1, 0]
+      distance: 16.5
+      pitch: 28
+      yaw: 35
+      lens: 35mm
+
+  - id: "shot-04-spline-track"
+    shot: 4
+    label: "Shot 04 · Curved Spline Track & Two-Shot Rack Focus"
+    description: "Dolly rolls along a 4-point curved rail circling the staging area, maintaining a dynamic two-shot centroid lock ([protagonist, interlocutor]) while executing a rack focus."
+    start: 18.0
+    end: 24.0
+    stage_camera:
+      rig:
+        type: "spline_track"
+        points:
+          - [-4.0, 1.35, 5.5]
+          - [-1.8, 1.6, 3.2]
+          - [1.8, 1.45, 3.2]
+          - [4.2, 1.35, 5.5]
+      target: ["protagonist", "interlocutor"]
+      focus_start: "protagonist"
+      focus_end: "interlocutor"
+      dof: "shallow"
+      aperture: 2.0
+      lens: 50mm
+      easing: "smooth"
+    observer_camera:
+      target: [0, 1.1, 0]
+      distance: 16.5
+      pitch: 28
+      yaw: 35
+      lens: 35mm
+

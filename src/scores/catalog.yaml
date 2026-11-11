@@ -1,0 +1,73 @@
+# ==============================================================================
+# STAGEFLOW BUILT-IN SCORE CATALOG MANIFEST
+# ==============================================================================
+# Add, reorder, or edit scores here. Zero TypeScript editing required!
+#
+# Schema:
+#   id: string          # Required: Canonical URL slug (e.g. ?score=vector-field)
+#   file: string        # Required: Path relative to src/scores/
+#   category: string    # Required: "study" | "blueprint"
+#   aliases: string[]   # Optional: Backwards-compatible slugs or shortcuts
+# ==============================================================================
+
+- id: vector-field
+  file: studies/vector_field.yaml
+  category: study
+  aliases:
+    - vector-field-taruma-sakti
+
+- id: the-expansion
+  file: studies/the-expansion.yaml
+  category: study
+  aliases:
+    - the-expansion-taruma-sakti
+
+- id: afraid
+  file: studies/afraid.yaml
+  category: study
+  aliases:
+    - afraid-taruma-sakti
+
+- id: demo
+  file: blueprints/demo_blueprint.yaml
+  category: blueprint
+  aliases:
+    - demo-blueprint
+    - blueprint-01
+
+- id: blueprint-02
+  file: blueprints/blueprint_02_dialogue.yaml
+  category: blueprint
+  aliases:
+    - blueprint-02-dialogue
+
+- id: blueprint-03
+  file: blueprints/blueprint_03_ball_pass.yaml
+  category: blueprint
+  aliases:
+    - blueprint-03-ball-pass
+
+- id: blueprint-04
+  file: blueprints/blueprint_04_cinematography_tutorial.yaml
+  category: blueprint
+  aliases:
+    - blueprint-04-cinematography-tutorial
+
+- id: blueprint-05
+  file: blueprints/blueprint_05_two_rooms.yaml
+  category: blueprint
+  aliases:
+    - blueprint-05-two-rooms
+
+- id: blueprint-06
+  file: blueprints/blueprint_06_optics_dof.yaml
+  category: blueprint
+  aliases:
+    - blueprint-06-optics-dof
+
+- id: blueprint-07
+  file: blueprints/blueprint_07_camera_rigs.yaml
+  category: blueprint
+  aliases:
+    - blueprint-07-camera-rigs
+

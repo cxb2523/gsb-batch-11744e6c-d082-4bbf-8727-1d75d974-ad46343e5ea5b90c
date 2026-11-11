@@ -1,0 +1,92 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 01 — TWO-SHOT ARC BLOCKING
+# ==============================================================================
+# Units:
+#   - Spatial Coordinates & Distances: Metric Meters (1 unit = 1m)
+#   - Angles (pitch, yaw, rotation): Human Degrees (deg)
+#   - Optics (lens): Full-Frame Equivalent Focal Length in Millimeters (mm)
+
+version: "1.0"
+id: "demo-blueprint"
+title: "Two-Shot Arc Blocking"
+subtitle: "50mm Medium Two-Shot · 45° Clockwise Camera Arc Around Conversational Axis"
+video: "procedural://demo-blueprint"
+aspect_ratio: "16:9"
+duration: 10.0
+
+metadata:
+  music: "Max Richter — On The Nature of Daylight · [Listen on Spotify](https://open.spotify.com)"
+  camera_package:
+    body: "ARRI Alexa Mini LF"
+    stabilizer: "Steadicam M-2"
+  production_notes:
+    - "Continuous 45° clockwise camera arc around conversational axis"
+    - "Maintain eye-level two-shot framing on Subject A and Subject B"
+
+stage:
+  width: 10
+  depth: 10
+  grid_step: 1
+  observer_camera:
+    target: [0, 1.1, 0]
+    distance: 15.5
+    pitch: 26
+    yaw: 38
+    lens: 35mm
+  stage_camera:
+    target: [0, 1.25, 0]
+    distance: 4.4
+    pitch: 7
+    yaw: -22
+    lens: 50mm
+
+entities:
+  - id: "protagonist"
+    label: "Subject A (Lead)"
+    kind: "character"
+    position: [-0.9, 0, 0]
+    rotation: 90
+    color: "#38bdf8"
+
+  - id: "interlocutor"
+    label: "Subject B (Partner)"
+    kind: "character"
+    position: [0.9, 0, 0]
+    rotation: -90
+    color: "#a78bfa"
+
+shots:
+  - id: "shot-1"
+    shot: 1
+    label: "Shot 01 · Slow Arc to Over-the-Shoulder"
+    description: "Stage camera dollies along a 45° clockwise arc from a profile two-shot into an over-the-shoulder angle on Subject A."
+    start: 0.0
+    end: 10.0
+    stage_camera:
+      target: [0, 1.25, 0]
+      maneuver: "arc"
+      easing: "smooth"
+      distance_start: 4.4
+      distance_end: 3.8
+      pitch_start: 7
+      pitch_end: 5
+      yaw_start: -22
+      yaw_end: 23
+      lens: 50mm
+      show_path: true
+    observer_camera:
+      target: [0, 1.1, 0]
+      maneuver: "orbit"
+      easing: "smooth"
+      distance: 15.5
+      pitch: 26
+      yaw_start: 35
+      yaw_end: 55
+      lens: 35mm
+    entities:
+      protagonist:
+        highlighted: true
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: false
+        look_at: "protagonist"

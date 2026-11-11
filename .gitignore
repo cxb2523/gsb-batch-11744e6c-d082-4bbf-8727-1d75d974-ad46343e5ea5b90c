@@ -1,0 +1,23 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+.DS_Store
+coverage
+_examples
+recordings
+
+# Environment & Local Secrets
+.env
+.env.*
+!.env.example
+
+# IDE & Editors
+.vscode/
+.idea/
+*.swp
+
+# Test & Playwright outputs
+test-results/
+playwright-report/

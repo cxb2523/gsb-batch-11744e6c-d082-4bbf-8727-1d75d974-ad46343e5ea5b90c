@@ -1,0 +1,260 @@
+@import "tailwindcss";
+
+:root,
+[data-theme-category="light"] {
+  --app-bg: #f5f5f4;
+  --surface: #ffffff;
+  --surface-subtle: #fafaf9;
+  --surface-muted: #f5f5f4;
+  --surface-hover: #e7e5e4;
+  --surface-dark: #1c1917;
+  --border-main: #e7e5e4;
+  --border-subtle: #f5f5f4;
+  --border-subtle-trans: rgba(231, 229, 228, 0.4);
+  --text-main: #1c1917;
+  --text-body: #292524;
+  --text-muted: #78716c;
+  --text-faint: #a8a29e;
+  --text-placeholder: #d6d3d1;
+  --btn-primary-bg: #1c1917;
+  --btn-primary-text: #ffffff;
+  --btn-primary-hover: #292524;
+  --btn-secondary-bg: #f5f5f4;
+  --btn-secondary-text: #57534e;
+  --btn-secondary-hover: #e7e5e4;
+  --overlay-bg: rgba(28, 25, 23, 0.4);
+  --overlay-heavy: rgba(28, 25, 23, 0.6);
+  --color-support: #FF5E5B;
+  --color-support-hover: #e04e4b;
+}
+
+[data-theme-category="warm"] {
+  --app-bg: #f3efe6;
+  --surface: #faf7f0;
+  --surface-subtle: #f6f2e8;
+  --surface-muted: #ece5d6;
+  --surface-hover: #e3dcce;
+  --surface-dark: #2c251e;
+  --border-main: #dfd7c5;
+  --border-subtle: #ece5d6;
+  --border-subtle-trans: rgba(223, 215, 197, 0.5);
+  --text-main: #2b231d;
+  --text-body: #3c322a;
+  --text-muted: #7c6f62;
+  --text-faint: #a69888;
+  --text-placeholder: #c9bdae;
+  --btn-primary-bg: #2b231d;
+  --btn-primary-text: #faf7f0;
+  --btn-primary-hover: #3d3229;
+  --btn-secondary-bg: #ece5d6;
+  --btn-secondary-text: #54473c;
+  --btn-secondary-hover: #dfd7c5;
+  --overlay-bg: rgba(43, 35, 29, 0.45);
+  --overlay-heavy: rgba(43, 35, 29, 0.65);
+  --color-support: #FF5E5B;
+  --color-support-hover: #e04e4b;
+}
+
+[data-theme-category="dark"] {
+  --app-bg: #0c0a09;
+  --surface: #171514;
+  --surface-subtle: #1c1917;
+  --surface-muted: #24211e;
+  --surface-hover: #2e2a27;
+  --surface-dark: #0f0e0d;
+  --border-main: #2c2825;
+  --border-subtle: #201d1b;
+  --border-subtle-trans: rgba(44, 40, 37, 0.5);
+  --text-main: #f5f5f4;
+  --text-body: #e7e5e4;
+  --text-muted: #a8a29e;
+  --text-faint: #78716c;
+  --text-placeholder: #57534e;
+  --btn-primary-bg: #f5f5f4;
+  --btn-primary-text: #1c1917;
+  --btn-primary-hover: #e7e5e4;
+  --btn-secondary-bg: #24211e;
+  --btn-secondary-text: #d6d3d1;
+  --btn-secondary-hover: #2e2a27;
+  --overlay-bg: rgba(0, 0, 0, 0.65);
+  --overlay-heavy: rgba(0, 0, 0, 0.85);
+  --color-support: #FF5E5B;
+  --color-support-hover: #e04e4b;
+}
+
+[data-pure-black-shell="true"],
+[data-pure-black-shell="true"] [data-theme-category="dark"] {
+  --app-bg: #000000;
+  --surface: #000000;
+  --surface-subtle: #050505;
+  --surface-muted: #111111;
+  --surface-hover: #1a1a1a;
+  --surface-dark: #000000;
+  --border-main: #242424;
+  --border-subtle: #141414;
+  --border-subtle-trans: rgba(255, 255, 255, 0.08);
+}
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Libre Baskerville", serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-app: var(--app-bg);
+  --color-surface: var(--surface);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-dark: var(--surface-dark);
+  --color-border-main: var(--border-main);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-subtle-trans: var(--border-subtle-trans);
+  --color-text-main: var(--text-main);
+  --color-text-body: var(--text-body);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-text-placeholder: var(--text-placeholder);
+  --color-btn-primary-bg: var(--btn-primary-bg);
+  --color-btn-primary-text: var(--btn-primary-text);
+  --color-btn-primary-hover: var(--btn-primary-hover);
+  --color-btn-secondary-bg: var(--btn-secondary-bg);
+  --color-btn-secondary-text: var(--btn-secondary-text);
+  --color-btn-secondary-hover: var(--btn-secondary-hover);
+  --color-overlay-bg: var(--overlay-bg);
+  --color-overlay-heavy: var(--overlay-heavy);
+  --color-support: var(--color-support);
+  --color-support-hover: var(--color-support-hover);
+
+  --color-blueprint-bg: var(--app-bg);
+  --color-blueprint-panel: var(--surface);
+  --color-blueprint-card: var(--surface-subtle);
+  --color-blueprint-border: var(--border-main);
+  --color-blueprint-accent: #38bdf8;
+  --color-blueprint-stage-cam: #f59e0b;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--app-bg);
+  color: var(--text-main);
+}
+
+/* Standalone documentation guide mode (?mode=guide): restore natural page scrolling */
+html[data-mode="guide"] {
+  height: auto;
+  min-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+html[data-mode="guide"] body {
+  height: auto;
+  min-height: 100%;
+  overflow: visible !important;
+  user-select: auto;
+  touch-action: auto;
+}
+
+html[data-mode="guide"] #root {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+  user-select: auto;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Custom slim scrollbar for YAML Editor Studio, code blocks, modals and dropdowns */
+.custom-scrollbar,
+.cm-scroller,
+pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-main) transparent;
+}
+
+/* Completely hide scrollbars while maintaining full scrollability */
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
+.custom-scrollbar::-webkit-scrollbar,
+.cm-scroller::-webkit-scrollbar,
+pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track,
+.cm-scroller::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.cm-scroller::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb {
+  background: var(--border-main);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.cm-scroller::-webkit-scrollbar-thumb:hover,
+pre::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.custom-scrollbar::-webkit-scrollbar-corner,
+.cm-scroller::-webkit-scrollbar-corner,
+pre::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Disable all transitions and pointer events while resizing split panels for 60fps drag performance */
+body.is-resizing-split,
+body.is-resizing-split * {
+  transition: none !important;
+  user-select: none !important;
+}
+
+body.is-resizing-split iframe {
+  pointer-events: none !important;
+}
+
+/* Instant Theme Switching: Suppress cascading transitions during theme swaps to eliminate transition lag */
+.disable-theme-transitions,
+.disable-theme-transitions *,
+.disable-theme-transitions *::before,
+.disable-theme-transitions *::after {
+  transition: none !important;
+}
+
+/* Container-query aspect-ratio containment: strictly preserves film aspect ratio (16:9, 2.39:1) with zero squishing */
+.aspect-fit-container {
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.aspect-fit-box {
+  width: min(100cqw, calc(100cqh * var(--aspect-ratio, 1.7777777778)));
+  height: min(100cqh, calc(100cqw / var(--aspect-ratio, 1.7777777778)));
+  box-sizing: border-box;
+}

@@ -1,0 +1,285 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 02 — CINEMATIC DIALOGUE FLOW
+# ==============================================================================
+# A multi-shot dialogue coverage sequence demonstrating:
+#   1. Wide Master Establishing Tracking Shot (35mm Dolly)
+#   2. Classic Over-The-Shoulder (50mm OTS on Subject A)
+#   3. Reverse-Angle OTS (50mm OTS on Subject B, 180° conversational axis)
+#   4. Dynamic Low-Angle Hero Arc (85mm Bezier Sweep)
+#   5. Multi-Waypoint Catmull-Rom Spline Bridge (Connecting both actors)
+#   6. High-Angle Crane Pullback Orbit (35mm Diorama Resolve)
+#
+# Viewport Decoupling:
+#   - 6 Physical Film Coverage Shots (stage_camera)
+#   - 3 Decoupled Cinematic Diorama Orbits (observer_shots)
+#
+# Units:
+#   - Spatial Coordinates & Distances: Metric Meters (1 unit = 1m)
+#   - Angles (pitch, yaw, rotation): Human Degrees (deg)
+#   - Optics (lens): Full-Frame Equivalent Focal Length in Millimeters (mm)
+
+version: "1.0"
+id: "blueprint-02-dialogue"
+title: "Cinematic Dialogue Flow"
+subtitle: "6 Film Shots · 180° Axis Reverse Angles · Master Dolly, OTS & Catmull-Rom Spline Bridge"
+video: "procedural://dialogue-flow"
+aspect_ratio: "16:9"
+duration: 26.0
+
+stage:
+  width: 10
+  depth: 10
+  grid_step: 1
+  observer_camera:
+    target: [0, 1.1, 0]
+    distance: 16.5
+    pitch: 28
+    yaw: 35
+    lens: 35mm
+  stage_camera:
+    target: [0, 1.25, 0]
+    distance: 5.5
+    pitch: 10
+    yaw: 0
+    lens: 35mm
+
+entities:
+  - id: "protagonist"
+    label: "Subject A (Lead)"
+    kind: "character"
+    position: [-0.9, 0, 0]
+    rotation: 90
+    color: "#38bdf8"
+
+  - id: "interlocutor"
+    label: "Subject B (Partner)"
+    kind: "character"
+    position: [0.9, 0, 0]
+    rotation: -90
+    color: "#a78bfa"
+
+# ==============================================================================
+# 1. FILM COVERAGE SHOTS (Physical Stage Camera & Actor Staging)
+# ==============================================================================
+shots:
+  # Shot 1: Wide Master Establishing Two-Shot
+  - id: "shot-1"
+    shot: 1
+    label: "Shot 01 · Wide Master Establishing"
+    description: "35mm Wide Master Two-Shot. Slow tracking push-in establishing the spatial confrontation between Subject A and Subject B."
+    start: 0.0
+    end: 5.0
+    stage_camera:
+      target: [0, 1.25, 0]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 5.5
+      distance_end: 4.4
+      pitch_start: 10
+      pitch_end: 7
+      yaw_start: 0
+      yaw_end: 0
+      lens: 35mm
+      show_path: true
+    entities:
+      protagonist:
+        highlighted: false
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: false
+        look_at: "protagonist"
+
+  # Shot 2: Cut to Over-The-Shoulder (OTS) on Subject A
+  - id: "shot-2"
+    shot: 2
+    label: "Shot 02 · Cut to OTS on Subject A"
+    description: "50mm Over-the-Shoulder on Subject A. Slow emotional push past Subject B's foreground shoulder."
+    start: 5.0
+    end: 9.0
+    stage_camera:
+      target: "protagonist"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 2.8
+      distance_end: 2.3
+      pitch_start: 6
+      pitch_end: 4
+      yaw_start: 130
+      yaw_end: 138
+      lens: 50mm
+      show_path: true
+    entities:
+      protagonist:
+        highlighted: true
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: false
+        look_at: "protagonist"
+
+  # Shot 3: Reverse Cut to OTS on Subject B (Preserving 180° Axis)
+  - id: "shot-3"
+    shot: 3
+    label: "Shot 03 · Reverse OTS Cut on Subject B"
+    description: "50mm Reverse OTS on Subject B, strictly adhering to the 180° conversational line."
+    start: 9.0
+    end: 13.0
+    stage_camera:
+      target: "interlocutor"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 2.8
+      distance_end: 2.3
+      pitch_start: 6
+      pitch_end: 4
+      yaw_start: -130
+      yaw_end: -138
+      lens: 50mm
+      show_path: true
+    entities:
+      protagonist:
+        highlighted: false
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: true
+        look_at: "protagonist"
+
+  # Shot 4: 85mm Low-Angle Hero Arc
+  - id: "shot-4"
+    shot: 4
+    label: "Shot 04 · 85mm Low-Angle Hero Arc"
+    description: "85mm Hero Arc sweeping 75° around Subject A, lowering camera elevation into an intense upward angle."
+    start: 13.0
+    end: 17.5
+    stage_camera:
+      target: "protagonist"
+      maneuver: "arc"
+      easing: "smooth"
+      distance_start: 2.5
+      distance_end: 1.9
+      pitch_start: 5
+      pitch_end: -3
+      yaw_start: -130
+      yaw_end: -55
+      lens: 85mm
+      show_path: true
+    entities:
+      protagonist:
+        highlighted: true
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: false
+        look_at: "protagonist"
+
+  # Shot 5: 3-Waypoint Catmull-Rom Spline Bridge
+  - id: "shot-5"
+    shot: 5
+    label: "Shot 05 · Catmull-Rom Spline Bridge"
+    description: "Fluid 3D Catmull-Rom spline glide traversing from Subject A across the center to Subject B."
+    start: 17.5
+    end: 21.5
+    stage_camera:
+      maneuver: "spline"
+      easing: "smooth"
+      show_path: true
+      waypoints:
+        - target: "protagonist"
+          distance: 2.1
+          pitch: 1
+          yaw: -45
+          lens: 50mm
+        - target: [0, 1.25, 0]
+          distance: 3.0
+          pitch: 8
+          yaw: 0
+          lens: 50mm
+        - target: "interlocutor"
+          distance: 2.0
+          pitch: -2
+          yaw: 45
+          lens: 85mm
+    entities:
+      protagonist:
+        highlighted: true
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: true
+        look_at: "protagonist"
+
+  # Shot 6: High-Angle Pullback Crane Orbit
+  - id: "shot-6"
+    shot: 6
+    label: "Shot 06 · High-Angle Crane Orbit Pullback"
+    description: "35mm crane elevation rise to 30° and 70° orbit pullback resolving the spatial diorama."
+    start: 21.5
+    end: 26.0
+    stage_camera:
+      target: [0, 1.25, 0]
+      maneuver: "orbit"
+      easing: "smooth"
+      distance_start: 3.0
+      distance_end: 6.2
+      pitch_start: 6
+      pitch_end: 30
+      yaw_start: 45
+      yaw_end: 115
+      lens: 35mm
+      show_path: true
+    entities:
+      protagonist:
+        highlighted: false
+        look_at: "interlocutor"
+      interlocutor:
+        highlighted: false
+        look_at: "protagonist"
+
+# ==============================================================================
+# 2. DECOUPLED OBSERVER DIORAMA TRACK (3 Cinematic Viewport Sweeps Across 6 Cuts)
+# ==============================================================================
+observer_shots:
+  # Move 1: Smooth 3/4 high-angle push & 40° orbit spanning Shots 1 and 2
+  - id: "obs-move-1"
+    label: "Diorama Move 01 · Establishing Push & Orbit (Shots 1-2)"
+    start: 0.0
+    end: 9.0
+    target: [0, 1.1, 0]
+    maneuver: "orbit"
+    easing: "cruise"
+    distance_start: 16.5
+    distance_end: 14.8
+    pitch_start: 28
+    pitch_end: 22
+    yaw_start: 35
+    yaw_end: 75
+    lens: 35mm
+
+  # Move 2: 120° counter-angle reverse orbit across the conversational line (Shots 3-4)
+  - id: "obs-move-2"
+    label: "Diorama Move 02 · Conversational Axis Reverse Orbit (Shots 3-4)"
+    start: 9.0
+    end: 17.5
+    target: [0, 1.1, 0]
+    maneuver: "orbit"
+    easing: "cruise"
+    distance_start: 14.8
+    distance_end: 14.0
+    pitch_start: 22
+    pitch_end: 18
+    yaw_start: 75
+    yaw_end: -45
+    lens: 35mm
+
+  # Move 3: Crane elevation rise to 32° and wide 90° orbit diorama resolve (Shots 5-6)
+  - id: "obs-move-3"
+    label: "Diorama Move 03 · High-Angle Crane Pullback Resolve (Shots 5-6)"
+    start: 17.5
+    end: 26.0
+    target: [0, 1.1, 0]
+    maneuver: "orbit"
+    easing: "smooth"
+    distance_start: 14.0
+    distance_end: 17.0
+    pitch_start: 18
+    pitch_end: 32
+    yaw_start: -45
+    yaw_end: 45
+    lens: 35mm

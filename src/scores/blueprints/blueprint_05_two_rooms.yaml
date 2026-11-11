@@ -1,0 +1,748 @@
+# ==============================================================================
+# STAGEFLOW BLUEPRINT 05 — TWO ROOMS: THE THRESHOLD CROSSING
+# ==============================================================================
+# A 30-second, 17-shot spatial choreography showcase across two distinct rooms
+# (Living Room at Stage Left [-X] and Bedroom at Stage Right [+X]) demonstrating:
+#   1. Decoupled Multi-Actor & Prop Blocking (`blocking:`) spanning across film cuts
+#   2. Three Actors of Distinct Physical Heights:
+#      - Samira (1.84m · Tall Commanding Presence in Living Room)
+#      - Ruby   (1.68m · Agile Lead crossing from Living Room to Bedroom with Cup)
+#      - Rosa   (1.54m · Petite Subject in Bedroom awaiting Ruby)
+#   3. Static Architectural Furniture Props (Living Table, Lounge Sofa, Bedroom Desk,
+#      Canopy Bed, Hallway Threshold) + Dynamic Carried Item Prop (Porcelain Cup)
+#   4. Varied Editorial Cadence & Tempo (0.7s staccato cuts to 3.2s fluid splines)
+#   5. Complex Mechanical & Uncommon Camera Moves:
+#      - Vertigo Contrazoom (Dolly-In + Zoom-Out) with Dutch Roll Recovery
+#      - 82° Overhead God's-Eye Plunge with 90° Barrel Roll
+#      - Perigee Macro Dive, Shockwave Recoil, Helical Spiral & Whip-Sweep
+#      - 4-Waypoint Catmull-Rom Hallway Thread & Two-Shot Height-Bridge Arc
+#
+# Units:
+#   - Spatial Coordinates & Distances: Metric Meters (1 unit = 1m)
+#   - Angles (pitch, yaw, roll, rotation): Human Degrees (deg)
+#   - Optics (lens): Full-Frame Equivalent Focal Length in Millimeters (mm)
+
+version: "1.0"
+id: "blueprint-05-two-rooms"
+title: "Two Rooms: Threshold Crossing"
+subtitle: "17 Shots in 2.39:1 · 3 Actor Heights · Continuous Hallway Walk, Vertigo Zoom & Overhead Plunge"
+video: "procedural://two-rooms-threshold"
+aspect_ratio: "2.39:1"
+duration: 30.0
+
+stage:
+  width: 22
+  depth: 14
+  grid_step: 1
+  observer_camera:
+    target: [0.0, 1.2, -0.4]
+    distance: 24.5
+    pitch: 28
+    yaw: 22
+    lens: 32mm
+  stage_camera:
+    target: [0.0, 1.2, -0.5]
+    distance: 12.5
+    pitch: 24
+    yaw: 0
+    lens: 21mm
+
+# ==============================================================================
+# 1. SCENE ENTITIES (3 ACTORS WITH DISTINCT HEIGHTS + STATIC & DYNAMIC PROPS)
+# ==============================================================================
+entities:
+  # --- Actors ---
+  - id: "ruby"
+    label: "Ruby · 1.68m (Lead)"
+    kind: "character"
+    position: [-6.4, 0, 1.2]
+    rotation: 45
+    height: 1.68
+    radius: 0.25
+    color: "#f43f5e"
+
+  - id: "samira"
+    label: "Samira · 1.84m (Host)"
+    kind: "character"
+    position: [-7.5, 0, -1.0]
+    rotation: 120
+    height: 1.84
+    radius: 0.28
+    color: "#38bdf8"
+
+  - id: "rosa"
+    label: "Rosa · 1.54m (Sister)"
+    kind: "character"
+    position: [7.2, 0, -1.8]
+    rotation: -45
+    height: 1.54
+    radius: 0.24
+    color: "#a78bfa"
+
+  # --- Dynamic Carried Item Prop ---
+  - id: "cup"
+    label: "Porcelain Cup"
+    kind: "prop"
+    shape: "cylinder"
+    position: [-4.8, 0.78, 0.2]
+    rotation: 0
+    height: 0.22
+    radius: 0.14
+    color: "#f59e0b"
+
+  # --- Static Architectural Props (Living Room: -X Zone) ---
+  - id: "living_table"
+    label: "Living Room Table"
+    kind: "prop"
+    style: "edges"
+    position: [-4.8, 0, 0.2]
+    rotation: 0
+    height: 0.78
+    radius: 0.52
+    color: "#64748b"
+
+  - id: "lounge_sofa"
+    label: "Lounge Sofa"
+    kind: "prop"
+    style: "solid"
+    position: [-8.2, 0, -2.2]
+    rotation: 45
+    height: 0.85
+    radius: 0.65
+    color: "#475569"
+
+  # --- Partition Threshold (Center X = 0) ---
+  - id: "doorway"
+    label: "Hallway Threshold"
+    kind: "marker"
+    shape: "t"
+    style: "glow"
+    position: [0.0, 0, -0.4]
+    rotation: 90
+    height: 0.12
+    radius: 0.35
+    color: "#38bdf8"
+
+  # --- Static Architectural Props (Bedroom: +X Zone) ---
+  - id: "bedroom_desk"
+    label: "Bedroom Desk"
+    kind: "prop"
+    style: "edges"
+    position: [5.2, 0, 0.5]
+    rotation: 0
+    height: 0.75
+    radius: 0.48
+    color: "#64748b"
+
+  - id: "canopy_bed"
+    label: "Bedroom Canopy Bed"
+    kind: "prop"
+    style: "solid"
+    position: [8.0, 0, -2.4]
+    rotation: -90
+    height: 0.65
+    radius: 0.72
+    color: "#475569"
+
+# ==============================================================================
+# 2. DECOUPLED PHYSICAL BLOCKING TIMELINE (CONTINUOUS ACROSS ALL 17 CUTS)
+# ==============================================================================
+blocking:
+  # --- Phase 1: Living Room Exchange & Cup Pickup (0.0s -> 9.5s) ---
+  - id: "samira-step-in"
+    entity: "samira"
+    start: 0.0
+    end: 4.5
+    position: [-6.6, 0, -0.6]
+    look_at: "ruby"
+    easing: "smooth"
+
+  - id: "ruby-approach-table"
+    entity: "ruby"
+    start: 1.2
+    end: 5.0
+    position: [-5.2, 0, 0.3]
+    look_at: "cup"
+    easing: "smooth"
+
+  - id: "cup-lifted-by-ruby"
+    entity: "cup"
+    start: 5.0
+    end: 6.2
+    from: [-4.8, 0.78, 0.2]
+    position: [-5.0, 1.05, 0.25]
+    easing: "ease-out"
+
+  - id: "ruby-face-samira-before-exit"
+    entity: "ruby"
+    start: 5.0
+    end: 9.5
+    position: [-4.9, 0, 0.1]
+    look_at: "samira"
+    easing: "smooth"
+
+  - id: "samira-watch-ruby"
+    entity: "samira"
+    start: 4.5
+    end: 9.5
+    look_at: "ruby"
+
+  - id: "rosa-bedroom-pacing"
+    entity: "rosa"
+    start: 2.0
+    end: 9.2
+    position: [5.8, 0, -0.9]
+    look_at: "bedroom_desk"
+    easing: "cruise"
+
+  # --- Phase 2: Ruby's Continuous Cross-Room Walk with Cup (9.5s -> 20.5s) ---
+  # Spans seamlessly across Shots 07, 08, 09, 10, 11, and 12!
+  - id: "ruby-cross-to-bedroom"
+    entity: "ruby"
+    start: 9.5
+    end: 20.5
+    from: [-4.9, 0, 0.1]
+    position: [4.3, 0, 0.1]
+    look_at: "rosa"
+    easing: "cruise"
+    note: "Carries porcelain cup from Living Room to Rosa's Bedroom"
+
+  - id: "cup-carried-to-bedroom"
+    entity: "cup"
+    start: 9.5
+    end: 20.5
+    from: [-4.7, 1.05, 0.15]
+    position: [4.6, 1.05, 0.25]
+    easing: "cruise"
+
+  - id: "samira-follow-to-threshold"
+    entity: "samira"
+    start: 10.5
+    end: 19.0
+    position: [-1.4, 0, -0.5]
+    look_at: "ruby"
+    easing: "smooth"
+
+  - id: "rosa-turn-to-doorway"
+    entity: "rosa"
+    start: 14.0
+    end: 20.5
+    position: [5.6, 0, -0.7]
+    look_at: "ruby"
+    easing: "smooth"
+
+  # --- Phase 3: Cup Placement on Desk & Bedroom Two-Shot (20.5s -> 30.0s) ---
+  - id: "cup-set-on-bedroom-desk"
+    entity: "cup"
+    start: 20.5
+    end: 22.0
+    from: [4.6, 1.05, 0.25]
+    position: [5.2, 0.75, 0.5]
+    easing: "ease-out"
+
+  - id: "ruby-settle-two-shot"
+    entity: "ruby"
+    start: 20.5
+    end: 25.0
+    position: [4.4, 0, -0.6]
+    look_at: "rosa"
+    easing: "smooth"
+
+  - id: "rosa-step-into-two-shot"
+    entity: "rosa"
+    start: 20.5
+    end: 25.0
+    position: [5.7, 0, -0.6]
+    look_at: "ruby"
+    easing: "smooth"
+
+  - id: "bedroom-pair-final-gaze"
+    start: 25.0
+    end: 30.0
+    entities:
+      ruby: { look_at: "rosa" }
+      rosa: { look_at: "ruby" }
+      samira: { look_at: "ruby" }
+
+# ==============================================================================
+# 3. FILM COVERAGE SHOTS (17 SHOTS · VARIED CADENCE & UNCOMMON MECHANICS)
+# ==============================================================================
+shots:
+  # Shot 01 (2.4s · Expansive Opening): Architectural Split-Room Swoop
+  - id: "shot-01"
+    shot: 1
+    label: "01 · Split-Room Architectural Swoop (21mm)"
+    description: "2.4s slow grand opening swoop establishing both the Living Room (-X) and Bedroom (+X) across the central threshold."
+    start: 0.0
+    end: 2.4
+    stage_camera:
+      from: "living_table"
+      target: "doorway"
+      target_offset: [0.0, 0.85, 0.0]
+      maneuver: "swoop"
+      easing: "smooth"
+      distance_start: 12.8
+      distance_end: 9.6
+      pitch_start: 26
+      pitch_end: 14
+      yaw_start: -18
+      yaw_end: 12
+      lens: 21mm
+      frustum_color: "#38bdf8"
+
+  # Shot 02 (1.8s · Medium Cadence): High-to-Low Height Contrast OTS (Samira 1.84m -> Ruby 1.68m)
+  - id: "shot-02"
+    shot: 2
+    label: "02 · Towering OTS Push: Samira (1.84m) to Ruby (1.68m)"
+    description: "1.8s 50mm over-the-shoulder push looking down past Samira's 1.84m frame onto Ruby approaching the Living Room table."
+    start: 2.4
+    end: 4.2
+    stage_camera:
+      target: "ruby"
+      target_offset: [-0.25, 0.08, 0.0]
+      maneuver: "dolly"
+      easing: "cruise"
+      distance_start: 3.4
+      distance_end: 2.3
+      pitch: 14
+      yaw: 118
+      lens: 50mm
+      frustum_color: "#f43f5e"
+    entities:
+      ruby: { highlighted: true }
+
+  # Shot 03 (0.9s · Fast Kinetic Beat): Low-Angle Dutch Recoil on Samira
+  - id: "shot-03"
+    shot: 3
+    label: "03 · Low-Angle Dutch Recoil on Samira (35mm)"
+    description: "0.9s rapid impulse recoil (-18° low hero pitch, -12° Dutch roll) emphasizing Samira's commanding 1.84m stature."
+    start: 4.2
+    end: 5.1
+    stage_camera:
+      target: "samira"
+      maneuver: "recoil"
+      easing: "ease-out"
+      breathe: 1.24
+      distance_start: 1.9
+      distance_end: 2.2
+      pitch: -18
+      yaw: -42
+      roll: -12
+      lens: 35mm
+      frustum_color: "#38bdf8"
+    entities:
+      samira: { highlighted: true }
+
+  # Shot 04 (1.1s · Rapid Macro Insert): Perigee Dive onto the Porcelain Cup
+  - id: "shot-04"
+    shot: 4
+    label: "04 · Perigee Macro Dive: Lifting the Porcelain Cup (85mm)"
+    description: "1.1s exponential perigee dive skimming the Living Room table as Ruby lifts the Porcelain Cup."
+    start: 5.1
+    end: 6.2
+    stage_camera:
+      target: "cup"
+      maneuver: "dive"
+      easing: "expo"
+      distance_start: 1.8
+      distance_end: 0.95
+      pitch_start: 22
+      pitch_end: 6
+      yaw_start: -30
+      yaw_end: 15
+      lens: 85mm
+      frustum_color: "#f59e0b"
+    entities:
+      cup: { highlighted: true }
+      ruby: { highlighted: true }
+
+  # Shot 05 (2.6s · Slow Atmospheric Cross-Cut): Helical Spiral in Rosa's Bedroom
+  - id: "shot-05"
+    shot: 5
+    label: "05 · Bedroom Isolation Helical Spiral on Rosa (1.54m)"
+    description: "2.6s cross-cut to the Bedroom: descending helical spiral around petite Rosa (1.54m) as she approaches her desk."
+    start: 6.2
+    end: 8.8
+    stage_camera:
+      target: "rosa"
+      maneuver: "spiral"
+      easing: "smooth"
+      direction: "ccw"
+      revolutions: 0.45
+      distance_start: 4.2
+      distance_end: 2.4
+      pitch_start: 34
+      pitch_end: 8
+      yaw_start: -60
+      lens: 40mm
+      frustum_color: "#a78bfa"
+    entities:
+      rosa: { highlighted: true }
+
+  # Shot 06 (0.7s · Staccato Cut): 135mm Telephoto Dutch Snap on Ruby
+  - id: "shot-06"
+    shot: 6
+    label: "06 · Staccato 135mm ECU Dutch Snap (+18° Roll)"
+    description: "0.7s ultra-tight 135mm prime snap on Ruby with +18° Dutch tilt at the exact decision moment before she leaves the Living Room."
+    start: 8.8
+    end: 9.5
+    stage_camera:
+      target: "ruby"
+      target_offset: [0.0, 0.12, 0.0]
+      maneuver: "cut"
+      distance: 1.75
+      pitch: -4
+      yaw: 75
+      roll: 18
+      lens: 135mm
+      frustum_color: "#f43f5e"
+    entities:
+      ruby: { highlighted: true }
+
+  # Shot 07 (2.0s · Optical Distortion): Vertigo Contrazoom & Roll Recovery
+  - id: "shot-07"
+    shot: 7
+    label: "07 · Vertigo Contrazoom (85mm->24mm) & Roll Recovery"
+    description: "2.0s dolly-in (3.6m->1.5m) paired with optical zoom-out (85mm->24mm) and horizon roll recovery (+18°->0°) as Ruby begins her cross-room walk."
+    start: 9.5
+    end: 11.5
+    stage_camera:
+      target: "ruby"
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 3.6
+      distance_end: 1.5
+      pitch_start: 6
+      pitch_end: 10
+      yaw_start: 70
+      yaw_end: 85
+      roll_start: 18
+      roll_end: 0
+      lens_start: 85mm
+      lens_end: 24mm
+      frustum_color: "#f43f5e"
+    entities:
+      ruby: { highlighted: true }
+      cup: { highlighted: true }
+
+  # Shot 08 (3.2s · Long Fluid Spline): 4-Waypoint Catmull-Rom Hallway Thread
+  - id: "shot-08"
+    shot: 8
+    label: "08 · 4-Stop Catmull-Rom Spline: Living Room to Threshold"
+    description: "3.2s continuous spline threading from Samira (-X), past the carried Cup, through the Hallway Threshold, and sighting Rosa's Bedroom."
+    start: 11.5
+    end: 14.7
+    stage_camera:
+      from: "samira"
+      maneuver: "spline"
+      easing: "cruise"
+      distance_start: 3.2
+      pitch_start: 12
+      yaw_start: -35
+      lens_start: 28mm
+      frustum_color: "#38bdf8"
+      waypoints:
+        - target: "ruby"
+          target_offset: [0.2, -0.1, 0.0]
+          distance: 2.2
+          pitch: 6
+          yaw: -15
+          lens: 35mm
+          at: 0.35
+        - target: "doorway"
+          target_offset: [0.0, 0.9, 0.0]
+          distance: 2.0
+          pitch: 4
+          yaw: 10
+          lens: 40mm
+          at: 0.70
+        - target: "ruby"
+          distance: 2.4
+          pitch: 8
+          yaw: 35
+          lens: 50mm
+          at: 1.0
+    entities:
+      ruby: { highlighted: true }
+      samira: { highlighted: true }
+
+  # Shot 09 (0.9s · High-Velocity Whip): Threshold 180° Axis Whip-Sweep
+  - id: "shot-09"
+    shot: 9
+    label: "09 · Threshold Axis Whip-Sweep (28mm · CW)"
+    description: "0.9s accelerating azimuthal whip-sweep stationed at the doorway as Ruby crosses from the Living Room into Rosa's Bedroom."
+    start: 14.7
+    end: 15.6
+    stage_camera:
+      target: "ruby"
+      maneuver: "sweep"
+      easing: "accel"
+      direction: "cw"
+      distance: 1.85
+      pitch: -6
+      yaw_start: 65
+      yaw_end: -75
+      lens: 28mm
+      frustum_color: "#f59e0b"
+    entities:
+      ruby: { highlighted: true }
+      doorway: { highlighted: true }
+
+  # Shot 10 (1.8s · Uncommon Mechanical Rig): 82° God's-Eye Plunge + 90° Barrel Spin
+  - id: "shot-10"
+    shot: 10
+    label: "10 · 82° Overhead God's-Eye Plunge + 90° Barrel Spin"
+    description: "1.8s near-vertical 82° architectural bird's-eye tracking shot rotating 90° on the optical roll axis as Ruby enters the Bedroom."
+    start: 15.6
+    end: 17.4
+    stage_camera:
+      target: "ruby"
+      maneuver: "arc"
+      easing: "smooth"
+      breathe: 1.05
+      distance_start: 5.2
+      distance_end: 3.4
+      pitch_start: 82
+      pitch_end: 52
+      yaw_start: 0
+      yaw_end: -30
+      roll_start: 0
+      roll_end: 90
+      lens: 24mm
+      frustum_color: "#38bdf8"
+    entities:
+      ruby: { highlighted: true }
+      cup: { highlighted: true }
+
+  # Shot 11 (0.8s · Rapid Reaction Beat): Pop-Eased Low Snap on Rosa (1.54m)
+  - id: "shot-11"
+    shot: 11
+    label: "11 · Pop-Recoil Reaction on Rosa (85mm)"
+    description: "0.8s spring-overshoot pop reaction on Rosa (1.54m) turning toward the bedroom entrance as Ruby arrives."
+    start: 17.4
+    end: 18.2
+    stage_camera:
+      target: "rosa"
+      maneuver: "recoil"
+      easing: "pop"
+      breathe: 1.18
+      distance_start: 2.3
+      distance_end: 1.7
+      pitch: -8
+      yaw: -55
+      lens: 85mm
+      frustum_color: "#a78bfa"
+    entities:
+      rosa: { highlighted: true }
+
+  # Shot 12 (2.3s · Foreground Prop Lead): Cup-to-Ruby Rack Tracking Dolly
+  - id: "shot-12"
+    shot: 12
+    label: "12 · Foreground Cup-to-Ruby Rack Dolly (35mm)"
+    description: "2.3s backward lead track starting anchored on the carried Porcelain Cup and panning up to Ruby's face as she nears the Bedroom Desk."
+    start: 18.2
+    end: 20.5
+    stage_camera:
+      from: "cup"
+      target: "ruby"
+      maneuver: "dolly"
+      easing: "deccel"
+      distance_start: 1.4
+      distance_end: 2.1
+      pitch_start: -10
+      pitch_end: 6
+      yaw_start: 50
+      yaw_end: 25
+      lens: 35mm
+      frustum_color: "#f59e0b"
+    entities:
+      cup: { highlighted: true }
+      ruby: { highlighted: true }
+
+  # Shot 13 (1.3s · Precision Offset Settle): Setting the Cup on Rosa's Desk
+  - id: "shot-13"
+    shot: 13
+    label: "13 · Pedestal Offset Settle: Cup Placed on Bedroom Desk"
+    description: "1.3s straight push tracking the Porcelain Cup being set onto the Bedroom Desk as the vertical target offset settles to zero."
+    start: 20.5
+    end: 21.8
+    stage_camera:
+      target: "cup"
+      target_offset_start: [0.0, 0.32, 0.0]
+      target_offset_end: [0.0, 0.0, 0.0]
+      maneuver: "straight"
+      easing: "ease-out"
+      distance_start: 1.8
+      distance_end: 1.25
+      pitch: 16
+      yaw: -20
+      lens: 50mm
+      frustum_color: "#f59e0b"
+    entities:
+      cup: { highlighted: true }
+      bedroom_desk: { highlighted: true }
+
+  # Shot 14 (2.6s · Two-Shot Arrival): Dynamic Height-Bridge Arc (Ruby 1.68m & Rosa 1.54m)
+  - id: "shot-14"
+    shot: 14
+    label: "14 · Bedroom Two-Shot Height-Bridge Arc (40mm)"
+    description: "2.6s arcing bridge from Ruby (1.68m) to Rosa (1.54m) using a -0.60m X-offset to lock a balanced Bedroom Two-Shot across the desk."
+    start: 21.8
+    end: 24.4
+    stage_camera:
+      from: "ruby"
+      target: "rosa"
+      target_offset_start: [0.0, 0.0, 0.0]
+      target_offset_end: [-0.60, 0.06, 0.0]
+      maneuver: "arc"
+      easing: "smooth"
+      breathe: 1.06
+      distance_start: 2.4
+      distance_end: 2.6
+      pitch_start: 8
+      pitch_end: 4
+      yaw_start: -28
+      yaw_end: 0
+      lens: 40mm
+      frustum_color: "#a78bfa"
+    entities:
+      ruby: { highlighted: true }
+      rosa: { highlighted: true }
+
+  # Shot 15 (0.9s · Deep Corridor Cutaway): 135mm Telephoto Threshold Voyeur on Samira
+  - id: "shot-15"
+    shot: 15
+    label: "15 · 135mm Deep Corridor Cutaway on Samira at Threshold"
+    description: "0.9s long-lens 135mm compression shot looking back from the Bedroom to Samira (1.84m) watching silently at the Hallway Threshold."
+    start: 24.4
+    end: 25.3
+    stage_camera:
+      target: "samira"
+      target_offset: [0.38, -0.08, 0.0]
+      maneuver: "cut"
+      distance: 5.8
+      pitch: 2
+      yaw: 82
+      lens: 135mm
+      frustum_color: "#38bdf8"
+    entities:
+      samira: { highlighted: true }
+
+  # Shot 16 (2.3s · Kinetic Two-Shot): 210° Turntable Orbit with Pendulum Dutch Swing
+  - id: "shot-16"
+    shot: 16
+    label: "16 · 210° CCW Two-Shot Orbit + Pendulum Dutch Swing"
+    description: "2.3s sweeping 210° counter-clockwise turntable orbit around Ruby and Rosa in the Bedroom with a -10° to +10° Dutch roll swing."
+    start: 25.3
+    end: 27.6
+    stage_camera:
+      target: "rosa"
+      target_offset: [-0.62, 0.05, 0.0]
+      maneuver: "orbit"
+      easing: "smooth"
+      direction: "ccw"
+      yaw_start: -35
+      yaw_delta: 210
+      distance_start: 2.5
+      distance_end: 2.9
+      pitch_start: -6
+      pitch_end: 12
+      roll_start: -10
+      roll_end: 10
+      lens: 35mm
+      frustum_color: "#f43f5e"
+    entities:
+      ruby: { highlighted: true }
+      rosa: { highlighted: true }
+
+  # Shot 17 (2.4s · Grand Finale): Full-Stage Dual-Room Crane Pullback Spline
+  - id: "shot-17"
+    shot: 17
+    label: "17 · Finale Crane Pullback: Dual-Room Tableau (50mm->24mm)"
+    description: "2.4s decelerating crane spline pulling back from the Bedroom Two-Shot to a high master tableau uniting Samira at the threshold with Ruby and Rosa."
+    start: 27.6
+    end: 30.0
+    stage_camera:
+      from: "rosa"
+      maneuver: "spline"
+      easing: "deccel"
+      target_offset_start: [-0.62, 0.05, 0.0]
+      target_offset_end: [0.0, 0.0, 0.0]
+      distance_start: 2.9
+      pitch_start: 12
+      yaw_start: 175
+      roll_start: 10
+      roll_end: 0
+      lens_start: 50mm
+      frustum_color: "#38bdf8"
+      waypoints:
+        - target: "bedroom_desk"
+          distance: 6.8
+          pitch: 22
+          yaw: 45
+          lens: 32mm
+          at: 0.5
+        - target: "doorway"
+          target_offset: [1.8, 0.9, 0.0]
+          distance: 13.5
+          pitch: 28
+          yaw: 15
+          lens: 24mm
+          at: 1.0
+    entities:
+      ruby: { highlighted: true }
+      rosa: { highlighted: true }
+      samira: { highlighted: true }
+      cup: { highlighted: true }
+
+# ==============================================================================
+# 4. DECOUPLED VIEWPORT OBSERVER TIMELINE (3 DIORAMA INSPECTION MOVES)
+# ==============================================================================
+observer_shots:
+  - id: "obs-01-living-room-inspect"
+    label: "Living Room Diorama Sweep"
+    start: 0.0
+    end: 9.5
+    target: [-5.5, 1.1, 0.0]
+    maneuver: "orbit"
+    easing: "smooth"
+    distance_start: 20.5
+    distance_end: 18.5
+    pitch_start: 28
+    pitch_end: 22
+    yaw_start: 15
+    yaw_end: 50
+    lens: 32mm
+
+  - id: "obs-02-cross-room-track"
+    label: "Cross-Room Threshold Tracking Bridge"
+    start: 9.5
+    end: 20.5
+    from: "living_table"
+    target: "bedroom_desk"
+    maneuver: "arc"
+    easing: "cruise"
+    breathe: 1.08
+    distance_start: 19.5
+    distance_end: 19.0
+    pitch_start: 24
+    pitch_end: 30
+    yaw_start: 35
+    yaw_end: -25
+    lens: 32mm
+
+  - id: "obs-03-bedroom-tableau-resolve"
+    label: "Bedroom Two-Shot & Full Diorama Resolve"
+    start: 20.5
+    end: 30.0
+    from: "bedroom_desk"
+    target: [2.0, 1.1, -0.4]
+    maneuver: "dolly"
+    easing: "smooth"
+    distance_start: 17.5
+    distance_end: 23.5
+    pitch_start: 22
+    pitch_end: 28
+    yaw_start: -25
+    yaw_end: 18
+    lens: 32mm

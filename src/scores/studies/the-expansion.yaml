@@ -1,0 +1,552 @@
+version: "1.0"
+id: "the-expansion-taruma-sakti"
+title: "The Expansion"
+subtitle: "Stepping back-to-back across a freezing basketball court, an obsessive physicist uses his colleague to demonstrate how quickly reality pulls them apart."
+continuous: true
+video: "https://www.youtube.com/watch?v=JcF1Lffrgf8"
+aspect_ratio: "16:9"
+duration: 72.0
+offset: 0.0
+
+optics:
+  dof_blur: true
+  dof: "shallow"
+  aperture: "f/2.8"
+
+stage:
+  width: 28
+  depth: 16
+  grid_step: 2
+
+  # Starts 5m further back behind & over the shoulder of the Stage Camera at t=0s
+  observer_camera:
+    target: "frank"
+    target_offset: [0, -0.4, 0]
+    distance: 9.5
+    pitch: 22
+    yaw: 82
+    lens: 35mm
+
+  stage_camera:
+    target: "frank"
+    target_offset: [0, -1.15, 0]
+    distance: 1.3
+    pitch: 14
+    yaw: 90
+    lens: 35mm
+    focus: "frank"
+    dof: "shallow"
+    aperture: "f/2.8"
+
+entities:
+  - id: "frank"
+    label: "Frank"
+    kind: "character"
+    position: [7.5, 0, 0]
+    rotation: -90
+    height: 1.78
+    radius: 0.26
+    color: "#f59e0b"
+
+  - id: "dave"
+    label: "Dave"
+    kind: "character"
+    position: [-0.35, 0, 0]
+    rotation: -90
+    height: 1.75
+    radius: 0.26
+    color: "#10b981"
+
+  - id: "center_circle"
+    label: "Center Court Circle"
+    kind: "marker"
+    position: [0, 0, 0]
+    height: 0.05
+    radius: 1.8
+    color: "#94a3b8"
+
+  - id: "west_hoop"
+    label: "West Basketball Hoop"
+    kind: "prop"
+    position: [-12.5, 0, 0]
+    rotation: 90
+    height: 3.05
+    radius: 0.45
+    color: "#64748b"
+
+  - id: "east_hoop"
+    label: "East Basketball Hoop"
+    kind: "prop"
+    position: [12.5, 0, 0]
+    rotation: -90
+    height: 3.05
+    radius: 0.45
+    color: "#64748b"
+
+shots:
+  # Shot 01 (0.0s - 6.0s): Ground-Level Macro Track to Smooth Pedestal Rear-Follow
+  - id: "shot-01-macro-pedestal-follow"
+    shot: 1
+    label: "Shot 01 · Ground Macro to Rear Follow Pedestal"
+    description: "Camera tracks inches above the asphalt behind Frank's shoes and smoothly booms up to chest level with shallow focus locked on Frank."
+    start: 0.0
+    end: 6.0
+    stage_camera:
+      target: "frank"
+      target_offset_start: [0, -1.15, 0]
+      target_offset_end: [0, 0.0, 0]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance_start: 1.3
+      distance_end: 2.1
+      pitch_start: 14
+      pitch_end: 4
+      yaw: 90
+      lens: 35mm
+      focus: "frank"
+      dof: "shallow"
+      aperture: "f/2.8"
+      show_path: true
+    entities:
+      frank:
+        from: [7.5, 0, 0]
+        position: [1.1, 0, 0]
+        rotation: -90
+        easing: "smooth"
+        highlighted: true
+      dave:
+        position: [-0.35, 0, 0]
+        rotation: -90
+
+  # Shot 02 (6.0s - 9.0s): Lateral Circling Arc (Two-Shot Reframe)
+  - id: "shot-02-lateral-arc"
+    shot: 2
+    label: "Shot 02 · Lateral Circling Arc to Two-Shot"
+    description: "As Frank reaches Dave at the center circle, the camera arcs around Frank's right flank (-Z side) and shifts focus to the shared two-shot plane."
+    end: 9.0
+    stage_camera:
+      from: "frank"
+      target: [0, 1.4, 0]
+      maneuver: "arc"
+      easing: "smooth"
+      distance: 1.85
+      pitch: 2
+      yaw: 160
+      breathe: 1.01
+      lens_start: 35mm
+      lens_end: 50mm
+      focus_start: "frank"
+      focus_end: ["frank", "dave"]
+      dof: "shallow"
+      aperture: "f/2.8"
+      show_path: true
+    entities:
+      frank:
+        from: [1.1, 0, 0]
+        position: [0.35, 0, 0]
+        rotation: -90
+        easing: "smooth"
+        highlighted: true
+      dave:
+        position: [-0.35, 0, 0]
+        rotation: -90
+        highlighted: true
+
+  # Shot 03 (9.0s - 15.0s): Transverse Side-Profile Push-In (Spine-to-Spine)
+  - id: "shot-03-profile-spine-to-spine"
+    shot: 3
+    label: "Shot 03 · Side-Profile Push-In (Back-to-Back)"
+    description: "Frank turns 180° to press spine-to-spine with Dave; camera pushes into a tight 50mm profile two-shot with shallow bokeh isolating both men."
+    end: 15.0
+    stage_camera:
+      from: [0, 1.4, 0]
+      target: [0, 1.45, 0]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 1.45
+      pitch: 0
+      yaw: 180
+      lens: 50mm
+      focus: ["frank", "dave"]
+      dof: "shallow"
+      aperture: "f/2.4"
+      show_path: true
+    entities:
+      frank:
+        from: [0.35, 0, 0]
+        position: [0.28, 0, 0]
+        rotation: 90
+        easing: "smooth"
+        highlighted: true
+      dave:
+        position: [-0.28, 0, 0]
+        rotation: -90
+        highlighted: true
+
+  # Shot 04 (15.0s - 25.0s): 180° Turntable Orbit & Pullback into Low-Angle Wide Profile
+  - id: "shot-04-orbit-and-wide-pullback"
+    shot: 4
+    label: "Shot 04 · 180° Turntable Orbit into Low-Angle Wide Profile"
+    description: "Camera executes a 180° CCW orbit past Dave's face (yaw 180° -> 0°) while spiraling outward and stopping down from f/2.4 to f/5.6 to frame their full bodies."
+    end: 25.0
+    stage_camera:
+      from: [0, 1.45, 0]
+      target: [0, 1.15, 0]
+      maneuver: "orbit"
+      direction: "ccw"
+      easing: "smooth"
+      distance: 3.8
+      pitch: -5
+      yaw: 0
+      lens_start: 50mm
+      lens_end: 35mm
+      focus: ["dave", "frank"]
+      dof: "shallow"
+      aperture_start: "f/2.4"
+      aperture_end: "f/5.6"
+      show_path: true
+    entities:
+      frank:
+        position: [0.28, 0, 0]
+        rotation: 90
+        highlighted: true
+      dave:
+        position: [-0.28, 0, 0]
+        rotation: -90
+        highlighted: true
+
+  # Shot 05 (25.0s - 31.0s): Wide Profile Framing & First Linear Expansion Steps
+  - id: "shot-05-linear-expansion-start"
+    shot: 5
+    label: "Shot 05 · Wide Profile — Constant Velocity Walk Begins"
+    description: "Camera holds wide profile at yaw 0° and begins accelerating upward while deepening focus (f/5.6 -> f/8.0) as Dave walks left (-X) and Frank walks right (+X)."
+    end: 31.0
+    stage_camera:
+      from: [0, 1.15, 0]
+      target: [0, 1.0, 0]
+      maneuver: "dolly"
+      easing: "accel"
+      distance: 5.2
+      pitch: 14
+      yaw: 0
+      lens: 35mm
+      focus: ["dave", "frank"]
+      dof: "medium"
+      aperture_start: "f/5.6"
+      aperture_end: "f/8.0"
+      show_path: true
+    entities:
+      frank:
+        from: [0.28, 0, 0]
+        position: [1.8, 0, 0]
+        rotation: 90
+        easing: "linear"
+        highlighted: true
+      dave:
+        from: [-0.28, 0, 0]
+        position: [-1.8, 0, 0]
+        rotation: -90
+        easing: "linear"
+        highlighted: true
+
+  # Shot 06 (31.0s - 36.0s): Rapid Vertical Crane Ascent / Swoop Upward
+  - id: "shot-06-crane-ascent"
+    shot: 6
+    label: "Shot 06 · Rapid Vertical Crane Ascent to Zenith"
+    description: "Camera climbs rapidly while pitching straight down and stopping down to deep focus (f/11) on the court surface as the coordinate grid appears."
+    end: 36.0
+    stage_camera:
+      from: [0, 1.0, 0]
+      target: [0, 0.2, 0]
+      maneuver: "swoop"
+      easing: "linear"
+      distance: 11.5
+      pitch: 85
+      yaw: 0
+      breathe: 1.05
+      lens_start: 35mm
+      lens_end: 24mm
+      focus_start: ["dave", "frank"]
+      focus_end: [0, 0, 0]
+      dof: "deep"
+      aperture_start: "f/8.0"
+      aperture_end: "f/11.0"
+      show_path: true
+    entities:
+      frank:
+        from: [1.8, 0, 0]
+        position: [3.6, 0, 0]
+        rotation: 90
+        easing: "linear"
+        highlighted: true
+      dave:
+        from: [-1.8, 0, 0]
+        position: [-3.6, 0, 0]
+        rotation: -90
+        easing: "linear"
+        highlighted: true
+
+  # Shot 07 (36.0s - 45.0s): 90° Top-Down God's-Eye Zenith (Aerial Grid View)
+  - id: "shot-07-gods-eye-grid"
+    shot: 7
+    label: "Shot 07 · Top-Down God's-Eye Coordinate Grid Pullback"
+    description: "Camera climbs straight up above the court in deep focus (f/11), keeping the entire basketball court, grid, and diverging actors tack-sharp."
+    end: 45.0
+    stage_camera:
+      from: [0, 0.2, 0]
+      target: [0, 0.0, 0]
+      maneuver: "dolly"
+      easing: "deccel"
+      distance: 22.0
+      pitch: 85
+      yaw: 0
+      lens: 24mm
+      focus: [0, 0, 0]
+      dof: "deep"
+      aperture: "f/11.0"
+      show_path: true
+    entities:
+      frank:
+        from: [3.6, 0, 0]
+        position: [6.8, 0, 0]
+        rotation: 90
+        easing: "linear"
+        highlighted: true
+      dave:
+        from: [-3.6, 0, 0]
+        position: [-6.8, 0, 0]
+        rotation: -90
+        easing: "linear"
+        highlighted: true
+
+  # Shot 08 (45.0s - 50.0s): Descending High-Velocity Crane Dive
+  - id: "shot-08-crane-dive"
+    shot: 8
+    label: "Shot 08 · High-Velocity Crane Dive & Horizon Whip"
+    description: "Camera drops from the zenith, sweeping past Frank at the right hoop and pulling focus onto Dave in the left foreground as the lens zooms to 50mm at f/2.4."
+    end: 50.0
+    stage_camera:
+      from: [0, 0.0, 0]
+      target: "dave"
+      target_offset_start: [0, 0, 0]
+      target_offset_end: [0, 0.1, 0.35]
+      maneuver: "dive"
+      easing: "smooth"
+      distance: 1.9
+      pitch: 2
+      yaw: -68
+      lens_start: 24mm
+      lens_end: 50mm
+      focus_start: "frank"
+      focus_end: "dave"
+      dof: "shallow"
+      aperture_start: "f/8.0"
+      aperture_end: "f/2.4"
+      show_path: true
+    entities:
+      frank:
+        from: [6.8, 0, 0]
+        position: [7.5, 0, 0]
+        rotation: -90
+        easing: "ease-out"
+        highlighted: false
+      dave:
+        from: [-6.8, 0, 0]
+        position: [-7.5, 0, 0]
+        rotation: -75
+        easing: "ease-out"
+        highlighted: true
+
+  # Shot 09 (50.0s - 60.0s): Split-Depth Dialogue — Foreground Focus on Dave
+  - id: "shot-09-foreground-focus-dave"
+    shot: 9
+    label: "Shot 09 · Split-Depth Staging — Foreground Focus on Dave"
+    description: "Camera holds at eye level with shallow focus (f/2.4) locked on Dave in the left foreground while Frank stands blurred in the distant right background."
+    end: 60.0
+    stage_camera:
+      from: "dave"
+      target: "dave"
+      target_offset_start: [0, 0.1, 0.35]
+      target_offset_end: [0, 0.1, 0.35]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 1.8
+      pitch: 1
+      yaw: -71
+      lens: 50mm
+      focus: "dave"
+      dof: "shallow"
+      aperture: "f/2.4"
+      show_path: true
+    entities:
+      dave:
+        position: [-7.5, 0, 0]
+        rotation: -75
+        highlighted: true
+        note: "Sharp foreground focus ('Physics doesn't let you just... stop.')"
+      frank:
+        position: [7.5, 0, 0]
+        rotation: -90
+        highlighted: false
+        note: "Blurred in distant right background"
+
+  # Shot 10 (60.0s - 62.0s): Rack Focus Pull — Dave (Foreground) to Frank (Background)
+  - id: "shot-10-rack-focus-dave-to-frank"
+    shot: 10
+    label: "Shot 10 · Rack Focus Pull — Dave to Distant Frank"
+    description: "As Dave lowers his gaze, the 50mm lens executes a 14.3m rack focus pull across the court from Dave in the left foreground to Frank in the distant right background."
+    end: 62.0
+    stage_camera:
+      from: "dave"
+      target: "dave"
+      target_offset_start: [0, 0.1, 0.35]
+      target_offset_end: [0, 0.1, 0.35]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 1.75
+      pitch: 1
+      yaw: -72
+      lens: 50mm
+      focus_start: "dave"
+      focus_end: "frank"
+      dof: "shallow"
+      aperture: "f/2.4"
+      show_path: true
+    entities:
+      dave:
+        position: [-7.5, 0, 0]
+        rotation: -75
+        highlighted: true
+        note: "Bows head; transitions into foreground bokeh blur"
+      frank:
+        position: [7.5, 0, 0]
+        rotation: -90
+        highlighted: true
+        note: "Pulls into sharp focus under distant hoop"
+
+  # Shot 11 (62.0s - 72.0s): Split-Depth Resolution — Background Focus on Frank
+  - id: "shot-11-background-focus-frank"
+    shot: 11
+    label: "Shot 11 · Split-Depth Resolution — Background Focus on Frank"
+    description: "Focus holds sharply on Frank standing 16m away under the distant hoop ('Okay... Okay, Dave.') while Dave remains softly blurred in the left foreground."
+    end: 72.0
+    stage_camera:
+      from: "dave"
+      target: "dave"
+      target_offset_start: [0, 0.1, 0.35]
+      target_offset_end: [0, 0.1, 0.35]
+      maneuver: "dolly"
+      easing: "smooth"
+      distance: 1.75
+      pitch: 1
+      yaw: -72
+      lens: 50mm
+      focus: "frank"
+      dof: "shallow"
+      aperture: "f/2.4"
+      show_path: true
+    entities:
+      dave:
+        position: [-7.5, 0, 0]
+        rotation: -75
+        highlighted: false
+        note: "Out of focus in left foreground"
+      frank:
+        position: [7.5, 0, 0]
+        rotation: -90
+        highlighted: true
+        note: "Sharp background focus ('Okay... Okay, Dave.')"
+
+observer_shots:
+  # Move 1 (0.0s - 6.0s): Wide "Over-the-Shoulder" of Stage Camera Following Frank
+  - id: "obs-01-ots-stage-cam-start"
+    start: 0.0
+    end: 6.0
+    from: "frank"
+    target: "frank"
+    target_offset_start: [0, -0.4, 0]
+    target_offset_end: [0, 0.1, 0]
+    maneuver: "dolly"
+    easing: "smooth"
+    distance_start: 9.5
+    distance_end: 10.8
+    pitch_start: 22
+    pitch_end: 18
+    yaw_start: 82
+    yaw_end: 78
+    lens: 35mm
+
+  # Move 2 (6.0s - 25.0s): Pull Out & Orbit the Stage as Camera Circles & Orbits Both Men
+  - id: "obs-02-zoom-out-stage-orbit"
+    start: 6.0
+    end: 25.0
+    from: "frank"
+    target: [0, 1.3, 0]
+    target_offset_start: [0, 0.1, 0]
+    target_offset_end: [0, 0, 0]
+    maneuver: "orbit"
+    direction: "ccw"
+    easing: "smooth"
+    distance_start: 10.8
+    distance_end: 18.5
+    pitch_start: 18
+    pitch_end: 28
+    yaw_start: 78
+    yaw_end: -25
+    lens_start: 35mm
+    lens_end: 28mm
+
+  # Move 3 (25.0s - 45.0s): Wide Master Pullback as Stage Camera Rockets Up to 22m Zenith
+  - id: "obs-03-wide-zenith-capture"
+    start: 25.0
+    end: 45.0
+    from: [0, 1.3, 0]
+    target: [0, 7.5, 0]
+    maneuver: "dolly"
+    easing: "smooth"
+    distance_start: 18.5
+    distance_end: 31.0
+    pitch_start: 28
+    pitch_end: 20
+    yaw_start: -25
+    yaw_end: -45
+    lens_start: 28mm
+    lens_end: 24mm
+
+  # Move 4 (45.0s - 51.0s): Swoop Down Following the Crane Dive into Wide Final OTS Position
+  - id: "obs-04-swoop-to-final-ots"
+    start: 45.0
+    end: 51.0
+    from: [0, 7.5, 0]
+    target: "dave"
+    target_offset_start: [0, 0, 0]
+    target_offset_end: [2.5, 0.2, 0.2]
+    maneuver: "swoop"
+    easing: "smooth"
+    distance_start: 31.0
+    distance_end: 11.8
+    pitch_start: 20
+    pitch_end: 16
+    yaw_start: -45
+    yaw_end: -64
+    breathe: 1.05
+    lens_start: 24mm
+    lens_end: 35mm
+
+  # Move 5 (51.0s - 72.0s): Wide Final Over-the-Shoulder of Stage Camera Framing Dave & Distant Frank
+  - id: "obs-05-final-ots-stage-cam-hold"
+    start: 51.0
+    end: 72.0
+    from: "dave"
+    target: "dave"
+    target_offset_start: [2.5, 0.2, 0.2]
+    target_offset_end: [2.8, 0.15, 0.25]
+    maneuver: "dolly"
+    easing: "smooth"
+    distance_start: 11.8
+    distance_end: 11.2
+    pitch_start: 16
+    pitch_end: 13
+    yaw_start: -64
+    yaw_end: -68
+    lens: 35mm
