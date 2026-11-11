@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `auditScene(snapshot)` (`src/core/scene/audit-scene.ts`, exported from the package root): a pure,
+  DOM-free scene render audit for the line-tool family (horizontal / vertical / cross line,
+  horizontal ray, trend line, ray, extended line, info line, trend angle, arrow). It replays a
+  plain-data snapshot (kind, pane size, screen anchors, a `DrawingStyle` subset, optional linear
+  price/time axis maps via `coordsFromLinear`) through the real scene builders and returns a
+  JSON-serializable report: the scene item type sequence, the stats box visibility and geometry,
+  the stat row texts, the trend-angle arc endpoints, the label cut-out clip flag and an ordered
+  list of named checks. Unknown kinds and missing anchors report `supported: false` with a reason
+  instead of throwing.
+
 ## 0.9.0 (10/11/2026)
 
 ### Added
