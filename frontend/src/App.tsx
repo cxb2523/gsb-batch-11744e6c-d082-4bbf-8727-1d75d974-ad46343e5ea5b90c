@@ -1,0 +1,92 @@
+import { Suspense, lazy, useEffect, useState } from 'react'
+import InvestigationList from './components/InvestigationList'
+import SmallScreenNotice from './components/SmallScreenNotice'
+import Workspace from './components/Workspace'
+import { SMALL_SCREEN_QUERY, hasOptedIn, rememberOptIn } from './smallScreen'
+
+/**
+ * The guide is fetched when it is asked for.
+ *
+ * Imported statically it was 235 KB of the 599 KB of JavaScript every first
+ * visit downloaded, because Vite emits a `modulepreload` for it: two fifths of
+ * the initial payload, for a page most people never open from the list. Its
+ * pre-rendered twin at /guide is unaffected, it is built from its own entry
+ * point and ships as plain HTML.
+ */
+const StixGuide = lazy(() => import('./components/StixGuide'))
+const AttackGuide = lazy(() => import('./components/AttackGuide'))
+const F3Guide = lazy(() => import('./components/F3Guide'))
+const AtlasGuide = lazy(() => import('./components/AtlasGuide'))
+const AadaptGuide = lazy(() => import('./components/AadaptGuide'))
+
+/** The prose pages, by the route that serves them. */
+const PROSE = {
+  guide: StixGuide,
+  attack: AttackGuide,
+  f3: F3Guide,
+  atlas: AtlasGuide,
+  aadapt: AadaptGuide,
+}
+type ProseRoute = keyof typeof PROSE
+
+/**
+ * Tiny hash router: #/ (list), #/inv/<id>, or one of the prose pages
+ * (#/guide and one per framework). Each of those has a pre-rendered twin at
+ * its own address, built from the same component.
+ */
+function parseHash(): { view: ProseRoute | 'home' } | { view: 'workspace'; id: string } {
+  const match = window.location.hash.match(/^#\/inv\/(.+)$/)
+  if (match) return { view: 'workspace', id: match[1] }
+  const route = window.location.hash.replace(/^#\//, '')
+  if (route in PROSE) return { view: route as ProseRoute }
+  return { view: 'home' }
+}
+
+export default function App() {
+  const [route, setRoute] = useState(parseHash)
+  const [small, setSmall] = useState(() => window.matchMedia(SMALL_SCREEN_QUERY).matches)
+  const [optedIn, setOptedIn] = useState(() => hasOptedIn(window.localStorage))
+
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  // Live tracking: rotating a phone, or widening a window, must change the
+  // screen without a reload.
+  useEffect(() => {
+    const mq = window.matchMedia(SMALL_SCREEN_QUERY)
+    const onChange = () => setSmall(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  // Prose comes BEFORE the small-screen guard: it reads perfectly well on a
+  // phone. Handing a "come back on a desktop" card to someone who came to
+  // read what an observable is would be absurd.
+  if (route.view !== 'home' && route.view !== 'workspace') {
+    const Page = PROSE[route.view]
+    return (
+      <Suspense fallback={<p className="hint guide-loading">Loading the guide...</p>}>
+        <Page />
+      </Suspense>
+    )
+  }
+
+  if (small && !optedIn) {
+    return (
+      <SmallScreenNotice
+        onOpenAnyway={() => {
+          rememberOptIn(window.localStorage)
+          setOptedIn(true)
+        }}
+      />
+    )
+  }
+
+  if (route.view === 'workspace') {
+    return <Workspace investigationId={route.id} key={route.id} />
+  }
+  return <InvestigationList />
+}

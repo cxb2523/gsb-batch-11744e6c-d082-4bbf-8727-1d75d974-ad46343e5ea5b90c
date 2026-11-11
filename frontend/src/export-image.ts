@@ -1,0 +1,659 @@
+/**
+ * Visual export of the graph (#17): PNG / JPG / PDF, graph alone or graph +
+ * narrative. 100% browser-side.
+ *
+ * - `html-to-image` captures the React Flow viewport (nodes + edges) framed
+ *   on the WHOLE graph, not only the visible part.
+ * - `jsPDF` composes the PDF (graph image + narrative as selectable text).
+ * Both libs are loaded on demand (lazy) - zero weight at startup.
+ */
+
+import { getNodesBounds, getViewportForBounds } from '@xyflow/react'
+import type { Node } from '@xyflow/react'
+import { eventClause, eventSentence, timelineRows, timelines } from './narrative'
+import type { Narrative, NarrBlock } from './narrative'
+import { groupNotes, opinionLabel, type ReportNote, type ReportSubject } from './report'
+
+export type ImageFormat = 'png' | 'jpeg'
+
+/** Discreet source line added at the foot of exported documents. */
+const SOURCE_URL = 'https://app.drawmeastix.io'
+
+/**
+ * The @font-face rules of the page, with their files inlined, ready to be
+ * handed to html-to-image as `fontEmbedCSS`.
+ *
+ * This exists to route around a bug in that library, and the bug only shows in
+ * Firefox. `embed-webfonts.js` filters the rules it collects with
+ * `rule.style.fontFamily`; on an @font-face rule Firefox leaves that property
+ * undefined where Chromium returns the family, so the library calls `.trim()`
+ * on undefined and every image export dies with "can't access property trim of
+ * undefined". Passing `fontEmbedCSS` short-circuits that whole code path.
+ *
+ * Embedding is not optional: html-to-image rasterises through an SVG
+ * foreignObject loaded as a data URL, a document that cannot reach the page's
+ * own fonts. Skip it and the exported report comes out in a fallback typeface.
+ *
+ * Everything here reads properties through `getPropertyValue`, which both
+ * engines implement, and never through the camelCase accessor that started
+ * this.
+ */
+let fontCssCache: string | null = null
+
+async function fontEmbedCss(): Promise<string> {
+  if (fontCssCache !== null) return fontCssCache
+  const parts: string[] = []
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules: CSSRule[]
+    try {
+      rules = Array.from(sheet.cssRules)
+    } catch {
+      // A cross-origin sheet throws on cssRules. Ours are same-origin, so
+      // anything unreadable here has no font of ours in it.
+      continue
+    }
+    for (const rule of rules) {
+      const style = (rule as CSSFontFaceRule).style
+      if (rule.constructor.name !== 'CSSFontFaceRule' || !style) continue
+      const src = style.getPropertyValue('src')
+      if (!src) continue
+      parts.push(`@font-face{${await inlineUrls(src, style.cssText)}}`)
+    }
+  }
+  fontCssCache = parts.join('\n')
+  return fontCssCache
+}
+
+/**
+ * Replaces every `url(...)` of a font rule with the file, base64 inlined.
+ *
+ * `base` is a parameter rather than a direct read of `document.baseURI` so the
+ * function can be exercised without a DOM: it is the only piece of the export
+ * whose behaviour a test can pin down, the rest depending on a real browser.
+ */
+export async function inlineUrls(src: string, cssText: string, base?: string): Promise<string> {
+  const urls = [...src.matchAll(/url\((['"]?)([^'")]+)\1\)/g)].map((m) => m[2])
+  let out = cssText
+  for (const url of urls) {
+    if (url.startsWith('data:')) continue
+    try {
+      const res = await fetch(new URL(url, base ?? document.baseURI).href)
+      const buf = new Uint8Array(await res.arrayBuffer())
+      let bin = ''
+      for (const b of buf) bin += String.fromCharCode(b)
+      const type = res.headers.get('content-type') || 'font/woff2'
+      out = out.replace(url, `data:${type};base64,${btoa(bin)}`)
+    } catch {
+      // One unreachable font file must not sink the whole export: the rule
+      // stays as it is and that family falls back in the image.
+    }
+  }
+  return out
+}
+
+/** Captures the whole graph as a dataURL, framed on every node. */
+export async function captureGraph(
+  nodes: Node[],
+  format: ImageFormat,
+  background: string,
+): Promise<string> {
+  if (nodes.length === 0) throw new Error('The graph is empty.')
+  const viewport = document.querySelector<HTMLElement>('.react-flow__viewport')
+  if (!viewport) throw new Error('Canvas not found.')
+
+  const { toPng, toJpeg } = await import('html-to-image')
+  const bounds = getNodesBounds(nodes)
+  const MARGIN = 50 // margin around the graph, in canvas units
+  const baseW = bounds.width + MARGIN * 2
+  const baseH = bounds.height + MARGIN * 2
+  // high resolution for sharpness (up to x4), capped at 7000px on the longest
+  // side to stay under the browser's canvas limits. The PDF stays light all
+  // the same (image embedded as JPEG).
+  const MAX_DIM = 7000
+  const RES = Math.min(4, MAX_DIM / Math.max(baseW, baseH))
+  const width = Math.round(baseW * RES)
+  const height = Math.round(baseH * RES)
+  const vp = getViewportForBounds(bounds, width, height, 0.2, 8, 0.12)
+
+  const opts = {
+    backgroundColor: background,
+    width,
+    height,
+    pixelRatio: 1,
+    // Supplied rather than left to the library: see `fontEmbedCss`. Passing it
+    // is also what keeps every image export working in Firefox.
+    fontEmbedCSS: await fontEmbedCss(),
+    style: {
+      width: `${width}px`,
+      height: `${height}px`,
+      transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`,
+    },
+  }
+  return format === 'jpeg' ? toJpeg(viewport, { ...opts, quality: 0.95 }) : toPng(viewport, opts)
+}
+
+/**
+ * Composes a "report" image (title + graph + narrative) straight onto a
+ * <canvas>. More reliable than html-to-image in this case (no foreignObject
+ * and no offscreen element, everything is drawn by hand).
+ */
+export async function composeReport(
+  graphUrl: string,
+  title: string,
+  narr: Narrative | null,
+  format: ImageFormat,
+  background: string,
+  notes: ReportNote[] = [],
+  subjects: ReportSubject[] = [],
+  /** draw the chronology on a rail rather than listing it */
+  drawTimeline = false,
+): Promise<string> {
+  const graph = await loadImage(graphUrl)
+  await document.fonts.ready
+
+  const SANS = "'IBM Plex Sans', system-ui, -apple-system, sans-serif"
+  const W = 1200
+  const PAD = 40
+  const innerW = W - PAD * 2
+  const gH = (graph.height * innerW) / graph.width
+
+  const meas = document.createElement('canvas').getContext('2d')!
+  const wrap = (text: string, font: string, width = innerW): string[] => {
+    meas.font = font
+    const lines: string[] = []
+    let cur = ''
+    for (const word of text.split(' ')) {
+      const candidate = cur ? `${cur} ${word}` : word
+      if (cur && meas.measureText(candidate).width > width) {
+        lines.push(cur)
+        cur = word
+      } else cur = candidate
+    }
+    if (cur) lines.push(cur)
+    return lines
+  }
+
+  /**
+   * A block of text, and what is drawn beside it. `rail` and `dot` are what
+   * turn the chronology into a timeline: a line down the left of the events,
+   * and a dot at each moment. The rail is drawn per block, so consecutive
+   * rail blocks make one continuous line.
+   */
+  type Block = {
+    lines: string[]
+    font: string
+    color: string
+    lh: number
+    gap: number
+    /** room ABOVE the block: what tells the eye a new part has started */
+    top?: number
+    /** a hairline under the block, the width of the text column */
+    rule?: boolean
+    /** letter spacing, for the small uppercase of a section title */
+    track?: string
+    indent?: number
+    rail?: boolean
+    dot?: boolean
+  }
+  const RAIL_X = PAD + 5
+  const RAIL_INDENT = 22
+  const blocks: Block[] = []
+  const para = (t: string) =>
+    blocks.push({ lines: wrap(t, `400 15px ${SANS}`), font: `400 15px ${SANS}`, color: '#dcd7ba', lh: 23, gap: 10 })
+
+  /**
+   * Three ranks, and each one says what it is by a different means rather than
+   * by being a little bigger than the one below: a section is in the accent,
+   * spaced out and ruled off; a part of a section is bold in the text colour;
+   * a subject inside that part is bold and quiet. Bold at 15 pixels for both a
+   * heading and a name, which is what this report did, is one rank wearing two
+   * hats, and a reader meets "Chronology, by subject" and "The threat actor
+   * Guilde Vermeil" as the same thing.
+   */
+  const head = (t: string) =>
+    blocks.push({
+      lines: [t.toUpperCase()],
+      font: `700 15px ${SANS}`,
+      color: '#7e9cd8',
+      lh: 22,
+      gap: 16,
+      top: 30,
+      rule: true,
+      track: '0.09em',
+    })
+  const sub = (t: string) =>
+    blocks.push({ lines: wrap(t, `700 15px ${SANS}`), font: `700 15px ${SANS}`, color: '#dcd7ba', lh: 23, gap: 10, top: 18 })
+  // The object a note is about, the subject of a timeline: quieter than the
+  // part it sits in, louder than the prose, so the eye can tell whose words it
+  // is reading without needing a legend.
+  const who = (t: string) =>
+    blocks.push({ lines: wrap(t, `700 14px ${SANS}`), font: `700 14px ${SANS}`, color: '#9a9782', lh: 22, gap: 6, top: 14 })
+  const aside = (t: string) =>
+    blocks.push({ lines: wrap(t, `italic 14px ${SANS}`), font: `italic 14px ${SANS}`, color: '#9a9782', lh: 21, gap: 6 })
+
+  /** A subject, then what it does: one line if that is all, a list if more. */
+  const storyBlock = (block: NarrBlock, one: (t: string) => void, many: (t: string) => void) => {
+    if (block.clauses.length === 1) {
+      one(`${block.subject} ${block.clauses[0]}.`)
+      return
+    }
+    many(block.subject)
+    for (const clause of block.clauses) one(`· ${clause}`)
+  }
+
+  /** The chronology on a rail: a dot per moment, its events under it. */
+  const timelineBlocks = (chronology: Narrative['chronology']) => {
+    for (const row of timelineRows(chronology)) {
+      blocks.push({
+        lines: [row.when],
+        font: `700 14px ${SANS}`,
+        color: '#7e9cd8',
+        lh: 24,
+        gap: 4,
+        indent: RAIL_INDENT,
+        rail: true,
+        dot: true,
+      })
+      for (const event of row.events) {
+        blocks.push({
+          lines: wrap(eventSentence(event), `400 15px ${SANS}`, innerW - RAIL_INDENT),
+          font: `400 15px ${SANS}`,
+          color: '#dcd7ba',
+          lh: 23,
+          gap: 8,
+          indent: RAIL_INDENT,
+          rail: true,
+        })
+      }
+    }
+  }
+
+  if (narr) {
+    head('Narrative')
+    if (narr.chronology.length > 0) {
+      sub('Chronology')
+      if (drawTimeline) timelineBlocks(narr.chronology)
+      else narr.chronology.forEach((e) => para(`${e.when}  ${eventSentence(e)}`))
+      const perSubject = timelines(narr.chronology)
+      if (perSubject.length > 0) sub('Chronology, by subject')
+      for (const { subject, events } of perSubject) {
+        // Its moment at the head of the line, like every other moment here,
+        // and the subject said in the sentence rather than announced over a
+        // list of one.
+        if (events.length === 1) {
+          para(`${events[0].when}  ${eventSentence(events[0])}`)
+          continue
+        }
+        who(subject)
+        events.forEach((e) => para(`${e.when}  ${eventClause(e)}`))
+      }
+      if (narr.story.length > 0) sub('Undated')
+    }
+    narr.story.forEach((b) => storyBlock(b, para, who))
+    if (narr.detection.length) {
+      head('Detection')
+      narr.detection.forEach(para)
+    }
+    if (narr.isolated.length) aside(`Unlinked: ${narr.isolated.join(', ')}.`)
+  }
+
+  const groups = groupNotes(notes, subjects)
+  if (groups.length > 0) {
+    head('Analyst notes')
+    for (const { subject, notes: mine } of groups) {
+      who(subject ? subject.name : 'About the case')
+      for (const note of mine) {
+        if (note.kind === 'opinion') aside(opinionLabel(note))
+        note.content.split('\n').forEach(para)
+      }
+    }
+  }
+
+  const titleLines = wrap(title, `700 26px ${SANS}`)
+  const titleH = titleLines.length * 34
+  const blocksH = blocks.reduce((h, b) => h + (b.top ?? 0) + b.lines.length * b.lh + b.gap, 0)
+  const totalH = Math.ceil(PAD + titleH + 16 + gH + 26 + blocksH + PAD)
+
+  const RES = 2
+  const canvas = document.createElement('canvas')
+  canvas.width = W * RES
+  canvas.height = totalH * RES
+  const ctx = canvas.getContext('2d')!
+  ctx.scale(RES, RES)
+  ctx.fillStyle = background
+  ctx.fillRect(0, 0, W, totalH)
+  ctx.textBaseline = 'top'
+
+  let y = PAD
+  ctx.fillStyle = '#7e9cd8'
+  ctx.font = `700 26px ${SANS}`
+  for (const line of titleLines) {
+    ctx.fillText(line, PAD, y)
+    y += 34
+  }
+  y += 16
+  ctx.drawImage(graph, PAD, y, innerW, gH)
+  ctx.strokeStyle = '#54546d'
+  ctx.lineWidth = 1
+  ctx.strokeRect(PAD, y, innerW, gH)
+  y += gH + 26
+
+  for (const b of blocks) {
+    y += b.top ?? 0
+    const height = b.lines.length * b.lh + b.gap
+    if (b.rail) {
+      ctx.strokeStyle = '#54546d'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(RAIL_X, y - 2)
+      ctx.lineTo(RAIL_X, y + height)
+      ctx.stroke()
+    }
+    if (b.dot) {
+      ctx.fillStyle = '#7e9cd8'
+      ctx.beginPath()
+      ctx.arc(RAIL_X, y + 8, 4, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.font = b.font
+    ctx.fillStyle = b.color
+    ctx.letterSpacing = b.track ?? '0px'
+    for (const line of b.lines) {
+      ctx.fillText(line, PAD + (b.indent ?? 0), y)
+      y += b.lh
+    }
+    ctx.letterSpacing = '0px'
+    if (b.rule) {
+      ctx.strokeStyle = '#54546d'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(PAD, y + 3.5)
+      ctx.lineTo(W - PAD, y + 3.5)
+      ctx.stroke()
+    }
+    y += b.gap
+  }
+
+  ctx.fillStyle = '#726f66'
+  ctx.font = `400 12px 'IBM Plex Mono', ui-monospace, monospace`
+  ctx.textAlign = 'right'
+  ctx.fillText(SOURCE_URL, W - PAD, totalH - 22)
+
+  return canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png', 0.95)
+}
+
+/** Redraws an image with the discreet source at the foot (graph-only case). */
+export async function withFooter(
+  dataUrl: string,
+  format: ImageFormat,
+  background: string,
+): Promise<string> {
+  const img = await loadImage(dataUrl)
+  await document.fonts.ready
+  const footH = Math.max(30, Math.round(img.width * 0.015))
+  const canvas = document.createElement('canvas')
+  canvas.width = img.width
+  canvas.height = img.height + footH
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = background
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(img, 0, 0)
+  ctx.fillStyle = '#726f66'
+  ctx.font = `400 ${Math.round(footH * 0.5)}px 'IBM Plex Mono', ui-monospace, monospace`
+  ctx.textAlign = 'right'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(SOURCE_URL, img.width - Math.round(footH * 0.6), img.height + footH / 2)
+  return canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png', 0.95)
+}
+
+/**
+ * The three channels of a `#rgb` or `#rrggbb`, or null for anything else.
+ * The canvas background comes from a CSS custom property, so it is whatever
+ * the stylesheet says: read rather than assumed, and never guessed at.
+ */
+function channels(color: string): [number, number, number] | null {
+  const hex = color.trim()
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(hex)
+  if (short) {
+    const [, r, g, b] = short
+    return [parseInt(r + r, 16), parseInt(g + g, 16), parseInt(b + b, 16)]
+  }
+  const full = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
+  if (full) return [parseInt(full[1], 16), parseInt(full[2], 16), parseInt(full[3], 16)]
+  return null
+}
+
+/** Whether text over that colour has to be light. Unreadable colours are not. */
+function isDark(color: string): boolean {
+  const c = channels(color)
+  if (c === null) return false
+  return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2] < 128
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = url
+  })
+}
+
+/** PDF: graph image (page 1) + narrative as selectable text (optional). */
+export async function graphToPdf(
+  graphUrl: string,
+  title: string,
+  narr: Narrative | null,
+  notes: ReportNote[] = [],
+  subjects: ReportSubject[] = [],
+  /** draw the chronology on a rail rather than listing it */
+  drawTimeline = false,
+  /** the canvas background, which is the graph page's own colour */
+  background = '#ffffff',
+): Promise<Blob> {
+  const { jsPDF } = await import('jspdf')
+  const img = await loadImage(graphUrl)
+  const landscape = img.width >= img.height
+  const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'pt', format: 'a4' })
+  const M = 36
+
+  /**
+   * The graph gets a page and takes all of it.
+   *
+   * The page is painted in the graph's own background first, so what the
+   * aspect ratio leaves over is that colour rather than a white band down one
+   * side of a dark picture: the eye reads one full page instead of a stamp on
+   * a sheet. The picture itself is never cropped to make it fit, since a
+   * cropped graph is a wrong graph.
+   *
+   * Its orientation follows the graph, and the pages of prose that follow are
+   * portrait whichever way this one went: 130 characters to the line is not a
+   * line anybody reads twice.
+   */
+  const gw = pdf.internal.pageSize.getWidth()
+  const gh = pdf.internal.pageSize.getHeight()
+  const dark = isDark(background)
+  const paper = channels(background) ?? [255, 255, 255]
+  pdf.setFillColor(paper[0], paper[1], paper[2])
+  pdf.rect(0, 0, gw, gh, 'F')
+
+  const TITLE_H = 30
+  pdf.setFont('helvetica', 'bold').setFontSize(16)
+  if (dark) pdf.setTextColor(126, 156, 216)
+  else pdf.setTextColor(30)
+  pdf.text(title, M, M)
+
+  const top = M + TITLE_H
+  const scale = Math.min((gw - M * 2) / img.width, (gh - top - M) / img.height)
+  const w = img.width * scale
+  const h = img.height * scale
+  const type = graphUrl.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG'
+  pdf.addImage(graphUrl, type, (gw - w) / 2, top + (gh - top - M - h) / 2, w, h)
+  pdf.setFont('helvetica', 'normal').setFontSize(8)
+  pdf.setTextColor(dark ? 130 : 150)
+  pdf.text(SOURCE_URL, gw - M, gh - 14, { align: 'right' })
+
+  const groups = groupNotes(notes, subjects)
+  if (narr || groups.length > 0) {
+    pdf.addPage('a4', 'portrait')
+    const pageW = pdf.internal.pageSize.getWidth()
+    const pageH = pdf.internal.pageSize.getHeight()
+    let y = M
+    /** A page of prose, always portrait, always started at the top. */
+    const newPage = () => {
+      pdf.addPage('a4', 'portrait')
+      y = M
+    }
+    const RAIL_X = M + 4
+    const RAIL_INDENT = 18
+    /**
+     * `indent` and `rail` are what turn the chronology into a timeline. The
+     * rail is drawn line by line rather than block by block, so that a page
+     * break cuts it where the text is cut instead of leaving a line running
+     * into the margin.
+     */
+    const block = (lines: string[], size: number, color: number, indent = 0, rail = false) => {
+      pdf.setFont('helvetica', 'normal').setFontSize(size).setTextColor(color)
+      const x = M + indent
+      for (const raw of lines) {
+        for (const ln of pdf.splitTextToSize(raw, pageW - M * 2 - indent) as string[]) {
+          if (y > pageH - M) newPage()
+          if (rail) {
+            pdf.setDrawColor(180)
+            pdf.setLineWidth(0.7)
+            pdf.line(RAIL_X, y - size, RAIL_X, y + size * 0.5)
+          }
+          pdf.text(ln, x, y)
+          y += size * 1.4
+        }
+        y += 5
+      }
+    }
+    /** A moment on the rail: its dot, then the events that happened then. */
+    const moment = (when: string, events: string[]) => {
+      if (y > pageH - M) newPage()
+      pdf.setFillColor(90, 120, 190)
+      pdf.circle(RAIL_X, y - 3, 2.4, 'F')
+      pdf.setFont('helvetica', 'bold').setFontSize(10).setTextColor(70)
+      pdf.text(when, M + RAIL_INDENT, y)
+      y += 14
+      block(events, 10, 55, RAIL_INDENT, true)
+    }
+    /**
+     * The same three ranks as the report image, said in the means a printed
+     * page has: a section is small uppercase in the accent, tracked out and
+     * ruled off; a part of it is bold and dark; a subject inside that part is
+     * bold and grey.
+     */
+    const heading = (t: string) => {
+      // A section starts its own page. The parts of a report are read one at a
+      // time, and a section title landing three lines above the fold is most
+      // of what makes a document look thrown together.
+      if (y > M) newPage()
+      pdf.setFont('helvetica', 'bold').setFontSize(11).setTextColor(70, 95, 160)
+      pdf.setCharSpace(0.8)
+      pdf.text(t.toUpperCase(), M, y)
+      pdf.setCharSpace(0)
+      pdf.setDrawColor(205)
+      pdf.setLineWidth(0.5)
+      pdf.line(M, y + 4, pageW - M, y + 4)
+      y += 20
+    }
+    const subheading = (t: string) => {
+      y += 8
+      if (y > pageH - M) newPage()
+      pdf.setFont('helvetica', 'bold').setFontSize(11).setTextColor(45)
+      pdf.text(t, M, y)
+      y += 16
+    }
+    const who = (t: string) => {
+      y += 6
+      if (y > pageH - M) newPage()
+      pdf.setFont('helvetica', 'bold').setFontSize(10).setTextColor(115)
+      pdf.text(t, M, y)
+      y += 15
+    }
+    if (narr) {
+      heading('Narrative')
+      if (narr.chronology.length > 0) {
+        subheading('Chronology')
+        if (drawTimeline) {
+          for (const row of timelineRows(narr.chronology)) {
+            moment(row.when, row.events.map(eventSentence))
+          }
+        } else {
+          block(narr.chronology.map((e) => `${e.when}  ${eventSentence(e)}`), 10, 55)
+        }
+        // Per subject only when several are dated, so a report never carries
+        // the same timeline twice under two headings.
+        const perSubject = timelines(narr.chronology)
+        if (perSubject.length > 0) subheading('Chronology, by subject')
+        for (const { subject, events } of perSubject) {
+          if (events.length === 1) {
+            block([`${events[0].when}  ${eventSentence(events[0])}`], 10, 55)
+            continue
+          }
+          who(subject)
+          block(events.map((e) => `${e.when}  ${eventClause(e)}`), 10, 55)
+        }
+        if (narr.story.length > 0) subheading('Undated')
+      }
+      for (const b of narr.story) {
+        if (b.clauses.length === 1) {
+          block([`${b.subject} ${b.clauses[0]}.`], 10, 55)
+          continue
+        }
+        who(b.subject)
+        block(b.clauses.map((c) => `· ${c}`), 10, 55)
+      }
+      if (narr.detection.length) {
+        heading('Detection')
+        block(narr.detection, 10, 55)
+      }
+      if (narr.isolated.length) {
+        block([`Unlinked: ${narr.isolated.join(', ')}.`], 10, 120)
+      }
+    }
+    // The facts first, then what the person who assembled them makes of the
+    // facts, and said to be that: a doubt printed next to a finding, in the
+    // same face, becomes a finding by the time it is read aloud.
+    if (groups.length > 0) {
+      heading('Analyst notes')
+      for (const { subject, notes: mine } of groups) {
+        who(subject ? subject.name : 'About the case')
+        for (const note of mine) {
+          if (note.kind === 'opinion') block([opinionLabel(note)], 9, 130)
+          block([note.content], 10, 55)
+        }
+      }
+    }
+  }
+  return pdf.output('blob')
+}
+
+/** File slug derived from the investigation name. */
+export function fileSlug(name: string): string {
+  return (
+    name
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '') // drops the decomposed diacritics
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase() || 'investigation'
+  )
+}
+
+export function downloadUrl(url: string, filename: string): void {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  downloadUrl(url, filename)
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}

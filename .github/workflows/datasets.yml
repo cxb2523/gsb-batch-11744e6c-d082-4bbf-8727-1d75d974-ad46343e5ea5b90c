@@ -1,0 +1,150 @@
+# Draw Me A STIX - keeping the shipped datasets from ageing in silence.
+#
+# Six corpora are committed under frontend/public/: the four frameworks
+# (ATT&CK, F3, ATLAS, AADAPT), the actor aliases distilled from the MISP galaxy, and
+# the ISO 3166-1 countries. They are what the analyst is offered while typing,
+# so they decide whether two people name the same thing the same way. Left
+# alone they simply rot: the tool went from ATT&CK 17 to 19.1 without anything
+# saying so.
+#
+# The framework pages at /attack, /f3, /atlas and /aadapt describe these files in
+# prose, and a test holds the two in step, so an enrichment upstream reaches
+# the documentation through the same weekly run.
+#
+# This job regenerates them weekly and OPENS A PULL REQUEST when the content
+# moved. Deliberately not a commit: a dataset bump changes what analysts see,
+# so the detection is automated and the decision stays human and reviewable.
+# The PR body carries what the scripts report, including what the arbitration
+# between ATT&CK and the galaxy chose to drop.
+name: Datasets
+
+on:
+  schedule:
+    # Mondays, early. Nothing depends on the hour; a weekly run is enough for
+    # corpora that move a few times a year.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: iso-codes (source of the country list)
+        run: sudo apt-get update && sudo apt-get install -y iso-codes
+
+      - name: Sync
+        working-directory: backend
+        run: uv sync
+
+      # Order matters, twice over: the actor arbitration reads the ATT&CK file
+      # to know which names are already resolved, and the F3 build reads it to
+      # take ATT&CK's spelling back for the techniques the two frameworks
+      # share. Both run after it. ATLAS borrows no identifier and needs
+      # nothing from it, and runs there anyway so that the report reads in the
+      # order of the panel.
+      - name: Regenerate
+        id: build
+        working-directory: backend
+        run: |
+          {
+            echo 'report<<REPORT'
+            uv run python scripts/build_attack_dataset.py
+            uv run python scripts/build_f3_dataset.py
+            uv run python scripts/build_atlas_dataset.py
+            uv run python scripts/build_aadapt_dataset.py
+            uv run python scripts/build_actors_dataset.py
+            uv run python scripts/build_countries_dataset.py
+            echo REPORT
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Anything moved?
+        id: diff
+        run: |
+          if git diff --quiet -- frontend/public; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::datasets unchanged"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --shortstat -- frontend/public
+          fi
+
+      # The tests are the reason this can be merged on sight. `actors.test.ts`
+      # checks the property the arbitration exists for: nothing in the galaxy
+      # file contradicts a name ATT&CK already resolves. If MITRE adopts a
+      # name the galaxy also carries, this is where it surfaces. `f3.test.ts`
+      # does the same for the 43 techniques F3 and ATT&CK share: they carry one
+      # identifier, so they have to carry one name. And
+      # `frameworks.static.test.tsx` holds the framework pages against the
+      # files they describe: the eight F3 tactics printed at /f3 are the eight
+      # in the dataset, and the count of techniques F3 borrows is the count in
+      # it. A framework that grows a ninth tactic is a documentation change,
+      # and this is what asks for it.
+      #
+      # A failure does NOT cancel the pull request. What fails here is a
+      # disagreement between the new files and something written down beside
+      # them, and the fix belongs on this branch, next to the diff that caused
+      # it. Opening it and saying so beats a red scheduled run with nothing to
+      # look at, which is how a dataset stays stale for a month.
+      - name: Tests against the new datasets
+        id: tests
+        continue-on-error: true
+        if: steps.diff.outputs.changed == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+
+      - name: What the tests said
+        id: verdict
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          if [ "${{ steps.tests.outcome }}" = "failure" ]; then
+            echo "note=**The frontend tests FAILED against these files.** Something written down beside the datasets no longer agrees with them: a name arbitration, or a number in the framework pages. The run log says which. Fix it on this branch rather than merging." >> "$GITHUB_OUTPUT"
+          else
+            echo "note=The frontend tests ran green against these files before this PR was opened." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: chore/datasets-refresh
+          base: main
+          title: "chore: refresh the shipped datasets"
+          commit-message: "chore: refresh the shipped datasets"
+          delete-branch: true
+          body: |
+            Weekly regeneration of the corpora committed under
+            `frontend/public/`. What the build scripts reported:
+
+            ```
+            ${{ steps.build.outputs.report }}
+            ```
+
+            Worth reading the diff for, rather than merging blind: a name that
+            moves between the two actor corpora changes which spelling
+            analysts are offered, and therefore which identifier their objects
+            get.
+
+            ${{ steps.verdict.outputs.note }}
+
+      # After the pull request, never before it: the point is to have both the
+      # regenerated files and the red mark that says they need a hand.
+      - name: Fail the run when the tests did
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "::error::the datasets moved and the tests no longer pass - see the pull request"
+          exit 1
