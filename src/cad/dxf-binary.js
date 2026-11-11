@@ -48,6 +48,15 @@ export function isBinaryDxf(bytes) {
     return true;
 }
 
+// Primeiro byte em que a entrada diverge da sentinela (ou o tamanho dela, se for mais curta).
+function sentinelMismatch(bytes) {
+    const limit = Math.min(bytes.length, SENTINEL.length);
+    for (let i = 0; i < limit; i += 1) {
+        if (bytes[i] !== SENTINEL[i]) return i;
+    }
+    return limit;
+}
+
 function decoderForCodePage(name) {
     const page = Number(/^ANSI_(\d+)$/i.exec(name)?.[1]);
     try {
@@ -58,7 +67,7 @@ function decoderForCodePage(name) {
 }
 
 export function binaryDxfToText(bytes) {
-    if (!isBinaryDxf(bytes)) throw new Error('Arquivo não é DXF binário.');
+    if (!isBinaryDxf(bytes)) throw new Error(`Arquivo não é DXF binário: sentinela diverge no byte ${sentinelMismatch(bytes)}.`);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const size = bytes.length;
     let offset = SENTINEL.length;
@@ -110,6 +119,7 @@ export function binaryDxfToText(bytes) {
     };
 
     const lines = [];
+    let eof = false;
     while (offset < size) {
         const codeOffset = offset;
         const code = readCode();
@@ -117,7 +127,7 @@ export function binaryDxfToText(bytes) {
         if (!type) throw new Error(`Código de grupo ${code} desconhecido no byte ${codeOffset} do DXF binário.`);
         const value = readers[type]();
         lines.push(String(code), value);
-        if (code === 0 && value === 'EOF') break;
+        if (code === 0 && value === 'EOF') { eof = true; break; }
         if (code === 0) headerVariable = null;
         else if (code === 9) headerVariable = value;
         else if (headerVariable === '$ACADVER' && code === 1 && value >= 'AC1021') {
@@ -128,6 +138,8 @@ export function binaryDxfToText(bytes) {
             decoder = decoderForCodePage(value);
         }
     }
+    // Sem o par 0/EOF o arquivo está truncado: devolver o texto pela metade abriria um desenho incompleto.
+    if (!eof) throw new Error(`DXF binário truncado no byte ${offset}: fim do arquivo antes do par 0/EOF.`);
     return `${lines.join('\n')}\n`;
 }
 
