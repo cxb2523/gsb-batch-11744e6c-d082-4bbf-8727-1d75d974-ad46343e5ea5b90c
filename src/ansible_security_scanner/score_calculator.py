@@ -45,6 +45,14 @@ _PER_FILE = _ScoreWeights(
     critical=18, high=10, medium=4, low=1.5, volume_threshold=3, volume_step=2
 )
 
+# Overall-score adjustment knobs used by ``calculate_security_score`` (and
+# surfaced individually by ``score_explanation.explain_security_score``).
+_EXTRA_CRITICAL_PENALTY = 5  # per CRITICAL beyond the first
+_FILE_COVERAGE_WEIGHT = 10  # scaled by files-with-issues / scanned files
+_DENSITY_THRESHOLD = 5  # findings tolerated before the density penalty
+_DENSITY_STEP = 1.5  # per finding beyond the density threshold
+_DENSITY_CAP = 15  # maximum density penalty
+
 
 # Score -> label thresholds, in descending order. ``status`` is consulted
 # for the "how secure?" framing, ``risk`` for the "how exposed?" framing.
@@ -97,14 +105,16 @@ class ScoreCalculator:
             # Extra penalty for multiple CRITICALs so one-vs-many is visible
             # in the score rather than saturating at the base deduction.
             extra_critical = max(0, severity_counts["CRITICAL"] - 1)
-            base_score -= extra_critical * 5
+            base_score -= extra_critical * _EXTRA_CRITICAL_PENALTY
             # File coverage: how widespread are issues across the scanned tree?
             if scanned_files > 0:
                 files_with_issues = len({f.file_path for f in findings})
-                base_score -= (files_with_issues / scanned_files) * 10
+                base_score -= (files_with_issues / scanned_files) * _FILE_COVERAGE_WEIGHT
             # Density: extra penalty when the repo accumulates many findings.
-            if total_issues > 5:
-                base_score -= min(15, (total_issues - 5) * 1.5)
+            if total_issues > _DENSITY_THRESHOLD:
+                base_score -= min(
+                    _DENSITY_CAP, (total_issues - _DENSITY_THRESHOLD) * _DENSITY_STEP
+                )
             base_score = max(0.0, base_score)
 
         return SecurityScore(

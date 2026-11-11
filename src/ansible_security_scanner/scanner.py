@@ -34,6 +34,7 @@ from .path_scopes import (
 )
 from .patterns_manager import known_rule_ids, resolve_rule_specs
 from .score_calculator import ScoreCalculator
+from .score_explanation import explain_security_score
 from .suppressions import unsuppressable_rule_ids
 
 logger = logging.getLogger(__name__)
@@ -473,6 +474,13 @@ class AnsibleSecurityScanner:
 
         security_score = self.score_calculator.calculate_security_score(findings, len(yml_files))
 
+        # Explainable scoring: structured deduction trail for the score
+        # above. ``include_suppressed`` mirrors the scoring input so the
+        # explanation always matches the report's SecurityScore.
+        score_explanation = explain_security_score(
+            findings, len(yml_files), include_suppressed=self.show_suppressed
+        )
+
         summary = self._generate_summary(findings)
 
         scanned_file_paths = set()
@@ -500,6 +508,7 @@ class AnsibleSecurityScanner:
             suppression_warnings=suppression_warning_lines,
             suppressed_gate_failed=gate_failed,
             components=dep_collector.components,
+            score_explanation=score_explanation,
         )
 
     def _scan_git_history(self, yml_files: list[Path]) -> list[Any]:
@@ -653,6 +662,7 @@ class AnsibleSecurityScanner:
             suppressed_count=0,
             suppression_warnings=[],
             suppressed_gate_failed=False,
+            score_explanation=explain_security_score([], 0),
         )
 
     def _generate_summary(self, findings: list[Any]) -> dict[str, int]:

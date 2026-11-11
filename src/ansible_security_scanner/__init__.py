@@ -35,6 +35,7 @@ from .patterns_manager import patterns_manager
 from .remediations import RemediationGenerator
 from .scanner import AnsibleSecurityScanner
 from .score_calculator import ScoreCalculator
+from .score_explanation import ScoreExplanation, explain_security_score
 from .taint_tracker import TaintTracker
 from .utils import get_exit_code, get_formatter_class, parse_changed_files, setup_logging
 from .variable_extractor import VariableExtractor
@@ -50,6 +51,8 @@ __all__ = [
     "FixProposer",
     "DependencyCollector",
     "ScoreCalculator",
+    "ScoreExplanation",
+    "explain_security_score",
     "VariableExtractor",
     "RemediationGenerator",
     "MarkdownFormatter",

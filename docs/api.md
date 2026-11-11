@@ -43,6 +43,8 @@ Two things to notice:
 | `TaintTracker` | class | Cross-file variable-flow tracker; usually constructed by the scanner, not directly. |
 | `DependencyCollector` | class | Builds the SBOM component list from `requirements.yml`, `meta/main.yml`, `execution-environment.yml`, `bindep.txt`. |
 | `FileScanner`, `VariableExtractor`, `ScoreCalculator` | class | Lower-level building blocks; useful for custom formatters or test harnesses. |
+| `ScoreExplanation` | dataclass | Structured deduction trail for a `SecurityScore`. See [Score explainability](#score-explainability). |
+| `explain_security_score` | function | Pure function that builds a `ScoreExplanation` from a findings list and a scanned-file count. |
 | `patterns_manager` | module-level singleton | The pattern registry. Use `patterns_manager.discover_and_load_patterns()` to enumerate every shipped rule grouped by category. |
 | `parse_changed_files`, `setup_logging`, `get_formatter_class`, `get_exit_code` | function | CLI helpers exposed for embedding scenarios. |
 | `main` | function | The CLI entry point as if invoked from the shell — `main(["scan", "playbooks/"])`. |
@@ -146,6 +148,7 @@ All result types are plain `@dataclass` instances — they pickle, JSON-serialis
 | `suppression_warnings` | `list[str]` | Warnings about suspicious suppressions detected during the scan. |
 | `suppressed_gate_failed` | `bool` | `True` if `fail_on_suppressed=True` or `max_suppressions` was exceeded. |
 | `components` | `list[dict[str, str]]` | Dependency inventory used by the CycloneDX SBOM formatter (Galaxy collections, roles, pip packages, bindep packages, EE base images). |
+| `score_explanation` | `ScoreExplanation \| None` | Structured deduction trail for `security_score` (see [Score explainability](#score-explainability)). Populated by `scan_directory()` on both the normal and empty-report paths. |
 
 ### `SecurityScore`
 
@@ -161,6 +164,40 @@ All result types are plain `@dataclass` instances — they pickle, JSON-serialis
 | `recommendations_count` | `int` | Total recommendations across findings (used by Markdown/HTML reports). |
 
 See [Scoring](scoring.md) for how the numbers are computed.
+
+## Score explainability
+
+`from ansible_security_scanner import ScoreExplanation, explain_security_score`
+
+`explain_security_score(findings, scanned_files, *, include_suppressed=False)`
+is a pure function: give it the same inputs you would hand to
+`ScoreCalculator.calculate_security_score` and it returns a `ScoreExplanation`
+showing exactly where every point was lost. The headline numbers
+(`overall_score`, `risk_score`, `category_scores`, `file_scores`,
+`severity_breakdown`, `recommendations_count`) are item-for-item identical to
+the calculator's `SecurityScore` for the same input.
+
+By default, findings flagged with `suppressed_by` are excluded — mirroring
+`scan_directory`'s default handling of inline `# nosec` suppressions. Pass
+`include_suppressed=True` to match the `--show-suppressed` scoring mode.
+
+`ScoreExplanation` fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `overall_score`, `risk_score` | `float` | The canonical scores (identical to `SecurityScore`). |
+| `severity_deductions` | `list[SeverityDeduction]` | Per-severity count, penalty-per-finding, and deduction subtotal. |
+| `extra_critical_penalty` | `float` | Penalty for each CRITICAL beyond the first. |
+| `file_coverage_penalty` | `float` | Penalty scaled by files-with-findings / scanned files. |
+| `density_penalty` | `float` | Penalty for accumulating many findings. |
+| `gross_deduction` | `float` | Sum of every deduction component, before clamping/rounding. |
+| `total_deduction` | `float` | Effective deduction actually applied (`100 - overall_score`). |
+| `category_explanations` | `dict[str, CategoryExplanation]` | Per-category score, deduction trail, and the `rule_ids` behind it. |
+| `uncategorized` | `CategoryExplanation` | Findings whose `rule_id` maps to no loaded category — visible here instead of silently dropped. They still count toward the overall score. |
+
+`scan_directory()` attaches the explanation to `ScanReport.score_explanation`
+automatically, including the empty-directory path (a 100-point, zero-deduction
+explanation).
 
 ### `SecurityFinding`
 

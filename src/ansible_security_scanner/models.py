@@ -3,7 +3,13 @@
 Data models for Ansible Security Scanner
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .score_explanation import ScoreExplanation
 
 
 @dataclass
@@ -109,3 +115,8 @@ class ScanReport:
     # the CycloneDX SBOM formatter. Defaults to an empty list so every
     # existing positional/keyword ScanReport(...) call continues to work.
     components: list[dict[str, str]] = field(default_factory=list)
+    # Score explainability: structured breakdown of how ``security_score``
+    # was derived (see score_explanation.explain_security_score). Populated
+    # by scan_directory on both the normal and empty-report paths. Defaults
+    # to None so existing positional/keyword constructions are unaffected.
+    score_explanation: ScoreExplanation | None = None
