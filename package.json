@@ -1,0 +1,22 @@
+{
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18.20.5",
+    "npm": ">=8.1.2"
+  },
+  "dependencies": {
+    "@eslint/markdown": "8.0.3",
+    "@typescript-eslint/parser": "8.72.1",
+    "eslint": "10.12.0",
+    "eslint-plugin-regexp": "3.3.3",
+    "jschardet": "4.1.0"
+  },
+  "devDependencies": {
+    "cve-lite-cli": "1.38.0",
+    "depreman": "0.4.0",
+    "licensee": "12.0.2",
+    "markdownlint-cli": "0.50.0",
+    "prettier": "3.9.8"
+  }
+}

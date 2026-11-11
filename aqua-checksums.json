@@ -1,0 +1,259 @@
+{
+  "checksums": [
+    {
+      "id": "github_release/github.com/anchore/grype/v0.119.0/grype_0.119.0_darwin_amd64.tar.gz",
+      "checksum": "EA106D3AB9573D654871AD9E3E89BE2237506FF3F8C170E5AEACB59DA4DEF2B8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/grype/v0.119.0/grype_0.119.0_darwin_arm64.tar.gz",
+      "checksum": "500C9B2B6C089D21481815F57A553FABBD441EC7D1E79D95E3AAF40C3BFC7E36",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/grype/v0.119.0/grype_0.119.0_linux_amd64.tar.gz",
+      "checksum": "3FA2DC4B924621AB65404CF08D0B8438D896D80AB949C9D5A4CA283C36004C9B",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/grype/v0.119.0/grype_0.119.0_linux_arm64.tar.gz",
+      "checksum": "29F0EC7C549DDB0E2B6A0CA714851F7399438AFC399B80C12808E065EDC9A8F8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/grype/v0.119.0/grype_0.119.0_windows_amd64.zip",
+      "checksum": "1DB5C23B8BA0038A04ACEBED9C17945E1ADE68D9F83E2FE1C101E4FB1FEB9A48",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/syft/v1.54.1/syft_1.54.1_darwin_amd64.tar.gz",
+      "checksum": "2956322838B2F64E470EEA474495F0CD96BE4F222B1AC037258CDC47D965064E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/syft/v1.54.1/syft_1.54.1_darwin_arm64.tar.gz",
+      "checksum": "B4319C3ABAA87A0170AB76EE83EA2260CA34B53AECFA3AB0DD5428D2319D744F",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/syft/v1.54.1/syft_1.54.1_linux_amd64.tar.gz",
+      "checksum": "C069905B391CC4C20A5BA65AD5C10BE2A7BA074F8EA6AD203E24D14E303DAD47",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/syft/v1.54.1/syft_1.54.1_linux_arm64.tar.gz",
+      "checksum": "DFDF0537610113EDBEFE1F1FC6548BC957B2D77439636EC824FCF0E10D46D054",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/anchore/syft/v1.54.1/syft_1.54.1_windows_amd64.zip",
+      "checksum": "8B56E8285E295E0BBED26EEEA9B16ED51C493BE97CCDF42DAE6326C84FE8E19F",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/goodwithtech/dockle/v0.4.15/dockle_0.4.15_Linux-64bit.tar.gz",
+      "checksum": "8BFC9183D1D3D67800EDB45BEA4BB63DDF1D28BEC5F89944075A07007D79CAAD",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/goodwithtech/dockle/v0.4.15/dockle_0.4.15_Linux-ARM64.tar.gz",
+      "checksum": "14C2FBCD675AFAA0F1717E97AB71EEE178DABDEF676066189F49BAD0F53B8762",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/goodwithtech/dockle/v0.4.15/dockle_0.4.15_macOS-64bit.tar.gz",
+      "checksum": "E6B68ACA0E7776D857D7F5F226C6DAE9B74D8905376636AC4AD93355EC84892D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/goodwithtech/dockle/v0.4.15/dockle_0.4.15_macOS-ARM64.tar.gz",
+      "checksum": "DC6120234CD74A40FEDBA84290F6B5C397C8F09C645063A3B59DCE8283056847",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/hadolint/hadolint/v2.15.1/hadolint-linux-arm64",
+      "checksum": "F6198EF8090F404DBB771ABFEE086EB8C48AC177F30DA7FD3510ACA35B344B5D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/hadolint/hadolint/v2.15.1/hadolint-linux-x86_64",
+      "checksum": "C7187DB94EEEECA956519A6AF171ADC31453941A1E777961F6E680F697C8C507",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/hadolint/hadolint/v2.15.1/hadolint-macos-arm64",
+      "checksum": "5C09F3213F8E40406ABE048233D985EEBEF336D4A6A20021BE47FADB6CF480A2",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/hadolint/hadolint/v2.15.1/hadolint-macos-x86_64",
+      "checksum": "FFE9BB18B23D5ED1EAE50237AECDBB523D016E96DA0BD4E7AA432040ACFC3FDE",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/hadolint/hadolint/v2.15.1/hadolint-windows-x86_64.exe",
+      "checksum": "01D927294962B5387F9EAD4F18679158452BE4F17C765AD0BDFFE5264B9C7B0A",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.xz",
+      "checksum": "56AFFDD8DE5527894DCA6DC3D7E0A99A873B0F004D7AABC30AE407D3F48B0A79",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.xz",
+      "checksum": "3C89DB4EDCAB7CF1C27BFF178882E0F6F27F7AFDF54E859FA041FCA10FEBE4C6",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.xz",
+      "checksum": "12B331C1D2DB6B9EB13CFCA64306B1B157A86EB69DB83023E261EAA7E7C14588",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz",
+      "checksum": "8C3BE12B05D5C177A04C29E3C78CE89AC86F1595681CAB149B65B97C4E227198",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.zip",
+      "checksum": "8A4E35AB0B331C85D73567B12F2A444DF187F483E5079CEFFA6BDA1FAA2E740E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/mvdan/sh/v3.14.1/shfmt_v3.14.1_darwin_amd64",
+      "checksum": "D33EEE0DA0F92835B3562E9767A05CEE7E4EAEEF47DAA03BFD09DA17B4B590A6",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/mvdan/sh/v3.14.1/shfmt_v3.14.1_darwin_arm64",
+      "checksum": "B7C872DB63553CCFFC7253ABA3ED7D4885A27D83F1BA567B1138C6315A5847E5",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/mvdan/sh/v3.14.1/shfmt_v3.14.1_linux_amd64",
+      "checksum": "76E77641FAA025814B77F153B29796B8E6FA2FCA03E0C76A691608B86C7EA7BF",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/mvdan/sh/v3.14.1/shfmt_v3.14.1_linux_arm64",
+      "checksum": "5F2DB09DAE91FCA848F7ADBDD014632E921A383863A2AD7E0450AD3ABA0C6489",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/mvdan/sh/v3.14.1/shfmt_v3.14.1_windows_amd64.exe",
+      "checksum": "13629CE28442CA80B6B5A819F7574AB39E1C28C6E26734CA816C9714E04851DF",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/reproducible-containers/diffoci/v0.1.8/diffoci-v0.1.8.darwin-amd64",
+      "checksum": "703BCB44C2A534187DBC5E1F1FF475D615AF6D3FDDCAE317A132C822A1B50E2E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/reproducible-containers/diffoci/v0.1.8/diffoci-v0.1.8.darwin-arm64",
+      "checksum": "4995B10B3B5673054201D242E5FDA0C8D0AF82F886EA52161951851726E2C07B",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/reproducible-containers/diffoci/v0.1.8/diffoci-v0.1.8.linux-amd64",
+      "checksum": "01E6B50C1568C9D61C758EF6DA81869F2C26C852698D73DCA961B3617EFFE949",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/reproducible-containers/diffoci/v0.1.8/diffoci-v0.1.8.linux-arm64",
+      "checksum": "A14C868A59C988B5F19715563F10576589C82D37A08C0D3C39F4C1AC2B1FEC4C",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz",
+      "checksum": "5B44C3BC2255115C9B69E30EFC0FECDF498FDB63C5D58E17084FD5F16324C644",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz",
+      "checksum": "ABA9CED2DEE8D27FECCA3DC7FEB1A7F9A52CAEFA1EB46F3271EA66B6E0E6953F",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+      "checksum": "8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz",
+      "checksum": "325E971B6BA9BFA504672E29BE93C24981EEB1C07576D730E9F7C8805AFFF0C6",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_windows_amd64.zip",
+      "checksum": "6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_windows_arm64.zip",
+      "checksum": "CADCF7EA4EFE3A68728893813643CEBE1185E5B1D4BE5B96245F65C9A4D5EA41",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/sigstore/cosign/v3.1.3/cosign-darwin-amd64",
+      "checksum": "2347488E5D5B25336644024DFECA5601B190E91197A71A917BDA44744AFF106C",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/sigstore/cosign/v3.1.3/cosign-darwin-arm64",
+      "checksum": "5CF948C2F4DFE59687BDD0B8523709067383E03982CC543475C8A7DC70E92A76",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/sigstore/cosign/v3.1.3/cosign-linux-amd64",
+      "checksum": "4629C757B7618056F8DDD7E2625AE9FDD94C0372A65049520BC7D9DF9EFC7F71",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/sigstore/cosign/v3.1.3/cosign-linux-arm64",
+      "checksum": "C5D324E091826B0D7A78EB16FEF316450B4EB9AAEC045611C08BA06F5E73220A",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/sigstore/cosign/v3.1.3/cosign-windows-amd64.exe",
+      "checksum": "9FE59BE0ECA1271873CE019061335EB1AC419B7059202E797828467DDABE33BE",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_darwin_amd64.tar.gz",
+      "checksum": "B8890E825678674165845D6244795CE06687EF7D6DC6A5F0D2E40B582AE1205A",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_darwin_arm64.tar.gz",
+      "checksum": "81186D9648D7C3B0F7D92B6F7648F041D99AACD6BE52B554173FBEA65472A6A4",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_linux_amd64.tar.gz",
+      "checksum": "F38A5A5740DCEB3D4E2FB17BDABAFA9EA16E7AAEDDE832A99C738E9B1EB7F746",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_linux_arm64.tar.gz",
+      "checksum": "0F14176716BDE7AAA3362583EE2B303919DFDFC2B6991829CC23718155BF9BED",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_windows_amd64.zip",
+      "checksum": "1E7A21E8AC6A9E33577AC8A96A6094F3810A061AA4277A95B32C48A838DA99C7",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/wasilibs/go-yamllint/v1.38.0/go-yamllint_1.38.0_windows_arm64.zip",
+      "checksum": "FA9105DF27C6E942E479E99DB31521A56F2FB4B7EC05AC2BFA23F3DE5CBA7318",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.573.0/registry.yaml",
+      "checksum": "52A43B0B2817A56FE7566625809D7CCA41A1178CCAE2B152941221B516E70228",
+      "algorithm": "sha256"
+    }
+  ]
+}

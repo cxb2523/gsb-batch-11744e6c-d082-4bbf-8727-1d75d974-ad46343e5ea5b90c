@@ -1,0 +1,23 @@
+# Configuration file for hadolint (https://github.com/hadolint/hadolint)
+
+failure-threshold: style
+format: tty
+
+override:
+  error: ~
+  warning: ~
+  info: ~
+  style: ~
+ignored:
+  - DL3066
+
+label-schema:
+  org.opencontainers.image.description: text
+  org.opencontainers.image.licenses: spdx
+  org.opencontainers.image.title: text
+  org.opencontainers.image.source: url
+  org.opencontainers.image.version: semver
+strict-labels: true
+
+trustedRegistries:
+  - docker.io

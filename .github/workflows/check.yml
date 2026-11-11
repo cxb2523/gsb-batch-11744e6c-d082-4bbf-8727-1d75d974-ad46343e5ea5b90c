@@ -1,0 +1,215 @@
+name: Check
+on:
+  pull_request: ~
+  push:
+    branches:
+      - main
+      - v0
+
+permissions: read-all
+
+jobs:
+  build:
+    name: Build with ${{ matrix.engine }}
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - docker
+          - podman
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Build
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: make build "ENGINE=${ENGINE}"
+  check:
+    name: ${{ matrix.what }}
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        what:
+          - ci
+          - formatting
+          - image
+          - md
+          - sh
+          - yml
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install tooling
+        uses: aquaproj/aqua-installer@v4.1.1
+        with:
+          aqua_version: v2.65.2
+      - name: Check
+        env:
+          WHAT: ${{ matrix.what }}
+        run: make "check-${WHAT}"
+  checkov:
+    name: Checkov
+    runs-on: ubuntu-26.04
+    permissions:
+      security-events: write # To upload SARIF results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12.3136.0
+        with:
+          config_file: .checkov.yml
+          output_file_path: console,results.sarif
+          output_format: cli,sarif
+      - name: Upload Checkov report to GitHub
+        uses: github/codeql-action/upload-sarif@v4.35.1
+        if: ${{ failure() || success() }}
+        with:
+          sarif_file: results.sarif
+  codeql:
+    name: CodeQL (actions)
+    runs-on: ubuntu-26.04
+    permissions:
+      security-events: write # To upload CodeQL results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4.35.1
+        with:
+          config-file: ./.github/codeql.yml
+          languages: actions
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4.35.1
+  licenses:
+    name: Licenses
+    runs-on: ubuntu-26.04
+    needs:
+      - build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install tooling
+        uses: aquaproj/aqua-installer@v4.1.1
+        with:
+          aqua_version: v2.65.2
+      - name: Check container image licenses
+        if: ${{ failure() || success() }}
+        run: make check-licenses-image
+      - name: Check npm licenses
+        if: ${{ failure() || success() }}
+        run: make check-licenses-npm
+  poutine:
+    name: Poutine
+    runs-on: ubuntu-26.04
+    permissions:
+      security-events: write # To upload SARIF results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run Poutine
+        uses: boostsecurityio/poutine-action@v1.1.4
+      - name: Upload Poutine report to GitHub
+        uses: github/codeql-action/upload-sarif@v4.35.1
+        if: ${{ failure() || success() }}
+        with:
+          sarif_file: results.sarif
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-26.04
+    permissions:
+      security-events: write # To upload SARIF results
+    container:
+      image: semgrep/semgrep@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Perform Semgrep analysis
+        run: semgrep --sarif --output semgrep.sarif
+      - name: Upload Semgrep report to GitHub
+        uses: github/codeql-action/upload-sarif@v4.35.1
+        if: ${{ failure() || success() }}
+        with:
+          sarif_file: semgrep.sarif
+  reproducible-build:
+    name: Reproducible build
+    runs-on: ubuntu-26.04
+    needs:
+      - build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install tooling
+        uses: aquaproj/aqua-installer@v4.1.1
+        with:
+          aqua_version: v2.65.2
+      - name: Check reproducibility
+        run: make reproducible-build
+  test:
+    name: Test with ${{ matrix.engine }}
+    runs-on: ubuntu-26.04
+    needs:
+      - build
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - docker
+          - podman
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Test
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: make test "ENGINE=${ENGINE}"
+  zizmor:
+    name: Zizmor
+    runs-on: ubuntu-26.04
+    permissions:
+      security-events: write # To upload SARIF results
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+      - name: Run Zizmor
+        uses: zizmorcore/zizmor-action@v0.8.0
+        with:
+          config: .github/zizmor.yml
+          persona: pedantic

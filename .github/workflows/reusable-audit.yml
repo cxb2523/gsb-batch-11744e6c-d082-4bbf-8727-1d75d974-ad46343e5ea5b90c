@@ -1,0 +1,103 @@
+name: Audit (reusable)
+on:
+  workflow_call:
+    inputs:
+      cveliterc:
+        default: ""
+        required: false
+        type: string
+      dev:
+        default: true
+        required: false
+        type: boolean
+      gryperc:
+        default: ""
+        required: false
+        type: string
+      ndmrc:
+        default: ""
+        required: false
+        type: string
+      ref:
+        required: false
+        type: string
+
+permissions: read-all
+
+jobs:
+  deprecations:
+    name: Deprecations
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+      - name: Install Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Insert custom configuration
+        if: inputs.ndmrc != ''
+        env:
+          NDMRC: ${{ inputs.ndmrc }}
+        run: echo "${NDMRC}" | tee .ndmrc
+      - name: Audit deprecation warnings
+        env:
+          ARGS: ${{ inputs.dev == false && '--omit=dev' || '' }}
+        run: make audit-deprecations-npm
+  image:
+    name: Image
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        id: checkout
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+      - name: Install tooling
+        uses: aquaproj/aqua-installer@v4.1.1
+        with:
+          aqua_version: v2.65.2
+      - name: Insert custom configuration
+        if: inputs.gryperc != ''
+        env:
+          GRYPERC: ${{ inputs.gryperc }}
+        run: echo "${GRYPERC}" | tee .grype.yml
+      - name: Audit container dependencies
+        run: make audit-vulnerabilities-image
+      - name: Upload SBOM and vulnerability scan
+        uses: actions/upload-artifact@v7.0.0
+        if: failure() || success()
+        with:
+          if-no-files-found: error
+          name: container-scan-${{ steps.checkout.outputs.commit }}
+          path: |
+            sbom-syft.json
+            vulns.json
+  npm:
+    name: npm
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+      - name: Install Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Insert custom configuration
+        if: inputs.cveliterc != ''
+        env:
+          CVELITERC: ${{ inputs.cveliterc }}
+        run: echo "${CVELITERC}" | tee .cve-lite/baseline.json || true
+      - name: Audit npm dependencies
+        env:
+          ARGS: ${{ inputs.dev == false && '--prod-only' || '' }}
+        run: make audit-vulnerabilities-npm

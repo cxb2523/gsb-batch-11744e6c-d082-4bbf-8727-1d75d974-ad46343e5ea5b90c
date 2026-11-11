@@ -1,0 +1,50 @@
+name: Audit
+on:
+  pull_request:
+    paths:
+      - .github/workflows/audit-release.yml
+  schedule:
+    - cron: 0 1 * * *
+  workflow_dispatch: ~
+
+permissions: read-all
+
+jobs:
+  audit:
+    name: v0
+    uses: $/.github/workflows/reusable-audit.yml
+    with:
+      cveliterc: ${{ vars.CVELITERC }}
+      dev: false
+      gryperc: ${{ vars.GRYPERC }}
+      ndmrc: ${{ vars.NDMRC }}
+      ref: v0
+  trigger-release:
+    name: Trigger release
+    runs-on: ubuntu-26.04
+    if: github.event_name != 'pull_request' && failure()
+    needs:
+      - audit
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+          ref: main
+      - name: Create token to trigger a workflow
+        uses: actions/create-github-app-token@v3.3.0
+        id: automation-token
+        with:
+          client-id: ${{ secrets.AUTOMATION_ID }}
+          permission-actions: write # To trigger another workflow
+          permission-contents: read
+          private-key: ${{ secrets.AUTOMATION_PRIVATE_KEY }}
+      - name: Trigger new release if main is clean
+        env:
+          ARGS: --omit dev
+          GH_TOKEN: ${{ steps.automation-token.outputs.token }}
+        run: |
+          make audit-deprecations-npm
+          make audit-vulnerabilities-image
+          make audit-vulnerabilities-npm
+          gh workflow run release.yml --raw-field update_type=patch
