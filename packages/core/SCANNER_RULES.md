@@ -96,7 +96,17 @@ large package from overwhelming the score. A `ContentScanSummary` records
 the partial/failure reason.
 
 Deep rules honor the same enable/disable and severity overrides as metadata
-rules and appear in `npm-safe rules list`. The content scanner uses regular
+rules and appear in `npm-safe rules list`. `analyzePackageTarball` reads the
+rule configuration (`rulesConfigPath` option, default `~/.npm-safe/rules.json`)
+and the plugin directory (`rulesDir` option, default `~/.npm-safe/rules/`).
+Plugin rules that declare `appliesTo: ['content']` run against every scanned
+text file — the file content is the first `match` argument and the parsed
+`package.json` (when present in the archive) the second — and their findings
+merge with built-in findings under the same per-rule-ID deduplication and
+configuration overrides. A missing or invalid config file and plugin files
+that fail to load are tolerated: the scan continues with built-in defaults
+and `summary.status` still reflects only the archive inspection itself. The
+content scanner uses regular
 expressions, bounded lexical inspection and narrow local response-flow shapes;
 full AST and general interprocedural data-flow analysis remain future work.
 The lexical checks do not execute JavaScript, resolve arbitrary

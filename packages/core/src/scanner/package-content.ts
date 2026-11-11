@@ -12,6 +12,8 @@ import { scanBrowserContent } from './browser-signals.js';
 import { scanProcessContent } from './content-process-signals.js';
 import { findDynamicExecution } from './content-dynamic-signals.js';
 import { findNetworkExecution } from './content-network-signals.js';
+import { RuleConfigManager } from './rule-config.js';
+import { loadRulesFromDirectory } from './rule-loader.js';
 import { tokenizeSourceDetailed, type SourceToken } from './source-tokens.js';
 
 import {
@@ -19,6 +21,7 @@ import {
   Severity,
   type ContentScanSummary,
   type ScanFinding,
+  type ScanRule,
 } from './types.js';
 
 export const DEFAULT_MAX_UNPACKED_BYTES = 50 * 1024 * 1024;
@@ -33,6 +36,18 @@ export interface PackageContentScanOptions {
   readonly maxEntries?: number;
   readonly maxFileBytes?: number;
   readonly maxScannedBytes?: number;
+  /**
+   * Path to the JSON rule-config file (enabled / severity / options per rule
+   * id). Defaults to `~/.npm-safe/rules.json`. A missing or unreadable file
+   * degrades to built-in defaults; the scan itself is unaffected.
+   */
+  readonly rulesConfigPath?: string;
+  /**
+   * Directory of third-party rule plugins. Plugin rules that declare
+   * `appliesTo: ['content']` run against each scanned text file. Defaults to
+   * `~/.npm-safe/rules/`. Files that fail to load are skipped.
+   */
+  readonly rulesDir?: string;
 }
 
 export interface PackageContentScanResult {
@@ -190,22 +205,37 @@ function integrityResult(
   return { verified: false, mismatch: false };
 }
 
+/** Apply per-rule configuration (disable / severity override) to a finding. */
+function applyRuleConfig(
+  finding: ScanFinding,
+  ruleConfig: RuleConfigManager | null,
+): ScanFinding | null {
+  if (!ruleConfig) return finding;
+  if (!ruleConfig.isEnabled(finding.ruleId, true)) return null;
+  const override = ruleConfig.getSeverityOverride(finding.ruleId);
+  return override && override !== finding.severity
+    ? { ...finding, severity: override }
+    : finding;
+}
+
 function failure(
   archiveBytes: number,
   ruleId: string,
   message: string,
   severity: Severity,
   category: FindingCategory = FindingCategory.Informational,
+  ruleConfig: RuleConfigManager | null = null,
 ): PackageContentScanResult {
+  const finding = applyRuleConfig({
+    ruleId,
+    ruleName: 'Package archive validation',
+    severity,
+    message,
+    recommendation: 'Do not install until the published archive can be verified and inspected.',
+    category,
+  }, ruleConfig);
   return {
-    findings: [{
-      ruleId,
-      ruleName: 'Package archive validation',
-      severity,
-      message,
-      recommendation: 'Do not install until the published archive can be verified and inspected.',
-      category,
-    }],
+    findings: finding ? [finding] : [],
     summary: {
       status: 'failed',
       archiveBytes,
@@ -220,10 +250,47 @@ function failure(
   };
 }
 
-/** Analyze a downloaded npm `.tgz` without extracting it to disk. */
-export function analyzePackageTarball(
+/**
+ * Analyze a downloaded npm `.tgz` without extracting it to disk.
+ *
+ * Per-rule configuration (`rulesConfigPath`) and third-party plugin rules
+ * (`rulesDir`) are honored: disabled rules produce no findings, severity
+ * overrides replace finding severities, and plugin rules declaring
+ * `appliesTo: ['content']` run against every scanned text file. Configuration
+ * or plugin loading problems never interrupt the scan and never change
+ * `summary.status` — they degrade to the built-in defaults.
+ */
+export async function analyzePackageTarball(
   archive: Buffer,
   options: PackageContentScanOptions = {},
+): Promise<PackageContentScanResult> {
+  // RuleConfigManager tolerates missing/unparseable files by design: an
+  // unreadable config simply yields no overrides (built-in defaults).
+  const ruleConfig = new RuleConfigManager(options.rulesConfigPath);
+
+  // Plugin loading is best-effort: broken files are skipped by the loader and
+  // a failure here must never interrupt or reclassify the scan itself.
+  let contentPluginRules: readonly ScanRule[] = [];
+  try {
+    const loaded = await loadRulesFromDirectory(options.rulesDir);
+    contentPluginRules = loaded
+      .flatMap((file) => file.rules)
+      .filter((rule) =>
+        (rule.appliesTo?.includes('content') ?? false) &&
+        ruleConfig.isEnabled(rule.id, rule.enabled));
+  } catch {
+    contentPluginRules = [];
+  }
+
+  return scanTarballContents(archive, options, ruleConfig, contentPluginRules);
+}
+
+/** Synchronous bounded parse and rule evaluation; see {@link analyzePackageTarball}. */
+function scanTarballContents(
+  archive: Buffer,
+  options: PackageContentScanOptions,
+  ruleConfig: RuleConfigManager,
+  contentPluginRules: readonly ScanRule[],
 ): PackageContentScanResult {
   const integrity = integrityResult(archive, options.integrity, options.shasum);
   if (integrity.mismatch) {
@@ -233,6 +300,7 @@ export function analyzePackageTarball(
       'The downloaded tarball does not match its published integrity metadata.',
       Severity.Critical,
       FindingCategory.KnownMalicious,
+      ruleConfig,
     );
   }
 
@@ -251,6 +319,8 @@ export function analyzePackageTarball(
       'content-archive-invalid',
       `The package tarball could not be safely decompressed: ${reason}`,
       Severity.High,
+      FindingCategory.Informational,
+      ruleConfig,
     );
   }
 
@@ -267,10 +337,15 @@ export function analyzePackageTarball(
   let nextLinkPath: string | undefined;
   const filePaths: string[] = [];
 
+  const scannedTexts: { path: string; content: string }[] = [];
+  let packageJson: Record<string, unknown> | undefined;
+
   const emit = (finding: ScanFinding): void => {
     if (emitted.has(finding.ruleId)) return;
-    emitted.add(finding.ruleId);
-    findings.push(finding);
+    const adjusted = applyRuleConfig(finding, ruleConfig);
+    if (!adjusted) return;
+    emitted.add(adjusted.ruleId);
+    findings.push(adjusted);
   };
 
   try {
@@ -394,6 +469,20 @@ export function analyzePackageTarball(
       filesScanned++;
       scannedBytes += entry.data.length;
       const content = entry.data.toString('utf8');
+      if (contentPluginRules.length > 0) {
+        scannedTexts.push({ path: entry.path, content });
+        if (packageJson === undefined && entry.path.endsWith('/package.json')) {
+          try {
+            const parsed: unknown = JSON.parse(content);
+            if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              packageJson = parsed as Record<string, unknown>;
+            }
+          } catch {
+            // A malformed package.json is not an archive error; plugins just
+            // run without metadata for this package.
+          }
+        }
+      }
       const javascript = JAVASCRIPT_EXTENSIONS.has(extension);
       const processCandidate = content.includes('require') && (content.includes('+') || content.includes('\\'));
       const browserCandidate = content.includes('fetch') && content.includes('XMLHttpRequest') && content.includes('Response');
@@ -527,6 +616,25 @@ export function analyzePackageTarball(
       recommendation: 'Inspect the remaining files in an isolated environment before installation.',
       category: FindingCategory.Informational,
     });
+  }
+
+  // Third-party content rules run over the same bounded text corpus as the
+  // built-in rules. A throwing plugin never interrupts the scan, and findings
+  // merge with built-in ones through the same per-ruleId dedup and config.
+  for (const rule of contentPluginRules) {
+    for (const file of scannedTexts) {
+      let produced: ScanFinding[];
+      try {
+        produced = rule.match(file.content, packageJson) ?? [];
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(produced)) continue;
+      for (const finding of produced) {
+        if (!finding || typeof finding !== 'object') continue;
+        emit(finding.filePath === undefined ? { ...finding, filePath: file.path } : finding);
+      }
+    }
   }
 
   return {

@@ -96,9 +96,23 @@ export interface ContentScanSummary {
 }
 
 /**
+ * The kind of input a {@link ScanRule} inspects. Rules without an
+ * `appliesTo` declaration run against package metadata/README only.
+ */
+export type ScanRuleTarget = 'metadata' | 'content';
+
+/**
  * A rule that inspects package metadata and README content to produce findings.
  */
 export interface ScanRule {
+  /**
+   * Inputs the rule may run against. When omitted, the rule only runs against
+   * package metadata/README content. Rules including `'content'` also run
+   * against each scanned text file during the deep package-content scan; the
+   * file's content is passed as the first `match` argument and the parsed
+   * `package.json` (when present in the archive) as the second.
+   */
+  readonly appliesTo?: readonly ScanRuleTarget[];
   /** Stable unique identifier for the rule. */
   readonly id: string;
   /** Human-readable name of the rule. */

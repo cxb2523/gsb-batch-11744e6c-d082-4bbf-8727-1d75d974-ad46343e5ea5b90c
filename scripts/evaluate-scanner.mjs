@@ -101,10 +101,14 @@ export async function loadScanner() {
   }
   return {
     metadata: (readme, manifest) => analyzer.analyze(readme, manifest),
-    deep: (readme, manifest, archive) => {
-      const content = analyzePackageTarball(archive, {
+    deep: async (readme, manifest, archive) => {
+      const content = await analyzePackageTarball(archive, {
         integrity: manifest.dist?.integrity ?? manifest.integrity,
         shasum: manifest.dist?.shasum ?? manifest.shasum,
+        // Keep the evaluation hermetic: built-in rules only, never the
+        // machine's real rule config or plugin directory.
+        rulesConfigPath: path.join(repositoryRoot, 'scripts', '.evaluate-scanner-isolated', 'rules.json'),
+        rulesDir: path.join(repositoryRoot, 'scripts', '.evaluate-scanner-isolated', 'rules'),
       });
       return analyzer.analyze(readme, manifest, content.findings, content.summary);
     },

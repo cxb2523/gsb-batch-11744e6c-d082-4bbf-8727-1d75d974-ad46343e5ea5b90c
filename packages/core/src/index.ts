@@ -237,6 +237,10 @@ export class NpmSafeEngine {
   private readonly analyzer: StaticAnalyzer;
   /** Per-rule configuration (enabled / severity / options). */
   private readonly ruleConfig: RuleConfigManager;
+  /** Rule-config file location, forwarded to the deep content scan. */
+  private readonly rulesConfigPath?: string;
+  /** Plugin rule directory, forwarded to the deep content scan. */
+  private readonly rulesDir?: string;
   /** Auto-refresh scheduler. */
   private readonly scheduler: RefreshScheduler;
   /** LLM provider configuration manager. */
@@ -264,6 +268,8 @@ export class NpmSafeEngine {
       options?.rateLimitBurst ?? 10,
     );
     this.ruleConfig = new RuleConfigManager(options?.rulesConfigPath);
+    this.rulesConfigPath = options?.rulesConfigPath;
+    this.rulesDir = options?.rulesDir;
     this.analyzer = new StaticAnalyzer(undefined, this.ruleConfig);
     this.llmConfig = new LlmConfigManager(options?.llmConfigPath);
     this.llmProvider = options?.llm
@@ -447,9 +453,11 @@ export class NpmSafeEngine {
       let content: PackageContentScanResult | undefined;
       try {
         const archive = await this.client.downloadTarball(manifest.dist.tarball);
-        content = analyzePackageTarball(archive, {
+        content = await analyzePackageTarball(archive, {
           integrity: manifest.dist.integrity ?? manifest.integrity,
           shasum: manifest.dist.shasum ?? manifest.shasum,
+          rulesConfigPath: this.rulesConfigPath,
+          rulesDir: this.rulesDir,
         });
       } catch {
         content = undefined;
@@ -1027,6 +1035,8 @@ export class NpmSafeEngine {
       return analyzePackageTarball(archive, {
         integrity: manifest.dist.integrity ?? manifest.integrity,
         shasum: manifest.dist.shasum ?? manifest.shasum,
+        rulesConfigPath: this.rulesConfigPath,
+        rulesDir: this.rulesDir,
       });
     } catch {
       signal?.throwIfAborted();

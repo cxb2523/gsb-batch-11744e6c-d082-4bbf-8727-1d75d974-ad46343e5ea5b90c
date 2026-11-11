@@ -648,6 +648,7 @@ interface ScanRule {
   readonly severity: Severity;
   readonly category: FindingCategory;
   readonly enabled: boolean;
+  readonly appliesTo?: readonly ('metadata' | 'content')[];
   match(readme: string, packageJson?: Record<string, unknown>): ScanFinding[];
 }
 ```
@@ -660,6 +661,7 @@ interface ScanRule {
 | `severity` | Default severity assigned to findings produced by this rule. |
 | `category` | Category assigned to findings produced by this rule. |
 | `enabled` | Whether the rule is enabled by default. |
+| `appliesTo` | Optional input targets. Rules including `'content'` also run during the deep tarball scan against each scanned text file (file content as the first `match` argument). When omitted, the rule only runs against metadata/README. |
 | `match()` | Inspect the given README and/or package.json and return any findings. |
 
 ### StaticScanReport
@@ -714,14 +716,20 @@ false when neither a supported SRI value nor a valid legacy shasum was present.
 analyzePackageTarball(
   archive: Buffer,
   options?: PackageContentScanOptions,
-): PackageContentScanResult
+): Promise<PackageContentScanResult>
 ```
 
 This low-level export verifies and scans an already-downloaded `.tgz` entirely
 in memory. Options include `integrity`, `shasum`, `maxUnpackedBytes`,
-`maxEntries`, `maxFileBytes`, and `maxScannedBytes`. Default-limit constants
-and `CONTENT_SCAN_RULES` are also exported. Registry origin checks and the
-20 MiB compressed download ceiling are enforced by
+`maxEntries`, `maxFileBytes`, and `maxScannedBytes`, plus rule customization:
+`rulesConfigPath` (per-rule enable/disable and severity overrides, default
+`~/.npm-safe/rules.json`) and `rulesDir` (third-party plugin rules, default
+`~/.npm-safe/rules/`). Plugin rules declaring `appliesTo: ['content']` run
+against each scanned text file; their findings merge with built-in findings,
+deduplicated by rule id. Missing/invalid config files and broken plugin files
+degrade to built-in defaults without changing `summary.status`. Default-limit
+constants and `CONTENT_SCAN_RULES` are also exported. Registry origin checks
+and the 20 MiB compressed download ceiling are enforced by
 `NpmRegistryClient.downloadTarball`, not by this buffer-only function.
 
 ### LlmScanReport
