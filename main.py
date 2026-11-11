@@ -27,6 +27,7 @@ from fileprocessor import FileProcessor, collect_audio_files    # files + playli
 from mui import SettingsManager, UIManager, ScreenshotManager   # UI helpers
 from particle import Particle                                   # beat explosion
 from exporter import ExportManager                              # mp4 export
+import audio_diag                                               # read-only pipeline diagnostics
 # -----------------------------------------------------------------------------
 # 5. Main Visualizer Class - class HotVisualizer in main.py (this file!)
 # -----------------------------------------------------------------------------
@@ -378,6 +379,54 @@ class HotVisualizer:
         if n > 0:
             grab = getattr(pygame.image, 'tobytes', None) or pygame.image.tostring
             ex.write(grab(self.screen, 'RGB'), n)
+
+    # ------------------------------------------------------------------ diagnostics
+    def audit_audio(self):
+        """Read-only audio-pipeline diagnostic for the CURRENT audio_mode.
+
+        Snapshots the active processor's state and runs it through the pure
+        functions in audio_diag.py. Returns a JSON-serializable dict:
+          {"chain": "live"|"file", "diagnosable": bool,
+           "reason": None|str, "result": None|dict}
+        Never raises: a processor that is not ready (live stream inactive,
+        file track not analysed yet) yields diagnosable=False instead.
+        Does not touch run(), draw_mode_* or get_all_audio_data(); the only
+        side effect is that in live mode one chunk is read from the stream
+        (unavoidable - the processor does not buffer raw samples).
+        """
+        if self.audio_mode == "live":
+            ap = self.audio_processor
+            if ap is None or not getattr(ap, "is_active", False) \
+                    or getattr(ap, "stream", None) is None:
+                return {"chain": "live", "diagnosable": False,
+                        "reason": "live stream 未激活（is_active 为假），不可诊断",
+                        "result": None}
+            try:
+                data = ap.stream.read(ap.chunk_size, exception_on_overflow=False)
+            except Exception as exc:
+                return {"chain": "live", "diagnosable": False,
+                        "reason": f"stream 读取失败: {exc}", "result": None}
+            samples = np.frombuffer(data, dtype=np.int16)
+            result = audio_diag.diagnose_live(
+                samples, ap.chunk_size, ap.rate, ap.beat_sensitivity,
+                list(ap.bass_history), prev_peak_level=ap.peak_level)
+            return {"chain": "live", "diagnosable": True, "reason": None,
+                    "result": result}
+
+        fp = self.file_processor
+        if fp is None or not getattr(fp, "is_analyzed", False) \
+                or getattr(fp, "log_spectrogram", None) is None:
+            return {"chain": "file", "diagnosable": False,
+                    "reason": "文件尚未分析完成（is_analyzed 为假），不可诊断",
+                    "result": None}
+        pos = fp.get_position()
+        current_time = float(pos) if pos is not None else 0.0
+        rows, cols = fp.log_spectrogram.shape
+        result = audio_diag.diagnose_file(
+            int(rows), int(cols), fp.duration, current_time,
+            list(fp.beat_times), fp.beat_index)
+        return {"chain": "file", "diagnosable": True, "reason": None,
+                "result": result}
 
     # ------------------------------------------------------------------ main loop
     def run(self):
