@@ -18,6 +18,7 @@ from isitsecure.engine.models import (
     DiscoveredEndpoint,
     FindingSource,
 )
+from isitsecure.engine.scanners.ssrf_evidence import response_indicates_ssrf
 from isitsecure.engine.shared.auth_aware import AuthAwareScanner
 from isitsecure.engine.shared.rate_limited_client import RateLimitedClient
 from isitsecure.engine.shared.time_budget import TimeBudget
@@ -169,7 +170,14 @@ class SSRFScanner(AuthAwareScanner):
         probe_label: str,
         baseline: str = "",
     ) -> DeepFinding | None:
-        """Inject an SSRF probe URL and check the response."""
+        """Inject an SSRF probe URL and check the response.
+
+        A first hit is not enough: the identical GET probe is re-sent once
+        (a confirmation retest against the same, already-fetched baseline).
+        Only when the retest also lands in the status window and still shows
+        a differential indicator is a finding produced, so every finding is
+        backed by reproducible differential evidence.
+        """
         try:
             injected_url = inject_query_param(endpoint.url, param_name, probe_url)
             response = await client.get(injected_url)
@@ -182,31 +190,50 @@ class SSRFScanner(AuthAwareScanner):
                 return None
 
             body = response.text
-            if self._response_indicates_ssrf(body, baseline):
-                return DeepFinding(
-                    source=FindingSource.DAST_URL,
-                    category=FindingCategory.INJECTION_RISK,
-                    severity=SeverityLevel.HIGH,
-                    title=SSRFConfig.TITLE_SSRF,
-                    description=SSRFConfig.DESC_SSRF.format(
-                        param=param_name, url=endpoint.url, probe=probe_url
-                    ),
-                    technical_detail=(
-                        f"Injected '{probe_url}' into param '{param_name}'\n"
-                        f"Probe type: {probe_label}\n"
-                        f"Response contained SSRF indicators"
-                    ),
-                    evidence=(
-                        f"GET {injected_url} -> response suggests internal "
-                        f"resource ({probe_label}) was reached"
-                    ),
-                    confidence=SSRFConfig.CONFIDENCE_SSRF,
-                    scanner_name=self.scanner_name,
-                    endpoint_url=endpoint.url,
-                    http_method="GET",
-                    request_payload=f"{param_name}={probe_url}",
-                    response_preview=body[:300],
-                )
+            if not self._response_indicates_ssrf(body, baseline):
+                return None
+
+            # Confirmation retest: same probe URL, same GET request, same
+            # baseline (fetched only once, before any probes). If the
+            # differential evidence does not reproduce, treat the first hit
+            # as a flake and move on to the next probe.
+            retest = await client.get(injected_url)
+            if not (
+                self.HTTP_STATUS_OK_LOWER
+                <= retest.status_code
+                < self.HTTP_STATUS_OK_UPPER
+            ):
+                return None
+            if not self._response_indicates_ssrf(retest.text, baseline):
+                return None
+
+            return DeepFinding(
+                source=FindingSource.DAST_URL,
+                category=FindingCategory.INJECTION_RISK,
+                severity=SeverityLevel.HIGH,
+                title=SSRFConfig.TITLE_SSRF,
+                description=SSRFConfig.DESC_SSRF.format(
+                    param=param_name, url=endpoint.url, probe=probe_url
+                ),
+                technical_detail=(
+                    f"Injected '{probe_url}' into param '{param_name}'\n"
+                    f"Probe type: {probe_label}\n"
+                    f"Response contained SSRF indicators\n"
+                    f"Reproduced: confirmation retest with the identical "
+                    f"probe re-confirmed the SSRF indicators against the "
+                    f"same single baseline (复测通过)"
+                ),
+                evidence=(
+                    f"GET {injected_url} -> response suggests internal "
+                    f"resource ({probe_label}) was reached"
+                ),
+                confidence=SSRFConfig.CONFIDENCE_SSRF,
+                scanner_name=self.scanner_name,
+                endpoint_url=endpoint.url,
+                http_method="GET",
+                request_payload=f"{param_name}={probe_url}",
+                response_preview=body[:300],
+            )
 
         except Exception as exc:
             logger.debug(
@@ -223,10 +250,5 @@ class SSRFScanner(AuthAwareScanner):
 
     def _response_indicates_ssrf(self, body: str, baseline: str = "") -> bool:
         """Check for a cloud-metadata indicator absent from the baseline body."""
-        body_lower = body.lower()
-        baseline_lower = baseline.lower()
-        return any(
-            ind.lower() in body_lower and ind.lower() not in baseline_lower
-            for ind in SSRFConfig.SSRF_SUCCESS_INDICATORS
-        )
+        return response_indicates_ssrf(body, baseline)
 
