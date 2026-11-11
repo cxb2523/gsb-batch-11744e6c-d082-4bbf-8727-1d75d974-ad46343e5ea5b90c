@@ -1,0 +1,151 @@
+body {
+    background-color: #292929;
+}
+
+#ascii-bg {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    pointer-events: none;
+}
+
+.content {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    min-height: 100svh;
+    padding: 5rem 1rem;
+    background: radial-gradient(ellipse at center, rgba(24, 24, 24, 0.94), rgba(24, 24, 24, 0.25) 75%);
+    position: relative;
+    z-index: 1;
+}
+
+.tagline {
+    font-size: 1.1rem;
+    color: #888;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 600;
+}
+
+h1 {
+    font-size: clamp(1.75rem, 8vw, 4rem);
+    margin: 0.5rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+p {
+    max-width: 600px;
+    font-size: 1.25rem;
+    line-height: 1.6;
+    margin: 0 2rem;
+    color: #ddd;
+}
+
+.features {
+    display: flex;
+    gap: 2rem;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.feature {
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 0.9rem;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+}
+
+.feature:hover {
+    background: rgba(255, 255, 255, 0.15);
+    transform: translateY(-2px);
+}
+
+.btns {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-block: 1.75rem;
+}
+
+.btn-large {
+    padding: 0.75rem 2rem;
+    font-size: 1.25rem;
+    letter-spacing: 0.5px;
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-large span {
+    vertical-align: middle;
+}
+
+.github-link {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10;
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+
+
+@media (max-width: 768px) {
+    p {
+        font-size: 1.1rem;
+    }
+
+    .btn-large {
+        padding: 0.65rem 1.5rem;
+        font-size: 0.9rem;
+    }
+
+    .features {
+        gap: 1rem;
+    }
+}
+
+@media (max-width: 480px) {
+    p {
+        font-size: 1rem;
+        max-width: 90%;
+    }
+
+    .btn-large {
+        padding: 0.5rem 1rem;
+        font-size: 0.85rem;
+    }
+
+    .btns {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .features {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .github-link {
+        top: 10px;
+        right: 10px;
+        padding: 0.4rem 0.8rem;
+        font-size: 0.8rem;
+    }
+}

@@ -1,0 +1,116 @@
+{
+  "name": "asciiground",
+  "version": "1.5.0",
+  "description": "Library for creating animated ASCII canvas backgrounds supporting generative patterns and extensive configuration options.",
+  "type": "module",
+  "main": "dist/asciiground.cjs",
+  "module": "dist/asciiground.es.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/asciiground.es.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/asciiground.cjs"
+      }
+    }
+  },
+  "size-limit": [
+    {
+      "path": "dist/asciiground.umd.js",
+      "limit": "30 KB"
+    },
+    {
+      "path": "dist/asciiground.es.js",
+      "limit": "30 KB"
+    }
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && npm run build:lib",
+    "build:lib": "vite build --mode lib && cp dist/index.d.mts dist/index.d.ts && npm run size",
+    "build:demo": "vite build --mode demo",
+    "build:docs": "node scripts/build-docs.mjs",
+    "build:docs:versions": "node scripts/build-docs.mjs --versions",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest --watch",
+    "prepublishOnly": "npm run build",
+    "lint": "eslint \"src/**/*.{ts,mjs}\" \"scripts/**/*.{js,mjs}\"",
+    "lint:fix": "npm run lint -- --fix",
+    "clean": "rm -rf dist coverage docs/api docs/demo docs/versions",
+    "setup": "./scripts/setup.sh",
+    "version:check": "npm outdated",
+    "version:update": "npm update",
+    "size": "size-limit",
+    "check": "npm run lint && npm run test:coverage && npm run build && npm run build:demo && npm run build:docs"
+  },
+  "keywords": [
+    "ascii",
+    "animation",
+    "canvas",
+    "background",
+    "typescript",
+    "library",
+    "perlin-noise",
+    "procedural",
+    "graphics",
+    "web-animation",
+    "matrix-effect",
+    "terminal-graphics",
+    "ascii-art",
+    "generative",
+    "creative-coding"
+  ],
+  "author": "Karolis Strazdas",
+  "license": "MIT",
+  "homepage": "https://github.com/Eoic/asciiground#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Eoic/asciiground.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Eoic/asciiground/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/Eoic"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@size-limit/file": "^14.2.0",
+    "@types/node": "^26.6.6",
+    "@vitest/coverage-v8": "^5.0.4",
+    "eslint": "^10.12.0",
+    "eta": "^4.6.0",
+    "jsdom": "^30.1.2",
+    "size-limit": "^14.2.0",
+    "typedoc": "^0.28.20",
+    "typedoc-material-theme": "^1.4.1",
+    "typedoc-plugin-missing-exports": "^4.1.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vite": "^8.3.4",
+    "vite-plugin-dts": "^5.1.2",
+    "vitest": "^5.0.4"
+  },
+  "unpkg": "dist/asciiground.umd.js",
+  "jsdelivr": "dist/asciiground.umd.js",
+  "allowScripts": {
+    "fsevents@2.3.3": true
+  }
+}

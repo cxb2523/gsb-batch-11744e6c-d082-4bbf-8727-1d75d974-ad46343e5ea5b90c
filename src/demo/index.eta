@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASCIIGround</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <% styles.forEach(function(stylePath) { %>
+        <link rel="stylesheet" href="<%= stylePath %>">
+    <% }) %>
+</head>
+
+<body>
+    <div class="loading gradient-text" id="loader"> Loading ASCIIGround... </div>
+
+    <button
+        type="button"
+        class="controls-toggle btn btn-primary hidden"
+        id="controls-toggle"
+        aria-controls="controls"
+        aria-expanded="true"
+    >
+        Hide controls
+    </button>
+
+    <div class="controls glass hidden" id="controls">
+        <div class="controls-tabs">
+            <button type="button" class="tab-button active" data-tab="controls-tab">Controls</button>
+            <button type="button" class="tab-button" data-tab="debug-tab">Debug</button>
+        </div>
+        
+        <form class="tab-content active" id="controls-tab">
+            <h2 class="gradient-text">Controls</h2>
+        </form>
+        
+        <div class="tab-content" id="debug-tab">
+            <div class="debug-info">
+                <p>Debug information will be displayed here...</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <% scripts.forEach(function(scriptPath) { %>
+        <script type="module" src="<%= scriptPath %>"></script>
+    <% }) %>
+</body>
+
+</html>
