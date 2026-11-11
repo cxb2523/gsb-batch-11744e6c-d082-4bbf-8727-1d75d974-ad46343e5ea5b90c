@@ -658,6 +658,175 @@ def classify_outcome(*, test_type="", group="", method="GET",
             f"answered {status}; no content proof either way")
 
 
+# --------------------------------------------------------- verdict auditing
+_AUDIT_GATES = ("response_received", "method_proof_allowed",
+                "fingerprint_match", "marker_present",
+                "protected_baseline", "catch_all_guard",
+                "reproducibility_3of3")
+
+
+def audit_verdict(*, resp=None, base_status=None, proof=False, proof_why="",
+                  marker=None, guard_ok=None, verify_fetches=0,
+                  verify_matches=0, fingerprint_match=None,
+                  policy_expected=None, never_protected=False,
+                  method="GET", kind="technique", test_type="", group="",
+                  attribution=None):
+    """Attribution-and-verdict chain audit for one candidate. Pure.
+
+    Takes the same verdict inputs as classify_outcome and returns a
+    structured audit object:
+
+      classification / severity / confidence / reason — the final
+        verdict, GUARANTEED identical to classify_outcome for the same
+        inputs (it is computed by calling classify_outcome);
+      class_label — the display label for the classification;
+      layer / vendor / attribution_confidence — who answered, per
+        attribute_source;
+      gates — the ordered decision gates, each
+        {name, passed, cap, detail}: passed is True/False, or None
+        when the gate was not reached or not applicable; cap is the
+        level the verdict is capped at when the gate fails.
+
+    Gate order mirrors the classifier chain: no response →
+    inconclusive; HEAD forces proof=False; fingerprint mismatch or
+    missing marker → misconfig_suspected; never-protected caps
+    technique-kind results at SUSPECTED (identity-kind front-door
+    proofs may still verify as weakness); guard failure →
+    bypass_candidate; reproduction short of 3/3 → bypass_candidate or
+    misconfig_suspected.
+    """
+    classification, severity, confidence, reason = classify_outcome(
+        test_type=test_type, group=group, method=method,
+        base_status=base_status, resp=resp, attribution=attribution,
+        proof=proof, proof_why=proof_why, marker=marker,
+        guard_ok=guard_ok, verify_fetches=verify_fetches,
+        verify_matches=verify_matches,
+        fingerprint_match=fingerprint_match,
+        policy_expected=policy_expected,
+        never_protected=never_protected, kind=kind)
+    attr = attribution or attribute_source(resp)
+
+    gates = []
+
+    def gate(name, passed, cap, detail):
+        gates.append({"name": name, "passed": passed,
+                      "cap": cap, "detail": detail})
+
+    def skip(names, why):
+        for n in names:
+            gate(n, None, None, why)
+
+    if resp is None:
+        gate("response_received", False, "inconclusive",
+             "no response (timeout, connection error, or the run was "
+             "stopped / budget exhausted) — the verdict is INCONCLUSIVE")
+        skip(_AUDIT_GATES[1:],
+             "not reached — there is no response to evaluate")
+    else:
+        gate("response_received", True, None,
+             f"a response was received (HTTP {resp.status})")
+        eff_proof = bool(proof)
+        if method == "HEAD":
+            eff_proof = False   # structural: HEAD carries no body, ever
+            gate("method_proof_allowed", False, "misconfig_suspected",
+                 "HEAD carries no body by definition, so proof is "
+                 "forced to False — nothing can be verified from this "
+                 "method; a HEAD success vs a GET denial is at most "
+                 "SUSPECTED method inconsistency")
+        else:
+            gate("method_proof_allowed", True, None,
+                 f"{method or 'GET'} responses can carry a body, so "
+                 "content proof is possible")
+        if not eff_proof:
+            skip(_AUDIT_GATES[2:],
+                 "not applicable — no content proof"
+                 + (f" ({proof_why})" if proof_why else ""))
+        else:
+            np_caps = never_protected and (kind == "technique"
+                                           or test_type == "auth-context")
+            if never_protected and not np_caps:
+                protected_ok_detail = (
+                    "the resource was never protected — technique-kind "
+                    "results would be capped at SUSPECTED, but this "
+                    "identity-kind front-door proof may still verify "
+                    "as ACCESS_CONTROL_WEAKNESS_VERIFIED")
+            else:
+                protected_ok_detail = ("the baseline proved the "
+                                       "resource is protected")
+            repro_cap = "bypass_candidate" if verify_matches >= 2 \
+                else "misconfig_suspected"
+            checks = [
+                ("fingerprint_match", fingerprint_match is not False,
+                 "misconfig_suspected",
+                 "the returned content fingerprint-matches the real "
+                 "resource established in the baseline"
+                 if fingerprint_match else
+                 "no fingerprint reference contradicts the content "
+                 "proof",
+                 "content came back but does NOT fingerprint-match the "
+                 "baseline resource — a different artifact answered "
+                 "(error page, login page, cached or unrelated "
+                 "content); capped at SUSPECTED"),
+                ("marker_present", marker is not False,
+                 "misconfig_suspected",
+                 "the owner's harmless-resource marker is present (or "
+                 "no marker was configured)",
+                 "a 2xx response returned content, but NOT the owner's "
+                 "harmless test resource (marker absent) — the wrong "
+                 "resource answered; capped at SUSPECTED"),
+                ("protected_baseline", not np_caps,
+                 "misconfig_suspected",
+                 protected_ok_detail,
+                 "the plain baseline already serves this resource — "
+                 "it was never protected, so this is a missing access "
+                 "control, not a bypass; technique-kind results are "
+                 "capped at SUSPECTED"),
+                ("catch_all_guard", guard_ok is not False,
+                 "bypass_candidate",
+                 "the catch-all control stayed clean — the effect is "
+                 "attributable to the technique"
+                 if guard_ok else
+                 "no catch-all guard was needed for this technique",
+                 "the same technique on a nonexistent sibling path "
+                 "served the same content — the effect cannot be "
+                 "cleanly attributed to the technique; capped at "
+                 "BYPASS_CANDIDATE"),
+                ("reproducibility_3of3",
+                 verify_fetches >= 3 and verify_matches >= 3,
+                 repro_cap,
+                 f"reproduced on {verify_matches} of {verify_fetches} "
+                 "observations (3 of 3 required)",
+                 f"reproduced on only {verify_matches} of "
+                 f"{verify_fetches} observations — short of the 3-of-3 "
+                 "bar; capped at "
+                 + ("BYPASS_CANDIDATE" if repro_cap == "bypass_candidate"
+                    else "SUSPECTED")),
+            ]
+            reached = True
+            for name, ok, cap, ok_detail, fail_detail in checks:
+                if not reached:
+                    gate(name, None, None,
+                         "not reached — an earlier gate already capped "
+                         "the verdict")
+                    continue
+                gate(name, ok, None if ok else cap,
+                     ok_detail if ok else fail_detail)
+                if not ok:
+                    reached = False
+
+    return {
+        "classification": classification,
+        "class_label": CLASS_LABELS[classification],
+        "severity": severity,
+        "confidence": confidence,
+        "reason": reason,
+        "layer": attr.get("layer", ""),
+        "vendor": attr.get("vendor", ""),
+        "attribution_confidence": attr.get("confidence", ""),
+        "gates": gates,
+    }
+
+
 def _comparison(base, r):
     """Original-vs-test comparison block stored on every record,
     byte-for-byte where possible (hashes + exact-match flag)."""
@@ -1054,7 +1223,7 @@ class Tester:
     def _record(self, url, ttype, label, base, r, classification,
                 severity, confidence, evidence, hypothesis="",
                 expected="", identity="", group="", policy=None,
-                reason="", verify=None, fp_match=None):
+                reason="", verify=None, fp_match=None, audit=None):
         attribution = attribute_source(r) if r is not None else {}
         rec = {
             "url": url, "type": ttype, "technique": label,
@@ -1074,6 +1243,7 @@ class Tester:
             "f5": f5_diagnostics(r) or f5_diagnostics(base),
             "verify": verify or {},
             "fingerprint_match": fp_match,
+            "audit": audit,
             "classification": classification,
             "class_label": CLASS_LABELS[classification],
             "severity": severity, "confidence": confidence,
@@ -1179,6 +1349,31 @@ class Tester:
                           "header serves the same page — the header "
                           "was ignored and the 200 is the landing "
                           "page, not the protected resource")
+        audit = audit_verdict(
+            test_type=tech["type"], group=tech.get("group", ""),
+            method=tech.get("method", "GET"),
+            base_status=base.status if base else None, resp=r,
+            proof=proof, proof_why=assess["proof_why"],
+            marker=assess["marker_match"], guard_ok=guard_ok,
+            verify_fetches=verify_fetches, verify_matches=verify_matches,
+            fingerprint_match=fp_match,
+            policy_expected=policy_expected,
+            never_protected=url in self._never_protected, kind=kind)
+        if classification != audit["classification"]:
+            # a post-classifier control (e.g. the plain-override check
+            # above) adjusted the verdict — keep the stored audit
+            # consistent with the record's final classification
+            audit.update({
+                "classification": classification,
+                "class_label": CLASS_LABELS[classification],
+                "severity": severity,
+                "confidence": confidence,
+                "reason": reason,
+                "post_classification":
+                    "final verdict adjusted after the classifier "
+                    "chain: " + reason})
+        elif severity != audit["severity"]:
+            audit["severity"] = severity
         ev = [f"Original: HTTP {base.status if base else '—'} "
               f"({len(base.body or '') if base else 0} bytes, layer: "
               f"{attribute_source(base).get('layer', '—')}, "
@@ -1221,6 +1416,7 @@ class Tester:
                                     "matches": verify_matches,
                                     "guard_ok": guard_ok},
                             fp_match=fp_match,
+                            audit=audit,
                             policy={"expected": policy_expected}
                             if policy_expected else {})
 
@@ -2271,6 +2467,29 @@ def to_html(run):
                            f"catch-all guard "
                            f"{'passed' if ver.get('guard_ok') else 'FAILED or n/a'}; "
                            f"fingerprint match: {r.get('fingerprint_match')}</p>")
+            audit_txt = ""
+            audit = r.get("audit") or {}
+            gates = audit.get("gates") or []
+            if gates:
+                grows = ""
+                for g in gates:
+                    gp = g.get("passed")
+                    state = "fail" if gp is False \
+                        else ("pass" if gp else "n/a")
+                    grows += (
+                        f"<tr><td>{esc(str(g.get('name', '')))}</td>"
+                        f"<td>{state}</td>"
+                        f"<td>{esc(redact_text(str(g.get('cap') or '—')))}</td>"
+                        f"<td>{esc(redact_text(str(g.get('detail') or '')))}</td></tr>")
+                audit_txt = (
+                    f"<p><b>Verdict audit:</b> "
+                    f"{esc(str(audit.get('class_label') or audit.get('classification', '')))}"
+                    f" · confidence {esc(str(audit.get('confidence', '')))}"
+                    f" · layer {esc(redact_text(str(audit.get('layer') or '—')))}"
+                    f" · vendor {esc(redact_text(str(audit.get('vendor') or '—')))}</p>"
+                    f"<table><tr><th>Gate</th><th>Passed</th>"
+                    f"<th>Cap when failed</th><th>Detail</th></tr>"
+                    f"{grows}</table>")
             items += (
                 f"<div class='f'><h4>{esc(r['url'])} — "
                 f"{esc(r['technique'])}</h4>"
@@ -2282,6 +2501,7 @@ def to_html(run):
                 + (f"<p><b>Hypothesis:</b> {esc(r['hypothesis'])}</p>"
                    if r.get("hypothesis") else "")
                 + ver_txt
+                + audit_txt
                 + f"<p>{esc(r['evidence'])}</p>"
                 + (f"<p><b>F5 support ID:</b> "
                    f"{esc(r['f5']['support_id'])}</p>"
