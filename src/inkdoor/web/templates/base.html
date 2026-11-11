@@ -16,7 +16,8 @@
       {% if logged_in %}
       <nav class="menu" aria-label="{{ t('admin.nav.label') }}">
         {% for key, href in [("home", "/"), ("calendars", "/calendars"), ("tasks", "/tasks"),
-                             ("screen", "/screen"), ("account", "/account")] %}
+                             ("screen", "/screen"), ("account", "/account"),
+                             ("security", "/security")] %}
         <a href="{{ href }}"{% if active == key %} aria-current="page"{% endif %}>{{ t("admin.nav." ~ key) }}</a>
         {% endfor %}
       </nav>

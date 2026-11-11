@@ -6,6 +6,7 @@ import pytest
 
 from inkdoor.web.auth import (
     LoginLimiter,
+    LoginStats,
     PasswordWatcher,
     Sessions,
     generate_password,
@@ -320,3 +321,50 @@ def test_limiter_reserves_the_global_slot():
     assert lim.retry_after("a") == pytest.approx(1)
     clock.advance(1)
     assert lim.retry_after("b") == 0
+
+
+# --- read-only status for the security page ----------------------------------------------------
+
+def test_sessions_stats_counts_only_live_sessions():
+    clock = FakeClock()
+    sessions = Sessions(clock, lifetime=10)
+    sessions.create()
+    sessions.create()
+    generation, active = sessions.stats()
+    assert active == 2 and generation == 0
+    clock.advance(11)                                # both expired; stats does not prune them
+    generation, active = sessions.stats()
+    assert active == 0 and generation == 0
+    sessions.drop_all()
+    assert sessions.stats() == (1, 0)
+
+
+def test_limiter_backoff_is_read_only():
+    clock = FakeClock()
+    lim = LoginLimiter(clock)
+    assert lim.backoff() == (0, 0.0)
+    for _ in range(5):
+        lim.retry_after("a")
+        lim.failed("a")
+        clock.advance(1)
+    waiting, longest = lim.backoff()
+    assert waiting == 1 and longest == pytest.approx(60, abs=1)
+    assert lim.backoff() == (waiting, longest)       # a look changes nothing
+    assert lim.retry_after("a") == pytest.approx(59, abs=1)  # no global slot was taken either
+    clock.advance(60)
+    assert lim.backoff() == (0, 0.0)
+
+
+def test_login_stats_counts_the_recent_results():
+    stats = LoginStats(keep=3)
+    assert stats.snapshot() == {kind: 0 for kind in LoginStats.KINDS}
+    stats.record("success")
+    stats.record("wrong_password")
+    stats.record("wrong_password")
+    assert stats.snapshot()["wrong_password"] == 2
+    stats.record("throttled")                        # the oldest result is forgotten
+    snapshot = stats.snapshot()
+    assert snapshot["success"] == 0 and snapshot["throttled"] == 1
+    assert sum(snapshot.values()) == 3
+    with pytest.raises(ValueError):
+        stats.record("nope")

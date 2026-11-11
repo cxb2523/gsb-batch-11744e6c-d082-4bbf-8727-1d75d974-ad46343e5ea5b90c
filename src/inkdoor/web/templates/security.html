@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% set active = "security" %}
+{% block title %}{{ t("admin.security_title") }} · {{ t("admin.title") }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ t("admin.security_title") }}</h1>
+</div>
+<p class="muted intro">{{ t("admin.security_intro") }}</p>
+<div class="stack-cards">
+  <section class="card">
+    <h2>{{ t("admin.security_limiter_title") }}</h2>
+    <dl class="stats">
+      <dt>{{ t("admin.security_waiting_ips") }}</dt>
+      <dd data-stat="waiting-ips">{{ waiting_ips }}</dd>
+      <dt>{{ t("admin.security_max_wait") }}</dt>
+      <dd data-stat="max-wait">{{ t("admin.wait_seconds", n=max_wait) }}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>{{ t("admin.security_sessions_title") }}</h2>
+    <dl class="stats">
+      <dt>{{ t("admin.security_active_sessions") }}</dt>
+      <dd data-stat="active-sessions">{{ active_sessions }}</dd>
+      <dt>{{ t("admin.security_generation") }}</dt>
+      <dd data-stat="generation">{{ generation }}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>{{ t("admin.security_logins_title") }}</h2>
+    <p class="muted">{{ t("admin.security_logins_help") }}</p>
+    <dl class="stats">
+      <dt>{{ t("admin.security_login_success") }}</dt>
+      <dd data-stat="login-success">{{ counts["success"] }}</dd>
+      <dt>{{ t("admin.security_login_wrong_password") }}</dt>
+      <dd data-stat="login-wrong-password">{{ counts["wrong_password"] }}</dd>
+      <dt>{{ t("admin.security_login_throttled") }}</dt>
+      <dd data-stat="login-throttled">{{ counts["throttled"] }}</dd>
+      <dt>{{ t("admin.security_login_no_password") }}</dt>
+      <dd data-stat="login-no-password">{{ counts["no_password"] }}</dd>
+      <dt>{{ t("admin.security_login_generation_conflict") }}</dt>
+      <dd data-stat="login-generation-conflict">{{ counts["generation_conflict"] }}</dd>
+    </dl>
+  </section>
+</div>
+{% endblock %}

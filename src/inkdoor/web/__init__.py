@@ -226,6 +226,7 @@ def create_app(state: ServerState, *, clock=time.time, monotonic=time.monotonic)
     )
     sessions = auth.Sessions(clock, lifetime=SESSION_LIFETIME)
     limiter = auth.LoginLimiter(monotonic)
+    login_stats = auth.LoginStats()
     password_file = auth.password_path(state.config_path)
     watcher = auth.PasswordWatcher(password_file)
     watcher.changed()  # record the file as it is now, so the first change is noticed
@@ -240,7 +241,8 @@ def create_app(state: ServerState, *, clock=time.time, monotonic=time.monotonic)
     # makes this browser's new session as one step, so two changes cannot both win
     password_lock = threading.Lock()
     app.extensions["inkdoor"] = {"sessions": sessions, "limiter": limiter, "watcher": watcher,
-                                 "host_images": host_images, "password_lock": password_lock}
+                                 "host_images": host_images, "password_lock": password_lock,
+                                 "login_stats": login_stats}
 
     def t() -> Translator:
         if "t" not in g:
@@ -458,11 +460,14 @@ def create_app(state: ServerState, *, clock=time.time, monotonic=time.monotonic)
         generation = sessions.generation  # before the hash is read: see auth.Sessions
         encoded = auth.read_password_hash(password_file)
         if encoded is None:  # fail closed: no file means nobody gets in
+            login_stats.record("no_password")
             return login_page(503, None, next_)
         ok, wait = check_password(limiter, request.form.get("password", ""), encoded)
         if wait > 0:
+            login_stats.record("throttled")
             return login_page(429, t()("admin.try_again", wait=wait_text(t(), wait)), next_)
         if not ok:
+            login_stats.record("wrong_password")
             return login_page(401, t()("admin.wrong_password"), next_)
 
         if watcher.changed():  # the file changed while scrypt ran (e.g. `inkdoor password`)
@@ -471,8 +476,10 @@ def create_app(state: ServerState, *, clock=time.time, monotonic=time.monotonic)
             sessions.drop(current.sid)  # this browser gets a fresh id
         session = sessions.create(expected_generation=generation)
         if session is None:  # the password changed meanwhile: the checked one may be the old one
+            login_stats.record("generation_conflict")
             return login_page(409, t()("admin.login_expired"), next_)  # neither success nor failure
         limiter.succeeded(request.remote_addr or "")
+        login_stats.record("success")
         response = redirect(next_)
         response.set_cookie(SESSION_COOKIE, session.sid, max_age=SESSION_LIFETIME, path="/",
                             httponly=True, samesite="Strict")

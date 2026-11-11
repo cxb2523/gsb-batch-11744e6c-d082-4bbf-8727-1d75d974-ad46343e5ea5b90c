@@ -632,6 +632,23 @@ input[aria-invalid="true"] {
   min-width: 0;
 }
 
+.stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.stats dt {
+  color: var(--muted);
+}
+
+.stats dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: right;
+}
+
 .status .alert {
   margin-bottom: 12px;
 }

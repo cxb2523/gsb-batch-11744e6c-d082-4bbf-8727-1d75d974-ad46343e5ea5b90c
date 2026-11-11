@@ -14,6 +14,7 @@ import re
 import secrets
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from ..files import write_private
@@ -243,6 +244,14 @@ class Sessions:
             self._sessions.clear()
             self._generation += 1
 
+    def stats(self) -> tuple[int, int]:
+        """(generation, sessions still valid), for the security page. Read-only: expired
+        sessions are counted out, not pruned, and nothing is created or dropped."""
+        now = self._clock()
+        with self._lock:
+            active = sum(1 for s in self._sessions.values() if s.expires > now)
+            return self._generation, active
+
 
 # --- login rate limit --------------------------------------------------------------------------
 
@@ -326,3 +335,44 @@ class LoginLimiter:
         with self._lock:
             self._failures.pop(ip, None)
             self._last_attempt = now
+
+    def backoff(self) -> tuple[int, float]:
+        """(IPs still waiting, the longest remaining wait in seconds), for the security page.
+
+        Read-only: unlike ``retry_after`` it takes no global slot and records nothing.
+        """
+        now = self._clock()
+        with self._lock:
+            waits = [wait for ip in self._failures if (wait := self._ip_remaining(ip, now)) > 0]
+            return len(waits), max(waits, default=0.0)
+
+
+# --- login result counters ---------------------------------------------------------------------
+
+class LoginStats:
+    """Counts of the most recent login results, for the security page.
+
+    Only the kind of each result is kept (never a password, an address or a link), at most
+    ``keep`` of them; a restart starts the counts over, like the sessions themselves.
+    """
+
+    KINDS = ("success", "wrong_password", "throttled", "no_password", "generation_conflict")
+
+    def __init__(self, keep: int = 100):
+        self.keep = keep
+        self._lock = threading.Lock()
+        self._recent: deque[str] = deque(maxlen=keep)
+
+    def record(self, kind: str) -> None:
+        if kind not in self.KINDS:
+            raise ValueError(f"unknown login result: {kind}")
+        with self._lock:
+            self._recent.append(kind)
+
+    def snapshot(self) -> dict[str, int]:
+        """How many of each kind, among the results still kept."""
+        with self._lock:
+            counts = {kind: 0 for kind in self.KINDS}
+            for kind in self._recent:
+                counts[kind] += 1
+        return counts
