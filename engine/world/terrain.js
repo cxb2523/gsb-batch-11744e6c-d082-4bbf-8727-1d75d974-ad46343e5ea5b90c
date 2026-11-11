@@ -1,7 +1,7 @@
 // Ground from blocks: the base block types every world can use, a floating
 // island shaped by noise, and Minecraft-style trees. A world adds its own
 // block types and buildings on top (see a world's build.js).
-import { rng } from './textures.js';
+import { rng } from './prng.js';
 
 export function valueNoise(seed) {
   const hash = (x, z) => {

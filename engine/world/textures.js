@@ -2,16 +2,11 @@
 // Every tile becomes one layer of a single texture array, so the island,
 // buildings and furniture share one shader.
 import * as THREE from 'three';
+import { rng } from './prng.js';
+
+export { rng };
 
 export const TILE = 16;
-
-export function rng(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
 
 const rgb = c => [(c >> 16) & 255, (c >> 8) & 255, c & 255];
 const pick = (r, list) => list[Math.floor(r() * list.length) % list.length];
