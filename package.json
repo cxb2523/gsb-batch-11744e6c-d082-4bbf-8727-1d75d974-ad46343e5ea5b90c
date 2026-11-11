@@ -1,0 +1,136 @@
+{
+  "name": "dsh-watch-together",
+  "version": "0.3.3",
+  "description": "Watch a video together, in sync with the user's real playback: every segment arrives as one storyboard image plus its subtitle lines just before it ends, while the floating window carries spoken replies and live room audio — picture and voice, not a transcript.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "video",
+    "watch-together",
+    "watch-party",
+    "companion",
+    "playback",
+    "subtitle",
+    "caption",
+    "tts"
+  ],
+  "homepage": "https://github.com/SAOS-3624/dsh-watch-together#readme",
+  "bugs": {
+    "url": "https://github.com/SAOS-3624/dsh-watch-together/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SAOS-3624/dsh-watch-together.git"
+  },
+  "author": "SAOS-3624",
+  "contributors": [
+    {
+      "name": "ggfgfgf-on",
+      "url": "https://github.com/ggfgfgf-on"
+    },
+    {
+      "name": "gao804",
+      "url": "https://github.com/gao804"
+    },
+    {
+      "name": "DreamDLYY",
+      "url": "https://github.com/DreamDLYY"
+    }
+  ],
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./register": "./src/register.js",
+    "./tool-spec": "./src/tool-spec.js",
+    "./watch": "./src/watch.js",
+    "./batches": "./src/batches.js",
+    "./chat": "./src/chat.js",
+    "./voice": "./src/voice.js",
+    "./speech-bus": "./src/speech-bus.js",
+    "./voice-adapter": "./src/voice-adapter.js",
+    "./interfaces": "./src/interfaces.js",
+    "./public-api": "./src/public-api.js",
+    "./recognition-interface": "./src/recognition-interface.js",
+    "./tts-interface": "./src/tts-interface.js",
+    "./window-interface": "./src/window-interface.js",
+    "./window-protocol": "./src/window-protocol.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "bin": {
+    "dsh-watch": "./bin/watch.mjs",
+    "dsh-watch-lines": "./bin/lines.mjs"
+  },
+  "files": [
+    "src",
+    "lib",
+    "bin",
+    "extension",
+    "scripts",
+    "docs",
+    "locale",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "CHANGELOG.md",
+    "CREDITS.md",
+    "LICENSE",
+    "NOTICE",
+    "examples/floating-chat/*.py",
+    "examples/floating-chat/*.cmd",
+    "examples/floating-chat/*.png",
+    "examples/floating-chat/*.txt",
+    "examples/voice-edge-tts/index.mjs",
+    "examples/voice-edge-tts/stream/*.mjs",
+    "examples/voice-edge-tts/stream/*.py",
+    "examples/voice-edge-tts/stream/*.mp3"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "pretest": "node scripts/sync-dep.mjs",
+    "sync:dep": "node scripts/sync-dep.mjs",
+    "prepublishOnly": "node scripts/check-syntax.mjs && node --test",
+    "check": "node scripts/check-syntax.mjs",
+    "doctor": "node bin/watch.mjs doctor",
+    "install:extension": "node bin/watch.mjs install-extension",
+    "sim": "node scripts/watch-sim.mjs",
+    "e2e": "node scripts/watch-e2e.mjs"
+  },
+  "dependencies": {
+    "dsh-video-storyboard": "^0.7.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.7"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "catalog": {
+      "category": "tool",
+      "summary": {
+        "en": "Watch a video together, in sync with the user's playback: each segment arrives as one storyboard image plus its subtitle lines just before it ends, and the floating window carries spoken replies and live room audio.",
+        "zh": "和智能体一起看视频：跟着真实播放位置，每段结束前把分镜画面 + 带秒台词交过去；悬浮窗里能出声，也听得见房间里的声音 —— 给的是画面和声音，不是一段转写文本。"
+      },
+      "capabilities": [
+        "fs",
+        "shell"
+      ]
+    }
+  }
+}

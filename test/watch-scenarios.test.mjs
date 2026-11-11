@@ -1,0 +1,377 @@
+/**
+ * watch-scenarios.test.mjs — 用仿真跑整条循环（不需要 DSH、不需要真时钟）。
+ *
+ * 每个场景都是真机上出现过的情况：
+ *   ① 正常读数            → 应该正常说话
+ *   ② 读数偶发失败         → 一次失败不该让整段失联
+ *   ③ 用户中途暂停         → 暂停期间不该说
+ *   ④ 换片                → 循环自己停
+ *   ⑤ 浏览器没了           → 先问一次，最后停表
+ *
+ * > 位置来源只有浏览器调试端口（SMTC 已于 2026-10-30 删除），所以这里的仿真只模拟
+ * > "读一次 `video.currentTime` 会得到什么"，不再有"多久刷新一次"这个概念。
+ */
+// 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
+import { saveLines } from '../src/watch.js';
+import { onSpeech } from '../src/voice.js';
+import { createSim } from './helpers/sim.mjs';
+
+// 这些用例要的是"读不到就是读不到"。关掉扩展通道，免得读到这台机器上真实的播放位置
+// （开发机上装了扩展、正好在放片时，不关会偶发失败）。
+process.env.DSH_WATCH_BRIDGE = '0';
+
+const SEGMENTS = [
+  { from: 0, to: 120 }, { from: 120, to: 240 }, { from: 240, to: 360 },
+];
+const ctxStub = { sessionController: { prompt: async () => {} } };
+/** 假的调试端口号：读数由 sim 注入，这个值只用来过 `if (!browserPort) return null` */
+const PORT = 1;
+/**
+ * 每个用例用**不同的源名**。
+ *
+ * `startWatchLoop` 对"同一个源 + 同一张批次表"是**接着跑、不重开**的（这是对的：
+ * 重复调用工具不该把已说过的段清空）。但在同一个测试进程里，那会让后一个用例
+ * 起的新仿真拿不到 tick —— 于是 runTo 一步都不走，断言全落空。
+ */
+let seq = 0;
+const INPUT = () => `case-${++seq}`;
+
+const boot = (sim, extra = {}) => {
+  startWatchLoop({
+    ctx: ctxStub, sessionId: `s-${seq}`, input: INPUT(), segments: SEGMENTS,
+    browserPort: PORT, deps: sim.deps, log: () => {},
+    // 这些场景验的就是"到点叫醒模型"——而叫醒现在是**显式 opt-in**（默认关，见 watch-loop.js）
+    wake: true, ...extra,
+  });
+};
+
+test('① 正常读数：第 1 段在段末前说话', async () => {
+  const sim = createSim();
+  boot(sim);
+  await sim.runTo(115);
+  assert.equal(sim.wakes.length, 1, `应在 1:45 说一次，实得 ${sim.wakes.length}`);
+  assert.match(sim.wakes[0].text, /00:00–02:00/);
+  stopWatchLoop('test');
+});
+
+test('① 同一段不重复说', async () => {
+  const sim = createSim();
+  boot(sim);
+  await sim.runTo(118);          // 仍在第 1 段内
+  assert.equal(sim.wakes.length, 1);
+  stopWatchLoop('test');
+});
+
+test('② 读数偶发失败：一次读不到不该让整段失联', async () => {
+  // 每 3 次读失败 1 次（CDP 偶发超时的真实形态）
+  const sim = createSim({ failEvery: 3 });
+  boot(sim);
+  await sim.runTo(130);
+  assert.equal(sim.wakes.length, 1, '读数有抖动也要能说，否则等于永远读不到');
+  stopWatchLoop('test');
+});
+
+test('③ 用户在 60–120 秒暂停：暂停期间不说，也不打扰', async () => {
+  const sim = createSim({ paused: [{ from: 60, to: 120 }] });
+  boot(sim);
+  await sim.runTo(110);
+  assert.equal(sim.wakes.length, 0, '暂停时既不该说话，也不该问"读不到进度"');
+  await sim.runTo(175);          // 恢复后位置从 60 继续走
+  assert.equal(sim.wakes.length, 1, '恢复后该补上');
+  stopWatchLoop('test');
+});
+
+test('④ 换片：循环自己停，不拿旧时间轴继续报', async () => {
+  const sim = createSim({ changes: [{ at: 50, duration: 1087 }] });
+  boot(sim);
+  await sim.runTo(60);
+  assert.equal(loopStatus().active, false);
+  assert.match(loopStatus().reason, /video-changed/);
+});
+
+test('⑤ 浏览器没了：先问一次，最后停表', async () => {
+  // 第 60 秒浏览器被关掉（或者页签被切走）
+  const sim = createSim({ deadFrom: 60 });
+  boot(sim);
+  await sim.runTo(60);
+  assert.equal(sim.wakes.length, 0, '刚断掉时还没到边界，不该说话');
+
+  await sim.runTo(200);
+  // 这段时间会有两种唤醒：① 该说话了（按外推）② 读不到位置、主动问一次。
+  // 只数"说话"那种，否则问询会把计数顶上去。
+  const spoke = sim.wakes.filter((w) => /该说话了/.test(w.text));
+  assert.equal(spoke.length, 1, `断流前该说一次，实得 ${spoke.length}`);
+
+  await sim.runTo(260);
+  const asked = sim.wakes.filter((w) => /读不到你的播放进度/.test(w.text));
+  assert.equal(asked.length, 1, `超过外推上限后应主动问一次，实得 ${asked.length}`);
+
+  await sim.runTo(820);
+  assert.equal(loopStatus().active, false, '长时间读不到就停表，不空转');
+  assert.match(loopStatus().reason, /position-unreadable/);
+});
+
+test('⑥ 窗口自己往前滚：不靠外部再调一次工具', async () => {
+  // 只给 2 段（240 秒），lookahead 300 → 循环应自己补出第 3、4 段
+  const sim = createSim({ duration: 900 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }, { from: 120, to: 240 }],
+    size: 120, lookahead: 300, deps: sim.deps, log: () => {}, wake: true,
+  });
+  const first = loopStatus().segments;
+  await sim.runTo(400);
+  assert.ok(loopStatus().segments > first, `窗口应随进度增长（起始 ${first}）`);
+  assert.ok(sim.wakes.length >= 3, `应说至少 3 次，实得 ${sim.wakes.length}`);
+  stopWatchLoop('test');
+});
+
+test('⑦ 窗口不会无限长（跟着 lookahead 走）', async () => {
+  const sim = createSim({ duration: 900 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }],
+    size: 120, lookahead: 300, deps: sim.deps, log: () => {},
+  });
+  await sim.runTo(600);
+  const n = loopStatus().segments;
+  // 10 分钟 / 2 分钟一段 = 5 段，加 lookahead 3 段 → 最多约 8 段
+  assert.ok(n <= 10, `不该排到整片，实得 ${n} 段`);
+  stopWatchLoop('test');
+});
+
+test('⑧ 双缓冲：当前批次还没用完，下一个已经建好了', async () => {
+  const built = [];
+  const sim = createSim({ duration: 900 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }, { from: 120, to: 240 }],
+    size: 120, depth: 2,
+    deps: {
+      ...sim.deps,
+      build: async (from) => { built.push(from); },
+    },
+    log: () => {},
+  });
+  // 看到 100 秒：第 0 段还在看，第 120 段应该已经建好了
+  await sim.runTo(100);
+  assert.ok(built.includes(120), `第 2 段应在第 1 段结束前建好，实际建了 ${built.join(',') || '无'}`);
+  assert.ok(!built.includes(240), '第 3 段这时还不该建（只保留 2 个批次）');
+  stopWatchLoop('test');
+});
+
+test('⑨ 换批次后立刻开始建再下一个（永远留一个余量）', async () => {
+  const built = [];
+  const sim = createSim({ duration: 1200 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }, { from: 120, to: 240 }],
+    size: 120, depth: 2,
+    deps: { ...sim.deps, build: async (from) => { built.push(from); } },
+    log: () => {},
+  });
+  await sim.runTo(150);          // 已经进入第 2 段
+  assert.ok(built.includes(240), `应已开始建第 3 段，实际 ${built.join(',')}`);
+  stopWatchLoop('test');
+});
+
+test('⑩ 视频播完就停（不再白转）', async () => {
+  const sim = createSim({ duration: 200 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
+    deps: {
+      ...sim.deps,
+      readBrowser: async () => ({
+        pos: 199, dur: 200, paused: false, ended: true, url: 'file:///x.mp4',
+      }),
+    },
+    log: () => {},
+  });
+  await sim.runTo(5);       // 假 ticker 只在 runTo 里被驱动，sleep 不会推进
+  assert.equal(loopStatus().active, false);
+  assert.equal(loopStatus().reason, 'video-ended');
+});
+
+test('⑪ 从头就读不到：5 分钟后停（别一直去连不存在的端口）', async () => {
+  const sim = createSim({ deadFrom: 0 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
+    deps: sim.deps, log: () => {},
+    wake: true,
+  });
+  await sim.runTo(200);
+  assert.equal(loopStatus().active, true, '宽限期内还在等');
+  await sim.runTo(340);
+  assert.equal(loopStatus().active, false);
+  assert.equal(loopStatus().reason, 'position-unreadable');
+});
+
+test('⑫ 变速启动：第一批 1 分钟，50 秒左右就说第一次，不用等 5 分钟', async () => {
+  const sim = createSim({ duration: 1200 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segment: 300, ramp: [60, 120, 180, 240], depth: 2,
+    deps: sim.deps, log: () => {},
+    wake: true,
+  });
+  const plan = loopStatus().batchPlan;
+  assert.match(plan, /1m → 2m → 3m → 4m → 5m/);
+
+  await sim.runTo(55);
+  assert.equal(sim.wakes.length, 1, '第一批只有 60 秒，55 秒时应该已经说过一次');
+  // 第一批的段末前 15 秒 = 45 秒
+  const first = sim.wakes[0].at / 1000;
+  assert.ok(first >= 45 && first <= 55, `第一次应在 45–55 秒之间，实得 ${first}`);
+  stopWatchLoop('test');
+});
+
+test('⑬ 段边界随阶梯走：第二批是 60–180 秒', async () => {
+  const sim = createSim({ duration: 1200 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segment: 300, ramp: [60, 120, 180, 240], depth: 2,
+    deps: { ...sim.deps, build: null }, log: () => {}, wake: true,
+  });
+  await sim.runTo(200);
+  const texts = sim.wakes.map((w) => w.text);
+  assert.ok(texts.some((t) => /01:00–03:00/.test(t)), `第二批应是 01:00–03:00，实际：${texts.join(' | ')}`);
+  stopWatchLoop('test');
+});
+
+test('⑭ 高频模式：每 10 秒叫一次，不受批次边界限制', async () => {
+  const sim = createSim({ duration: 600 });
+  let wakes = 0;
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segment: 300, ramp: [], depth: 2, speakEvery: 10,
+    deps: { ...sim.deps, wake: async () => { wakes += 1; return { ok: true }; } },
+    log: () => {}, wake: true,
+  });
+  await sim.runTo(55);
+  // 10/20/30/40/50 秒各一次 → 大约 5 次（第一次从 0 起算，可能多一次）
+  assert.ok(wakes >= 4 && wakes <= 6, `应叫 4–6 次，实得 ${wakes}`);
+  stopWatchLoop('test');
+});
+
+test('⑮ 高频模式在暂停时闭嘴', async () => {
+  const sim = createSim({ paused: [{ from: 5, to: 300 }] });
+  let wakes = 0;
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
+    segment: 300, ramp: [], depth: 2, speakEvery: 5,
+    deps: {
+      ...sim.deps,
+      // 暂停状态要读得勤才知道：默认 15 秒一次，测试里缩到 2 秒
+      probeEveryMs: 2000,
+      wake: async () => { wakes += 1; return { ok: true }; },
+    },
+    log: () => {},
+  });
+  await sim.runTo(40);
+  assert.ok(wakes <= 3, `暂停后不该继续叫（读取有延迟，允许头几次），实得 ${wakes}`);
+  stopWatchLoop('test');
+});
+
+test('⑯ 台词库存不足时叫醒模型补写（只有这一件事该叫它）', async () => {
+  const sim = createSim({ duration: 900 });
+  const wakes = [];
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's1', input: 'no-lines.mp4', browserPort: PORT,
+    segment: 60, ramp: [], depth: 2, refillBelow: 2,
+    deps: { ...sim.deps, wake: async (_c, o) => { wakes.push(o.text); return { ok: true }; } },
+    log: () => {}, wake: true,
+  });
+  await sim.runTo(10);
+  assert.equal(wakes.length, 1, '库存为空时应该叫一次');
+  assert.match(wakes[0], /补词/, '要说清是缺词');
+  assert.match(wakes[0], /01:00–02:00/, '要指出缺哪一段');
+  stopWatchLoop('test');
+});
+
+test('⑰ 有声音订阅者时，到点的台词交给它念，不叫醒模型', async () => {
+  // 位置每 15 秒才探一次（PROBE_EVERY_MS），所以第一句要放在 16 秒之后 ——
+  // 放在 06 秒会被"迟到作废"直接丢掉（位置第一次可读时已经过 12 秒了）。
+  const sim = createSim({ duration: 900 });
+  let woken = 0;
+  const heard = [];
+  // scheduled 只是让适配器预合成的清单，不是"到点该念"；这里只数 due。
+  const off = onSpeech((e) => { if (e.state === 'due') heard.push(e.text); });
+  try {
+    await saveLines('voice.mp4', [
+      { from: 0, at: 16, text: '第一句' },
+      { from: 0, at: 24, text: '第二句' },
+    ]);
+    startWatchLoop({
+      ctx: ctxStub, sessionId: 's1', input: 'voice.mp4', browserPort: PORT,
+      segment: 60, ramp: [], depth: 2,
+      deps: { ...sim.deps, wake: async () => { woken += 1; return { ok: true }; } },
+      log: () => {},
+    });
+    await sim.runTo(30);
+    assert.deepEqual(heard, ['第一句', '第二句'], '两句都该按 at 交出去');
+    assert.equal(woken, 0, `交给订阅者之后不该再叫醒模型，实得 ${woken}`);
+    assert.equal(loopStatus().voice.listeners, 1);
+  } finally {
+    off();
+    stopWatchLoop('test');
+  }
+});
+
+// ---------------------------------------------------------------- 半路发生的事
+
+test('⑱ 换片：停表之外还要叫醒模型一次，否则它会一直沉默', async () => {
+  const sim = createSim({ changes: [{ at: 50, duration: 1087 }] });
+  boot(sim);
+  await sim.runTo(60);
+  assert.equal(loopStatus().active, false);
+  assert.match(loopStatus().reason, /video-changed/);
+  const changed = sim.wakes.filter((w) => /换片了/.test(w.text));
+  assert.equal(changed.length, 1, `换片要叫醒一次，实得 ${changed.length}`);
+  assert.match(changed[0].text, /watch_together/, '要说清下一步该做什么');
+});
+
+test('⑲ 播完：同样要叫醒一次，让模型收尾', async () => {
+  const sim = createSim({ duration: 150 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's-end', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
+    deps: sim.deps, log: () => {},
+    wake: true,
+  });
+  // 位置每 15 秒才读一次，所以要跑到片尾之后**再等一拍**才会读到 ended
+  await sim.runTo(180);
+  assert.equal(loopStatus().active, false);
+  assert.equal(loopStatus().reason, 'video-ended');
+  const ended = sim.wakes.filter((w) => /播完了/.test(w.text));
+  assert.equal(ended.length, 1, `片尾要叫醒一次，实得 ${ended.length}`);
+});
+
+test('⑳ 拖进度条（前进）：叫醒一次，告诉模型位置跳到哪了', async () => {
+  const sim = createSim({ duration: 900, seeks: [{ at: 100, to: 300 }] });
+  boot(sim);
+  await sim.runTo(140);
+  const jumps = sim.wakes.filter((w) => /拖了进度条/.test(w.text));
+  assert.equal(jumps.length, 1, `大跳转要叫醒一次，实得 ${jumps.length}`);
+  assert.match(jumps[0].text, /跳到 \d{2}:\d{2}（原来到 \d{2}:\d{2}）/, '要说清跳到第几秒、原来到第几秒');
+  stopWatchLoop('test');
+});
+
+test('㉑ 回看：位置对得上，但说过的段不复读', async () => {
+  // 先正常看到 110 秒（第 1 段说过一次），再拖回 20 秒
+  const sim = createSim({ duration: 900, seeks: [{ at: 120, to: 20 }] });
+  boot(sim);
+  await sim.runTo(130);
+  const jumps = sim.wakes.filter((w) => /回看到/.test(w.text));
+  assert.equal(jumps.length, 1, `回看也要叫醒一次，实得 ${jumps.length}`);
+  const spoke = sim.wakes.filter((w) => /该说话了/.test(w.text));
+  assert.equal(spoke.length, 1, `回到看过的段不该再说一遍，实得 ${spoke.length}`);
+  stopWatchLoop('test');
+});
