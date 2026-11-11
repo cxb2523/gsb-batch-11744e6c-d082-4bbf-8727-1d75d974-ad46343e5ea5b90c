@@ -1,0 +1,113 @@
+{
+  "author": {
+    "name": "Jens Oliver Meiert",
+    "url": "https://meiert.com/"
+  },
+  "contributors": [
+    {
+      "name": "Chen Fengyuan",
+      "url": "https://chenfengyuan.com/"
+    }
+  ],
+  "description": "JavaScript image compressor and converter",
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@babel/core": "^8.1.0",
+    "@babel/preset-env": "^8.0.7",
+    "@eslint/js": "^10.0.1",
+    "@rollup/plugin-babel": "^7.1.0",
+    "@rollup/plugin-commonjs": "^29.0.3",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@vitest/browser-playwright": "^5.1.0",
+    "@vitest/coverage-istanbul": "^5.1.0",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "husky": "^9.1.7",
+    "playwright": "^1.65.0",
+    "publint": "^0.3.25",
+    "rollup": "^4.68.2",
+    "stylelint": "^18.0.0",
+    "stylelint-config-standard": "^41.0.0",
+    "stylelint-order": "^8.1.3",
+    "terser": "^5.51.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/compressor.esm.js"
+    },
+    "./dist/compressor.esm.min.js": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/compressor.esm.min.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "types"
+  ],
+  "homepage": "https://github.com/j9t/compressorjs-next",
+  "keywords": [
+    "blob",
+    "browser",
+    "canvas",
+    "client-side",
+    "compress",
+    "compressor",
+    "compressorjs",
+    "compressorjs-next",
+    "conversion",
+    "converter",
+    "image",
+    "image-compression",
+    "image-processing",
+    "image-upload",
+    "javascript",
+    "jpeg",
+    "jpg",
+    "lossy-compression",
+    "png",
+    "webp"
+  ],
+  "license": "MIT",
+  "name": "compressorjs-next",
+  "overrides": {
+    "@rollup/plugin-babel": {
+      "@babel/core": "$@babel/core"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/j9t/compressorjs-next.git"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "clean": "node --input-type=module --eval \"import {rmSync} from 'fs';rmSync('dist',{recursive:true,force:true})\"",
+    "compress": "terser dist/compressor.esm.js -o dist/compressor.esm.min.js -c -m --module --comments /^!/ --source-map \"content='dist/compressor.esm.js.map',url='compressor.esm.min.js.map'\"",
+    "dev": "rollup -c -m -w & npx serve docs",
+    "dist": "npm run build && npm run compress",
+    "lint": "npm run lint:js && npm run lint:css",
+    "lint:css": "stylelint docs/**/*.css --fix",
+    "lint:js": "eslint src test",
+    "prepare": "husky",
+    "release": "npm run clean && npm run lint && npm run test:types && npm run test:package && npm run test:browser:all",
+    "setup:browsers": "playwright install chromium",
+    "start": "npm run dev",
+    "test": "npm run test:types && npm run test:browser && npm run test:package",
+    "test:browser": "npm run setup:browsers && vitest run --project=chromium",
+    "test:browser:all": "playwright install && vitest run",
+    "test:coverage": "npm run setup:browsers && vitest run --coverage --project=chromium",
+    "test:node": "node --test \"test/node/*.test.js\"",
+    "test:package": "npm run dist && npm run test:node && npm run test:publish",
+    "test:publish": "publint && attw --pack . --profile esm-only",
+    "test:types": "tsc",
+    "test:watch": "npm run setup:browsers && vitest --project=chromium"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "types/index.d.ts",
+  "version": "3.0.1"
+}

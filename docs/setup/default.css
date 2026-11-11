@@ -1,0 +1,63 @@
+h1 + p,
+.heart {
+  margin-bottom: 0;
+}
+
+label,
+button {
+  cursor: pointer;
+}
+
+[v-cloak] {
+  display: none;
+}
+
+.footer {
+  font-size: .875rem;
+}
+
+.heart,
+.heart::before{
+  display: block;
+}
+
+.heart,
+.heart::after{
+  position: relative;
+}
+
+.heart,
+img-comparison-slider,
+img-comparison-slider img {
+  width: 100%;
+}
+
+.heart {
+  color: #ddd;
+  height: 2rem;
+  line-height: 2rem;
+  margin-top: 1rem;
+  text-align: center;
+}
+
+.heart:hover {
+  color: #ff4136;
+}
+
+.heart::before {
+  border-top: 1px solid #eee;
+  content: " ";
+  height: 0;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 50%;
+}
+
+.heart::after {
+  background-color: #fff;
+  content: "♥";
+  padding-left: .5rem;
+  padding-right: .5rem;
+  z-index: 1;
+}

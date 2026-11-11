@@ -1,0 +1,347 @@
+# Compressor.js Next
+
+[![npm version](https://img.shields.io/npm/v/compressorjs-next.svg)](https://www.npmjs.com/package/compressorjs-next) [![Build status](https://github.com/j9t/compressorjs-next/workflows/Tests/badge.svg)](https://github.com/j9t/compressorjs-next/actions) [![Socket](https://badge.socket.dev/npm/package/compressorjs-next)](https://socket.dev/npm/package/compressorjs-next) [![GitHub Sponsors](https://badgen.net/static/Support/Open%20Source/cyan)](https://github.com/sponsors/j9t)
+
+Modernized, optimized, and maintained fork of [Fengyuan Chen’s Compressor.js](https://github.com/fengyuanchen/compressorjs).
+
+A JavaScript image compressor and converter. Uses the browser’s native [HTMLCanvasElement.toBlob()](https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/toBlob) method to do the compression work, which means it is **lossy compression**, **asynchronous**, and has **different compression effects in different browsers**. Generally use this to precompress an image on the client side before uploading it.
+
+## Table of contents
+
+* [Migrating from Compressor.js](#migrating-from-compressorjs)
+* [Main files](#main-files)
+* [Getting started](#getting-started)
+* [Options](#options)
+* [Methods](#methods)
+* [Browser support](#browser-support)
+
+## Migrating from Compressor.js
+
+Change the package name from `compressorjs` to `compressorjs-next` in your package.json and imports (`import Compressor from 'compressorjs-next'`).
+
+The API is otherwise the same, with the following exceptions (see [the changelog](https://github.com/j9t/compressorjs-next/blob/main/CHANGELOG.md) for the full history):
+
+* The package is ESM-only
+* The type declarations are an ES module, so `Compressor.Options` resolves only where the class is imported, and a named `Options` export is available as well
+* The `checkOrientation` option has been removed, as all supported browsers now handle EXIF orientation natively
+* The default for `convertTypes` has changed from `['image/png']` to `[]`
+* The `noConflict()` method has been removed
+* Internet Explorer is no longer supported
+
+## Main files
+
+```text
+dist/
+├── compressor.esm.js     (ES Module)
+└── compressor.esm.min.js (ES Module, compressed)
+```
+
+Both builds ship with source maps, which resolve against the published `src/`.
+
+The package is ESM-only. There is no UMD or CommonJS build, so `require()` does not resolve—use `import` (or a bundler) instead.
+
+## Getting started
+
+### Install
+
+```shell
+npm i -D compressorjs-next
+```
+
+### Usage
+
+#### Syntax
+
+```js
+new Compressor(file[, options])
+```
+
+**`file`**
+
+* Type: [`File`](https://developer.mozilla.org/en-US/docs/Web/API/File) or [`Blob`](https://developer.mozilla.org/en-US/docs/Web/API/Blob)
+
+The target image file for compressing.
+
+**`options`**
+
+* Type: `Object`
+* Optional
+
+The options for compressing. Check out the available [options](#options).
+
+#### Example
+
+```html
+<input type="file" id="file" accept="image/*">
+```
+
+```js
+import axios from 'axios';
+import Compressor from 'compressorjs-next';
+
+document.getElementById('file').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+
+  if (!file) {
+    return;
+  }
+
+  const compressor = new Compressor(file, {
+    quality: 0.6,
+
+    // The compression process is asynchronous,
+    // which means you have to access the `result` in the `success` hook function.
+    success(result) {
+      const formData = new FormData();
+
+      // The third parameter is required for server
+      formData.append('file', result, result.name);
+
+      // Send the compressed image file to server with XMLHttpRequest.
+      axios.post('/path/to/upload', formData).then(() => {
+        console.log('Upload success');
+      });
+    },
+    error(err) {
+      console.log(err.message);
+    },
+  });
+
+});
+```
+
+## Options
+
+You may set compressor options with `new Compressor(file, options)`. If you want to change the global default options, you may use `Compressor.setDefaults(options)`.
+
+### `strict`
+
+* Type: `boolean`
+* Default: `true`
+
+Indicates whether to output the original image instead of the compressed one when the size of the compressed image is greater than the original one’s, except the following cases:
+
+* The `retainExif` option is set to `true`.
+* The `mimeType` option is set and its value is different from the mime type of the image.
+* The `width` option is set and its value is greater than the natural width of the image.
+* The `height` option is set and its value is greater than the natural height of the image.
+* The `minWidth` option is set and its value is greater than the natural width of the image.
+* The `minHeight` option is set and its value is greater than the natural height of the image.
+* The `maxWidth` option is set and its value is less than the natural width of the image.
+* The `maxHeight` option is set and its value is less than the natural height of the image.
+
+### `retainExif`
+
+* Type: `boolean`
+* Default: `false`
+
+Indicates whether to retain the image’s Exif information after compressed.
+
+### `maxWidth`
+
+* Type: `number`
+* Default: `Infinity`
+
+The max width of the output image. The value should be greater than `0`.
+
+Avoid getting a blank output image, you might need to set the `maxWidth` and `maxHeight` options to limited numbers, because of [the size limits of a canvas element](https://stackoverflow.com/questions/6081483/maximum-size-of-a-canvas-element), recommend to use `4096` or lesser.
+
+### `maxHeight`
+
+* Type: `number`
+* Default: `Infinity`
+
+The max height of the output image. The value should be greater than `0`.
+
+### `minWidth`
+
+* Type: `number`
+* Default: `0`
+
+The min width of the output image. The value should be greater than `0` and should not be greater than the `maxWidth`.
+
+### `minHeight`
+
+* Type: `number`
+* Default: `0`
+
+The min height of the output image. The value should be greater than `0` and should not be greater than the `maxHeight`.
+
+### `width`
+
+* Type: `number`
+* Default: `undefined`
+
+The width of the output image. If not specified, the natural width of the original image will be used, or if the `height` option is set, the width will be computed automatically by the natural aspect ratio.
+
+### `height`
+
+* Type: `number`
+* Default: `undefined`
+
+The height of the output image. If not specified, the natural height of the original image will be used, or if the `width` option is set, the height will be computed automatically by the natural aspect ratio.
+
+### `resize`
+
+* Type: `string`
+* Default: `"none"`
+* Options: `"none"`, `"contain"`, and `"cover"`
+
+Sets how the size of the image should be resized to the container specified by the `width` and `height` options.
+
+**Note:** This option only available when both the `width` and `height` options are specified.
+
+### `quality`
+
+* Type: `number`
+* Default: `0.8`
+
+The quality of the output image. It must be a number between `0` and `1`. If this argument is anything else, the default values `0.92` and `0.80` are used for `image/jpeg` and `image/webp` respectively. Other arguments are ignored. Be careful to use `1` as it may make the size of the output image become larger.
+
+**Note:** This option only available for `image/jpeg` and `image/webp` images.
+
+> Check out the documentation of the [HTMLCanvasElement.toBlob()](https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/toBlob) method for more detail.
+
+**Examples:**
+
+| `quality` | Input size | Output size | Compression ratio | Description |
+| --- | --- | --- | --- | --- |
+| 0 | 2.12 MB | 114.61 KB | 94.72% | — |
+| 0.2 | 2.12 MB | 349.57 KB | 83.90% | — |
+| 0.4 | 2.12 MB | 517.10 KB | 76.18% | — |
+| 0.6 | 2.12 MB | 694.99 KB | 67.99% | Recommend |
+| 0.8 | 2.12 MB | 1.14 MB | 46.41% | Recommend |
+| 1 | 2.12 MB | 2.12 MB | 0% | Not recommend |
+| NaN | 2.12 MB | 2.01 MB | 5.02% | — |
+
+### `mimeType`
+
+* Type: `string`
+* Default: `'auto'`
+* Options: `"auto"`, `"image/png"`, `"image/jpeg"`, and `"image/webp"`
+
+The [MIME type](https://webglossary.info/terms/mime-type/) of the output image. By default, the original MIME type of the source image file will be used.
+
+**Note:** Safari does not support `mimeType` conversion to `"image/webp"`. For more details, see the [browser compatibility of the `HTMLCanvasElement.toBlob()` method](https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/toBlob#browser_compatibility).
+
+### `convertTypes`
+
+* Type: `Array` or `string` (multiple types should be separated by commas)
+* Default: `[]`
+* Examples:
+  - `["image/png", "image/webp"]`
+  - `"image/png,image/webp"`
+
+Files whose file type is included in this list and whose file size exceeds the `convertSize` value will be converted to JPEG.
+
+For image file type support, see the [Image file type and format guide](https://developer.mozilla.org/en-US/docs/Web/Media/Formats/Image_types).
+
+### `convertSize`
+
+* Type: `number`
+* Default: `5000000` (5 MB)
+
+Files whose file type is included in the `convertTypes` list and whose file size exceeds this value will be converted to JPEG. Can also be disabled through the value `Infinity`.
+
+**Examples:**
+
+| `convertSize` | Input size (type) | Output size (type) | Compression ratio |
+| --- | --- | --- | --- |
+| 5 MB | 1.87 MB (PNG) | 1.87 MB (PNG) | 0% |
+| 5 MB | 5.66 MB (PNG) | 450.24 KB (JPEG) | 92.23% |
+| 5 MB | 9.74 MB (PNG) | 883.89 KB (JPEG) | 91.14% |
+
+### `beforeDraw(context, canvas)`
+
+* Type: `Function`
+* Default: `null`
+* Parameters:
+  - `context`: The 2d rendering context of the canvas.
+  - `canvas`: The canvas for compression.
+
+The hook function executes before drawing the image into the canvas for compression.
+
+```js
+new Compressor(file, {
+  beforeDraw(context, canvas) {
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.filter = 'grayscale(100%)';
+  },
+});
+```
+
+### `drew(context, canvas)`
+
+* Type: `Function`
+* Default: `null`
+* Parameters:
+  - `context`: The 2d rendering context of the canvas.
+  - `canvas`: The canvas for compression.
+
+The hook function executes after drawing the image into the canvas for compression.
+
+```js
+new Compressor(file, {
+  drew(context, canvas) {
+    context.fillStyle = '#fff';
+    context.font = '2rem serif';
+    context.fillText('watermark', 20, canvas.height - 20);
+  },
+});
+```
+
+### `success(result)`
+
+* Type: `Function`
+* Default: `null`
+* Parameters:
+  - `result`: The compressed image (a [`File`](https://developer.mozilla.org/en-US/docs/Web/API/File) object, which is also a `Blob`).
+
+The hook function executes when it succeeds to compress the image.
+
+### `error(err)`
+
+* Type: `Function`
+* Default: `null`
+* Parameters:
+  - `err`: The compression error (an `Error` object).
+
+The hook function executes when it fails to compress the image.
+
+## Methods
+
+### `abort()`
+
+Abort the compression process.
+
+```js
+const compressor = new Compressor(file);
+
+// Do something…
+compressor.abort();
+```
+
+## Browser support
+
+Supports [browserslist `defaults`](https://browsersl.ist/#q=defaults), every browser of which supports ES modules natively.
+
+Bundlers pick the package up through its `exports` field. To load it straight into a page, without a build step, use a module script:
+
+```html
+<script type="module">
+  import Compressor from './node_modules/compressorjs-next/dist/compressor.esm.js';
+
+  // …
+</script>
+```
+
+**Note:** When the browser’s canvas produces unreliable pixel data—as with Firefox’s `privacy.resistFingerprinting` setting or privacy-focused forks like LibreWolf—, compression, resizing, and format conversion are not possible. In this case, the library falls back to returning the original image with EXIF data stripped (JPEG) or unchanged (other formats).
+
+***
+
+You might like some of my other work:
+
+* Optimization tools: [hihtml](https://github.com/j9t/hihtml) · [HTML Minifier](https://github.com/j9t/html-minifier) · [ObsoHTML](https://github.com/j9t/obsohtml) · [CSS Dedup](https://github.com/j9t/css-dedup) · [Image Guard](https://github.com/j9t/image-guard) · Compressor.js Next · [.htaccess Punk](https://github.com/j9t/htaccess-punk)
+* Defense tools: [IA Defensa](https://iadefensa.com/solutions/)
+* Resources for quality web development: [Articles](https://meiert.com/topics/development/) · [Books](https://meiert.com/topics/books/) (e.g., [_On Web Development_](https://meiert.com/blog/on-web-development-2/)) · [News](https://dxsrc.org/) · [Terminology](https://webglossary.info/)

@@ -1,0 +1,164 @@
+# Changelog
+
+All notable changes to Compressor.js Next are documented in this file, which is (mostly) AI-generated and (always) human-edited. Dependency updates may or may not be called out specifically.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.0.1] - 2026-10-02
+
+### Changed
+
+* Replaced the `del-cli`-based `clean` script with a native `fs.rmSync()` one-liner, removing the `del-cli` development dependency
+
+## [3.0.0] - 2026-08-31
+
+### Fixed
+
+* Fixed EXIF orientation not being reset when the Exif APP1 segment was not the first `FF E1` sequence in the file (as when a photo also carries an XMP packet), which left `retainExif: true` output rotated twice
+* Fixed EXIF handling on JPEGs whose markers are preceded by `0xFF` fill bytes, or that carry a standalone marker with no segment length, both of which the format permits
+* Fixed a `lastModified` timestamp of `0` being replaced with the current time when stripping EXIF from an original file
+* Fixed the type declarations leaking `Compressor` and `Compressor.Options` into the global scope of every project importing the package
+* Corrected relative imports in the published src/ to carry `.js` extensions, so the sources resolve under Node’s ESM loader
+
+### Added
+
+* Added a named `Options` export to the type declarations, alongside the existing `Compressor.Options`
+* Added source maps for `dist/compressor.esm.js` and `dist/compressor.esm.min.js`, which resolve against the published `src/`
+* Exposed `compressorjs-next/dist/compressor.esm.min.js` through the `exports` map, so the minified build the README documents can be imported
+
+### Changed
+
+* **BREAKING:** Removed the UMD and CommonJS builds—the package is now ESM-only, shipping `dist/compressor.esm.js` and `dist/compressor.esm.min.js` (i.e., `require()` no longer resolves; use `import`, a bundler, or a `<script type="module">` tag)
+* Consolidated four near-identical `FileReader` blocks and four output-`File` constructions in `Compressor`, and reduced three separate JPEG segment parsers to one
+
+## [2.0.6] - 2026-08-18
+
+### Changed
+
+* Forced update with the latest dependencies
+
+## [2.0.5] - 2026-08-02
+
+### Changed
+
+* Forced update with the latest dependencies
+
+## [2.0.4] - 2026-05-16
+
+### Changed
+
+* Bumped version to provide release with up-to-date dependencies
+
+## [2.0.3] - 2026-04-08
+
+### Fixed
+
+* Resolved a race condition where `blob.arrayBuffer()` rejecting as a microtask (before a `setTimeout`-deferred `abort()` could set `this.aborted`) caused an unhandled promise rejection and a non-zero exit code in CI
+
+### Changed
+
+* Pulled all dependencies up over missing notifications (special case as this is normally done on a regular basis, folded into regular releases)
+
+## [2.0.2] - 2026-03-17
+
+### Changed
+
+* Replaced manual browser global declarations in ESLint config with `globals.browser` from the `globals` package
+
+## [2.0.1] - 2026-02-27
+
+### Fixed
+
+* Updated compressed result to be returned as a `File` object rather than a plain `Blob`, so `instanceof File` checks pass without manual conversion ([fengyuanchen/compressorjs#146](https://github.com/fengyuanchen/compressorjs/issues/146))
+
+## [2.0.0] - 2026-02-20
+
+### Fixed
+
+* Ensured EXIF data is consistently stripped across all browsers when `retainExif` is false—WebKit’s canvas previously preserved the source EXIF in JPEG output
+
+### Changed
+
+* Expanded browser test matrix to include Firefox and WebKit (in addition to Chromium)
+
+### Removed
+
+* Removed `checkOrientation` option—all modern browsers now apply EXIF orientation natively via `image-orientation: from-image` (including in `canvas.drawImage()`), making manual correction redundant
+
+## [1.1.2] - 2026-02-16
+
+### Fixed
+
+* Added `types` condition to `exports` field so TypeScript finds type declarations with modern `moduleResolution` settings ([#21](https://github.com/j9t/compressorjs-next/issues/21))
+
+## [1.1.1] - 2026-02-15
+
+### Fixed
+
+* Added detection for unreliable canvas (e.g., Firefox `privacy.resistFingerprinting`), falling back to returning the original image with EXIF stripped, instead of silently corrupted output ([fengyuanchen/compressorjs#177](https://github.com/fengyuanchen/compressorjs/issues/177))
+
+### Added
+
+* Added warning when canvas is unreliable or produces no output
+
+### Removed
+
+* Removed deprecated `lastModifiedDate` property from output (use `lastModified` instead)
+
+## [1.1.0] - 2026-02-12
+
+### Fixed
+
+* Explicit `mimeType` option is no longer overridden by `convertTypes`/`convertSize` auto-conversion
+
+### Changed
+
+* **BREAKING:** Changed `convertTypes` default from `['image/png']` to `[]` to preserve PNG transparency by default ([fengyuanchen/compressorjs#184](https://github.com/fengyuanchen/compressorjs/issues/184)) [not made major release due to package being so new]
+
+## [1.0.2] - 2026-02-12
+
+### Changed
+
+* Tightened package documentation
+
+## [1.0.1] - 2026-02-11
+
+### Changed
+
+* Simplified demo
+* Added makeshift development server option
+
+## [1.0.0] - 2026-02-11
+
+### Fixed
+
+* Fixed blob URL memory leak in error and abort paths
+* Fixed deprecated `substr()` usage
+
+### Changed
+
+* **BREAKING:** Adopted [Compressor.js](https://github.com/fengyuanchen/compressorjs) as Compressor.js Next
+* **BREAKING:** Made ESM the default module format via `exports` field (CommonJS still supported)
+* **BREAKING:** Removed `noConflict()` method
+* **BREAKING:** Dropped Internet Explorer support
+* Updated all dependencies
+* Migrated from Karma/Mocha/Chai to Vitest with browser mode for cleaner ESM-native testing
+* Updated `.browserslistrc` to target only modern browsers, reducing transpilation overhead
+* Added `"type": "module"` for native ESM support
+* Added `"sideEffects": false` for better tree-shaking support
+* Converted all test files to `async`/`await` pattern
+* Added unit tests for utility functions
+* Added tests for blob URL cleanup verification
+* Updated TypeScript declarations
+* Replaced `uglify-js` with `terser`
+* Migrated to ESLint flat config
+* Reviewed and revised entire project
+* Refactored binary handling functions (`getExif`, `insertExif`, `arrayBufferToDataURL`) to use `DataView` instead of `Array.from()` for significantly better memory efficiency on large images
+
+### Removed
+
+* Removed unused dependencies
+* Removed `blueimp-canvas-to-blob` dependency (`canvas.toBlob()` now universally supported)
+* Removed `is-blob` dependency (use native `instanceof Blob`)
+* Removed Karma/Mocha/Chai testing stack
+* Removed issue report templates and requirements
