@@ -1,0 +1,293 @@
+// Split-Flap accounts API, a Cloudflare Worker on maclaine.se/split-flap/api/*.
+// Sign-in is Better Auth (Google only). Boards are stored as the app sent them, after a
+// check that the app's own sanitizer accepts them: the app and this Worker deploy
+// separately, so a server that stored its own sanitized copy would strip every field it
+// does not know yet. The app sanitizes everything it loads.
+//
+// Routes (all under /split-flap/api):
+//   /auth/*              Better Auth (sign in with Google, callback, sign out, session)
+//   GET    /me           the signed-in account: id, first name, email
+//   GET    /boards       every board of the account, tombstones included
+//   PUT    /boards/:id   { board, baseRev }: saved if baseRev matches, else 409 with ours
+//   DELETE /boards/:id   { baseRev }: a tombstone, so other devices remove it too
+//   GET    /blueprints, PUT and DELETE /blueprints/:id   My boards (0.7.1), the same rules
+//   GET    /connections, PUT and DELETE /connections/:id your own sources (0.9.2), values sealed
+//   GET    /playlists, PUT and DELETE /playlists/:id      playlists by reference (0.10.1); the first
+//          request moves the account's storyboards over, once, in one batch (migrate below)
+//   GET    /settings, PUT and DELETE /settings/:id        Home and what was last shown (0.10.1)
+//   GET    /export       the account, its boards and its blueprints as one JSON file
+//   DELETE /account      the account, its sessions, its boards and its blueprints
+//   GET    /data/*       live data for tiles, cached, no sign-in (0.8, see data.js)
+//   POST   /e            anonymous usage counts, no sign-in (0.11.5, see events.js)
+
+import { betterAuth } from 'better-auth';
+import { makeSignature } from 'better-auth/crypto';
+import { authOptions } from './auth.js';
+import { sanitizeBoard, sanitizeBlueprint, sanitizePlaylist, sanitizeSettings } from '../../src/store.js';
+import { migrateData } from '../../src/library.js';
+import { sanitizeConnection } from '../../src/connections.js';
+import { sealKey, seal, unseal } from './seal.js';
+import { beforeFeed, afterSave } from './feeds.js';
+import { data } from './data.js';
+import { events } from './events.js';
+export { Markets } from './markets.js';   // the Durable Object in front of Alpha Vantage (0.9)
+
+const API = '/split-flap/api';
+const MAX_BOARDS = 50, MAX_BYTES = 262144;
+// The two kinds of stored object. They share every rule; only the table, the limit and
+// the check differ. A storyboard is a stored board; a blueprint is one board in My boards.
+const KINDS = {
+  boards: { table: 'board', max: MAX_BOARDS, full: 'too_many_boards', ok: sanitizeBoard },
+  // from 0.10.1 every board of the account, once: the blueprint table is the library
+  blueprints: { table: 'blueprint', max: 500, full: 'too_many_blueprints', ok: sanitizeBlueprint },
+  playlists: { table: 'playlist', max: 100, full: 'too_many_playlists', ok: sanitizePlaylist },
+  settings: { table: 'settings', max: 10, full: 'too_many_settings', ok: sanitizeSettings },
+  // Connections (0.9.2): the value is sealed before it is stored and opened for its owner
+  connections: { table: 'connection', max: 50, full: 'too_many_connections', ok: sanitizeConnection, sealed: true, before: beforeFeed, after: afterSave }
+};
+
+let cached = null;   // one Better Auth instance per Worker instance, not per request
+const authFor = env => cached || (cached = betterAuth(authOptions(env, env.DB)));
+
+const json = (body, status = 200, extra = {}) => new Response(JSON.stringify(body), {
+  status, headers: Object.assign({ 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }, extra)
+});
+const fail = (status, error) => json({ error }, status);
+
+export default {
+  async fetch(req, env, ctx) {
+    const url = new URL(req.url);
+    // Development: wrangler dev serves the app too, from the usual local server, so the
+    // app and the API share one origin as they do in production.
+    if (!url.pathname.startsWith(API)) {
+      if (env.DEV_APP) return fetch(env.DEV_APP + url.pathname + url.search, req);
+      return fail(404, 'not_found');
+    }
+    let res;
+    try {
+      res = url.pathname.startsWith(API + '/data/') ? await data(req, env, ctx, url) : await route(req, env, url);
+    } catch (err) {
+      console.error(err && err.stack || err);
+      res = fail(500, 'server_error');
+    }
+    await logFailure(req, url, res);
+    return res;
+  }
+};
+
+// One line per failed request, for Workers Logs: route, status and error code. Never the
+// user, the email, the address or the board. Workers Logs adds the CPU time itself.
+// A guest's 401 from /me is how the app learns it is signed out, so it is not a failure.
+export async function logFailure(req, url, res) {
+  const path = url.pathname.slice(API.length) || '/';
+  const auth = path.startsWith('/auth/'), loc = res.headers.get('location') || '';
+  const failed = res.status >= 400 || (auth && /[?&]error=/.test(loc));
+  if (!failed || (res.status === 401 && path === '/me')) return null;
+  let error = null;
+  if (res.status >= 400) { try { const b = await res.clone().json(); error = b.error || b.code || null; } catch { error = null; } }   // ours say error, Better Auth's say code
+  else error = new URL(loc, url).searchParams.get('error');
+  const line = { failed: routeName(path), method: req.method, status: res.status, error };
+  console.warn(JSON.stringify(line));
+  return line;
+}
+const KNOWN = ['/', '/e', '/me', '/boards', '/blueprints', '/playlists', '/settings', '/connections', '/export', '/account', '/dev/session', '/dev/row', '/data/status', '/data/transit/departures', '/data/transit/search', '/data/transit/near', '/data/markets', '/data/rates', '/data/feed'];
+// Known routes only: an id is replaced, and anything else is logged as unknown, never as typed.
+export const routeName = path => path.startsWith('/auth/') ? '/auth/' + (/^[a-z-]{1,32}$/.test(path.split('/')[2] || '') ? path.split('/')[2] : 'unknown')
+  : /^\/(boards|blueprints|playlists|settings|connections)\/.+$/.test(path) ? path.replace(/^\/(boards|blueprints|playlists|settings|connections)\/.+$/, '/$1/:id') : KNOWN.includes(path) ? path : 'unknown';
+
+async function route(req, env, url) {
+  const path = url.pathname.slice(API.length) || '/', auth = authFor(env);
+  if (path.startsWith('/auth/')) return withNoStore(await auth.handler(req));
+  if (path === '/dev/session' && req.method === 'POST' && devTest(env)) return devSession(req, env, auth);
+  if (path === '/dev/row' && req.method === 'POST' && devTest(env)) return devRow(req, env);
+
+  // Writes must come from the app's own page, on top of the SameSite cookie.
+  if (req.method !== 'GET' && req.headers.get('origin') !== new URL(env.BASE_URL).origin) return fail(403, 'bad_origin');
+  // anonymous usage counts (0.11.5): no sign-in, nothing about who sent them
+  if (path === '/e') return events(req, env);
+
+  const session = await auth.api.getSession({ headers: req.headers });
+  const user = session && session.user;
+  if (!user) return fail(401, 'signed_out');
+
+  if (path === '/me' && req.method === 'GET') return json({ id: user.id, name: String(user.name || '').split(/\s+/)[0], email: user.email });
+  if (path === '/boards' && req.method === 'GET') return json({ boards: await listBoards(env, user.id) });
+  if (path === '/blueprints' && req.method === 'GET') return json({ blueprints: await listBoards(env, user.id, KINDS.blueprints) });
+  if (path === '/playlists' && req.method === 'GET') { await migrate(env, user.id); try { await purge(env, user.id); } catch (e) { console.warn(JSON.stringify({ failed: 'purge', error: String(e && e.message || e).slice(0, 80) })); } return json({ playlists: await listBoards(env, user.id, KINDS.playlists) }); }
+  if (path === '/settings' && req.method === 'GET') return json({ settings: await listBoards(env, user.id, KINDS.settings) });
+  if (path.startsWith('/connections') && !(await sealKey(env))) return fail(503, 'not_configured');   // never stored in plain text
+  if (path === '/connections' && req.method === 'GET') return json({ connections: await listBoards(env, user.id, KINDS.connections) });
+  if (path === '/export' && req.method === 'GET') {
+    const live = async k => (await listBoards(env, user.id, k)).filter(b => !b.deleted).map(b => b.board);
+    await migrate(env, user.id);
+    const boards = await live(KINDS.boards), blueprints = await live(KINDS.blueprints), playlists = await live(KINDS.playlists), settings = await live(KINDS.settings);
+    // connections by name and kind only: an export is a file, and a key does not belong in one
+    const connections = (await sealKey(env)) ? (await live(KINDS.connections)).map(c => ({ id: c.id, kind: c.kind, name: c.name })) : [];
+    return json({ app: 'split-flap', exported: new Date().toISOString(), account: { email: user.email, name: user.name, created: user.createdAt }, playlists, boards: blueprints, settings, storyboards: boards, connections }, 200,
+      { 'content-disposition': 'attachment; filename="split-flap-export.json"' });
+  }
+  if (path === '/account' && req.method === 'DELETE') {
+    try {
+      await auth.api.deleteUser({ headers: req.headers, body: {} });   // afterDelete removes the boards
+    } catch (err) {
+      // Better Auth wants a sign-in from the last day before deleting: the app asks for one.
+      // Anything else is a real failure and says so.
+      if (err && err.body && err.body.code === 'SESSION_EXPIRED') return fail(403, 'sign_in_again');
+      console.error(err && err.stack || err);
+      return fail(500, 'server_error');
+    }
+    return json({ deleted: true });
+  }
+  const m = /^\/(boards|blueprints|playlists|settings|connections)\/([A-Za-z0-9_-]{1,40})$/.exec(path);
+  if (m && (req.method === 'PUT' || req.method === 'DELETE')) {
+    if (env.WRITES) { const { success } = await env.WRITES.limit({ key: user.id }); if (!success) return fail(429, 'too_many_writes'); }
+    const kind = KINDS[m[1]];
+    // never a playlist write before the move. Not on /blueprints: a 0.10.0 tab writes there, and
+    // must not start the move before any 0.10.1 app asks (0.10.1 review)
+    if (m[1] === 'playlists') await migrate(env, user.id);
+    return req.method === 'PUT' ? putBoard(req, env, user.id, m[2], kind) : deleteBoard(req, env, user.id, m[2], kind);
+  }
+  return fail(404, 'not_found');
+}
+
+// Tests only: on localhost with DEV_TEST=1, make an account and a session without
+// Google, so the boards API can be walked end to end (worker/test/). Never on in
+// production: it needs both the flag and a localhost BASE_URL.
+export const devTest = env => env.DEV_TEST === '1' && /^http:\/\/localhost(:\d+)?$/.test(env.BASE_URL || '');
+async function devSession(req, env, auth) {
+  const { email = 'test@example.com', name = 'Test Person' } = await req.json().catch(() => ({}));
+  const ctx = await auth.$context;
+  const found = await ctx.internalAdapter.findUserByEmail(email);
+  const user = found ? found.user : await ctx.internalAdapter.createUser({ email, name, emailVerified: true });
+  const session = await ctx.internalAdapter.createSession(user.id);
+  const value = encodeURIComponent(`${session.token}.${await makeSignature(session.token, ctx.secret)}`);
+  return json({ id: user.id }, 200, { 'set-cookie': `sf.session_token=${value}; Path=/split-flap/api; HttpOnly; SameSite=Lax` });
+}
+
+// Better Auth sets its own headers; the API's answers are never cached anywhere.
+function withNoStore(res) {
+  const r = new Response(res.body, res);
+  r.headers.set('cache-control', 'no-store');
+  r.headers.set('x-content-type-options', 'nosniff');
+  return r;
+}
+
+// The 0.10.1 move, once per account: its storyboards become playlists, and their boards
+// become boards of the library (blueprint rows), by migrateData in src/library.js, the same
+// function a guest's browser runs. One D1 batch, so it all happens or none of it does.
+// Every insert is OR IGNORE and every id comes from the input, so two requests at once
+// write the same rows and the second changes nothing. The board rows are not touched: an
+// old tab can keep writing them until it reloads, and they are the way back.
+// The test suite reads a connection row as stored through this, instead of shelling out to
+// `wrangler d1 execute` while the dev server holds the same local database, which is what made
+// the connections and rates tests fail now and then (0.11.3). DEV_TEST only, a fixed query each.
+const DEV_ROWS = {
+  json: 'SELECT json FROM connection WHERE id = ?',
+  count: 'SELECT COUNT(*) AS n FROM connection WHERE id = ?',
+  lookup: 'SELECT lookup, json FROM connection WHERE id = ?'
+};
+async function devRow(req, env) {
+  let b; try { b = await req.json(); } catch { return fail(400, 'bad_json'); }
+  const sql = DEV_ROWS[b && b.q]; if (!sql || typeof b.id !== 'string') return fail(400, 'bad_query');
+  return json({ row: await env.DB.prepare(sql).bind(b.id).first() });
+}
+
+const MIGRATION = '0.10.1';   // not exported: a Worker's module exports must all be handlers
+export async function migrate(env, userId) {
+  const done = await env.DB.prepare('SELECT 1 AS done FROM migration WHERE user_id = ? AND name = ?').bind(userId, MIGRATION).first();
+  if (done) return false;
+  const rows = async table => (await env.DB.prepare(`SELECT id, deleted, json FROM ${table} WHERE user_id = ? ORDER BY id`).bind(userId).all()).results;
+  const sbRows = await rows('board'), bpRows = await rows('blueprint'), plRows = await rows('playlist');
+  const live = (list, ok) => list.filter(r => !r.deleted && r.json).map(r => { try { return ok(JSON.parse(r.json)); } catch { return null; } }).filter(Boolean);
+  const m = migrateData(live(sbRows, sanitizeBoard), live(bpRows, sanitizeBlueprint), bpRows.filter(r => r.deleted).map(r => r.id));
+  const now = Date.now(), have = new Set(plRows.map(r => r.id));
+  const stmts = [env.DB.prepare('INSERT OR IGNORE INTO migration (user_id, name, at) VALUES (?, ?, ?)').bind(userId, MIGRATION, now)];
+  const lib = new Map(m.library.map(b => [b.id, b]));
+  for (const id of m.added) stmts.push(env.DB.prepare('INSERT OR IGNORE INTO blueprint (user_id, id, rev, updated, deleted, json) VALUES (?, ?, 1, ?, 0, ?)').bind(userId, id, now, JSON.stringify(lib.get(id))));
+  for (const pl of m.playlists) if (!have.has(pl.id)) stmts.push(env.DB.prepare('INSERT OR IGNORE INTO playlist (user_id, id, rev, updated, deleted, json) VALUES (?, ?, 1, ?, 0, ?)').bind(userId, pl.id, now, JSON.stringify(pl)));
+  await env.DB.batch(stmts);
+  return true;
+}
+
+// 0.11.3: the old storyboard rows, kept as the way back since the 0.10.1 move, go two weeks
+// after this version first reaches the account, as the privacy page says. The first request
+// for the playlists records '0.11.3-seen'; the first one 14 days or more after it deletes the
+// rows and records '0.11.3-purge', so it runs once. now is passed in for the tests.
+const SEEN = '0.11.3-seen', PURGE = '0.11.3-purge', KEEP_MS = 14 * 864e5;
+export async function purge(env, userId, now = Date.now()) {
+  const rows = (await env.DB.prepare('SELECT name, at FROM migration WHERE user_id = ? AND name IN (?, ?, ?)').bind(userId, MIGRATION, SEEN, PURGE).all()).results;
+  const has = n => rows.find(r => r.name === n);
+  if (!has(MIGRATION) || has(PURGE)) return false;
+  if (!has(SEEN)) { await env.DB.prepare('INSERT OR IGNORE INTO migration (user_id, name, at) VALUES (?, ?, ?)').bind(userId, SEEN, now).run(); return false; }
+  if (now - has(SEEN).at < KEEP_MS) return false;
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR IGNORE INTO migration (user_id, name, at) VALUES (?, ?, ?)').bind(userId, PURGE, now),
+    env.DB.prepare('DELETE FROM board WHERE user_id = ?').bind(userId)
+  ]);
+  return true;
+}
+
+async function listBoards(env, userId, kind = KINDS.boards) {
+  const { results } = await env.DB.prepare(`SELECT id, rev, updated, deleted, json FROM ${kind.table} WHERE user_id = ?`).bind(userId).all();
+  return Promise.all(results.map(async r => ({ id: r.id, rev: r.rev, updated: r.updated, deleted: !!r.deleted, board: r.deleted ? null : await opened(env, userId, kind, JSON.parse(r.json)) })));
+}
+// A sealed value opened for its owner; one that will not open comes back empty, never as ciphertext.
+async function opened(env, userId, kind, board) {
+  if (!kind.sealed || !board) return board;
+  const key = await sealKey(env), value = key ? await unseal(key, userId, board.id, board.value) : null;
+  return Object.assign({}, board, { value: value || '' }, value ? {} : { broken: true });
+}
+async function current(env, userId, id, kind = KINDS.boards) {
+  const r = await env.DB.prepare(`SELECT id, rev, updated, deleted, json FROM ${kind.table} WHERE user_id = ? AND id = ?`).bind(userId, id).first();
+  return r ? { id: r.id, rev: r.rev, updated: r.updated, deleted: !!r.deleted, board: r.deleted ? null : await opened(env, userId, kind, JSON.parse(r.json)) } : null;
+}
+const conflict = row => json({ error: 'conflict', current: row }, 409);
+
+async function putBoard(req, env, userId, id, kind = KINDS.boards) {
+  const text = await req.text();
+  if (text.length > MAX_BYTES + 1024) return fail(413, 'too_big');
+  let body; try { body = JSON.parse(text); } catch { return fail(400, 'bad_json'); }
+  const board = body && body.board, baseRev = Number.isInteger(body && body.baseRev) ? body.baseRev : -1;
+  if (!board || typeof board !== 'object' || board.id !== id) return fail(400, 'bad_board');
+  if (!kind.ok(board)) return fail(400, 'bad_board');           // validated, then stored as sent
+  let toStore = board;
+  if (kind.sealed) {   // a connection's value is sealed first; with no key there is no save at all
+    const key = await sealKey(env); if (!key) return fail(503, 'not_configured');
+    const clean = kind.ok(board);
+    const why = kind.before ? await kind.before(env, userId, id, clean) : null;   // a feed's address, the account's room, today's cap
+    if (why) return fail(why === 'bad_feed' ? 400 : why === 'feeds_full_today' ? 429 : 413, why);   // 429: try again tomorrow
+    toStore = Object.assign({}, clean, { value: await seal(key, userId, id, clean.value) });
+  }
+  const stored = JSON.stringify(toStore);
+  if (stored.length > MAX_BYTES) return fail(413, 'too_big');
+  const now = Date.now(), row = await current(env, userId, id, kind);
+  if (!row || row.deleted) {
+    if ((row ? row.rev : 0) !== baseRev) return conflict(row);
+    const { live } = await env.DB.prepare(`SELECT COUNT(*) AS live FROM ${kind.table} WHERE user_id = ? AND deleted = 0`).bind(userId).first();
+    if (live >= kind.max) return fail(413, kind.full);
+    const rev = baseRev + 1;
+    const res = row
+      ? await env.DB.prepare(`UPDATE ${kind.table} SET rev = ?, updated = ?, deleted = 0, json = ? WHERE user_id = ? AND id = ? AND rev = ?`).bind(rev, now, stored, userId, id, baseRev).run()
+      : await env.DB.prepare(`INSERT OR IGNORE INTO ${kind.table} (user_id, id, rev, updated, deleted, json) VALUES (?, ?, ?, ?, 0, ?)`).bind(userId, id, rev, now, stored).run();
+    if (!res.meta.changes) return conflict(await current(env, userId, id, kind));
+    if (kind.after) await kind.after(env, userId, id, kind.ok(board));
+    return json({ id, rev, updated: now });
+  }
+  if (row.rev !== baseRev) return conflict(row);
+  const res = await env.DB.prepare(`UPDATE ${kind.table} SET rev = rev + 1, updated = ?, json = ? WHERE user_id = ? AND id = ? AND rev = ?`).bind(now, stored, userId, id, baseRev).run();
+  if (!res.meta.changes) return conflict(await current(env, userId, id, kind));
+  if (kind.after) await kind.after(env, userId, id, kind.ok(board));
+  return json({ id, rev: baseRev + 1, updated: now });
+}
+
+async function deleteBoard(req, env, userId, id, kind = KINDS.boards) {
+  let body = {}; try { body = await req.json(); } catch { body = {}; }
+  const baseRev = Number.isInteger(body.baseRev) ? body.baseRev : -1, now = Date.now();
+  const row = await current(env, userId, id, kind);
+  if (!row) return json({ id, rev: 0, deleted: true });                // nothing to delete
+  if (row.deleted) return json({ id, rev: row.rev, deleted: true });
+  if (row.rev !== baseRev) return conflict(row);
+  const res = await env.DB.prepare(`UPDATE ${kind.table} SET rev = rev + 1, updated = ?, deleted = 1, json = NULL${kind.after ? ', lookup = NULL' : ''} WHERE user_id = ? AND id = ? AND rev = ?`).bind(now, userId, id, baseRev).run();
+  if (!res.meta.changes) return conflict(await current(env, userId, id, kind));
+  return json({ id, rev: baseRev + 1, deleted: true });
+}
