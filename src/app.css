@@ -285,6 +285,10 @@ html, body { margin: 0; background: #13151A; }
 .sf-comp-used { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
 .sf-comp-foot [data-notice] { color: var(--accent); text-wrap: pretty; }
 .sf-photo-name { font-family: var(--mono); font-size: 12px; color: var(--pale); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sf-audit { padding-top: 12px; gap: 8px; }
+.sf-audit-val { font-family: var(--mono); font-size: 12px; color: var(--pale); text-align: right; }
+.sf-audit-val.warn, .sf-audit .sf-hint.warn { color: var(--accent); }
+.sf-audit .sf-hint.block { overflow-wrap: anywhere; }
 .sf-slider { display: grid; grid-template-columns: minmax(0,1fr) 150px; align-items: center; gap: 12px; font-size: 13px; }
 .sf-slider input { accent-color: var(--accent); }
 .sf-draft { display: flex; align-items: center; gap: 12px; padding: 6px; border-radius: 8px; border: 1px solid var(--border); }

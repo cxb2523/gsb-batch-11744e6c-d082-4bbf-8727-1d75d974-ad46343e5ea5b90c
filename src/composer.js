@@ -10,6 +10,7 @@ import { CHIPS, CHIP_KEYS, CHIP_NAMES, composerInput } from './charset.js';
 import { toCells } from './content.js';
 import { getFlag, setFlag } from './store.js';
 import { mapImage, sampleImage } from './photo.js';
+import { auditPhoto } from './photoAudit.js';
 
 const MAX_HIST = 60, MAX_DRAFTS = 12;
 
@@ -17,7 +18,7 @@ export class Composer {
   constructor(app, editor) {
     this.app = app; this.ed = editor;
     this.hist = {}; this.photos = {}; this.pp = {};
-    this.tool = 'brush'; this.paint = 'r'; this.mirror = false; this.showDrafts = false;
+    this.tool = 'brush'; this.paint = 'r'; this.mirror = false; this.showDrafts = false; this.showAudit = false;
     this.els = null;
   }
   get t() { return this.app.t; }
@@ -251,7 +252,45 @@ export class Composer {
       has ? null : h('span', { class: 'sf-hint' }, t.sampleNote),
       slider('zoom', t.zoom, 1, 3, 0.05), slider('px', t.posX, 0, 1, 0.01), slider('py', t.posY, 0, 1, 0.01),
       check('dither', t.dither, t.ditherHint), check('blank', t.blankColour),
+      h('button', { class: 'sf-btn', 'data-k': 'photo-audit', 'aria-expanded': String(this.showAudit), onclick: () => { this.showAudit = !this.showAudit; this.app.render(); } }, t.photoAudit),
+      this.showAudit ? this.photoAudit() : null,
       h('span', { class: 'sf-hint' }, t.photoLocal));
+  }
+
+  // Read-only diagnosis of the current photo and zone size: the pure auditPhoto
+  // function receives a data snapshot plus pixels sampled the same way mapImage
+  // draws them (same canvas crop window), so nothing here changes the board.
+  photoAudit() {
+    const t = this.t, zd = this.zd;
+    const wrap = (...kids) => h('div', { class: 'sf-audit sf-list ruled', 'data-k': 'photo-audit-panel' }, kids);
+    // a zero-sized zone cannot hold a photo, and before a photo exists there is nothing to inspect
+    if (!(zd.h > 0 && zd.w > 0) || !this.photos[this.key()]) return wrap(h('span', { class: 'sf-hint warn' }, t.noAuditImage));
+    const src = this.photos[this.key()].img;
+    const sourceW = src.naturalWidth || src.width, sourceH = src.naturalHeight || src.height;
+    const o = Object.assign({ theme: this.app.themeNow() }, this.params());
+    try {
+      // first pass: the crop window alone, which the canvas then reproduces exactly
+      const probe = auditPhoto({ sourceW, sourceH, h: zd.h, w: zd.w, o });
+      const c = document.createElement('canvas'); c.width = zd.w; c.height = zd.h;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      if (probe.crop.cw == null) return wrap(h('span', { class: 'sf-hint warn' }, t.noAuditImage));
+      x.drawImage(src, probe.crop.sx, probe.crop.sy, probe.crop.cw, probe.crop.ch, 0, 0, zd.w, zd.h);
+      const d = x.getImageData(0, 0, zd.w, zd.h).data;
+      const samples = Array.from({ length: zd.h }, (_, y) => Array.from({ length: zd.w }, (_, xx) => {
+        const i = (y * zd.w + xx) * 4; return [d[i], d[i + 1], d[i + 2]];
+      }));
+      const a = auditPhoto({ sourceW, sourceH, h: zd.h, w: zd.w, o }, samples);
+      const row = (label, value, warn) => h('div', { class: 'sf-row between' }, h('span', { class: 'sf-hint' }, label), h('span', { class: 'sf-audit-val' + (warn ? ' warn' : '') }, value));
+      const num = v => Math.round(v * 100) / 100;
+      return wrap(
+        row(t.auditCrop, `sx ${num(a.crop.sx)}, sy ${num(a.crop.sy)}, ${num(a.crop.cw)} × ${num(a.crop.ch)}`),
+        row(t.auditPalette, (a.palette.hasBlank ? t.auditBlankOn : t.auditBlankOff) + ` (${a.palette.keys.length})`),
+        row(t.auditChecks, a.failedChecks ? t.auditChecksFail(a.failedChecks) : t.auditChecksOk, !!a.failedChecks),
+        a.firstFailure ? row(t.auditFirstFail, a.firstFailure, true) : null,
+        h('span', { class: 'sf-hint block' }, a.checks.map(ch => `${ch.name}: ${ch.pass ? 'ok' : ch.reason}`).join(' · ')));
+    } catch {
+      return wrap(h('span', { class: 'sf-hint warn' }, t.noAuditImage));
+    }
   }
 
   // ---------- earlier messages ----------

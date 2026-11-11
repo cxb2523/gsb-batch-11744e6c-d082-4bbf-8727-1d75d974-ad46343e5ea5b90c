@@ -212,6 +212,9 @@ export const STR = {
     choosePhoto: 'Choose photo', takePhoto: 'Take photo', sampleImage: 'No photo chosen', sampleNote: 'Choose a photo or take one. The sliders then place it in the zone.',
     photoFail: 'That file could not be opened as a picture.', photoLocal: 'The photo stays in this browser. Only the flaps are saved.',
     zoom: 'Zoom', posX: 'Horizontal position', posY: 'Vertical position', dither: 'Dithering', ditherHint: 'Mixes flaps to suggest the colours in between', blankColour: 'Count blank flaps as a colour',
+    photoAudit: 'Photo diagnostics', noAuditImage: 'No image to diagnose',
+    auditCrop: 'Crop window', auditPalette: 'Palette', auditBlankOn: 'includes the blank flap', auditBlankOff: 'eight colours, no blank',
+    auditChecks: 'Checks', auditChecksOk: 'all checks pass', auditChecksFail: (n) => `${n} check(s) failed`, auditFirstFail: 'First issue',
     today: 'Today', yesterday: 'Yesterday', drafts: 'Earlier messages', draftsNote: 'Kept in this browser. A message is kept here when you leave the composer after changing it.', noDrafts: 'Nothing yet. A message is kept here when you leave the composer after changing it.', use: 'Use',
   },
   sv: {
@@ -422,6 +425,9 @@ export const STR = {
     choosePhoto: 'Välj foto', takePhoto: 'Ta foto', sampleImage: 'Inget foto valt', sampleNote: 'Välj ett foto eller ta ett. Reglagen placerar det sedan i zonen.',
     photoFail: 'Filen gick inte att öppna som bild.', photoLocal: 'Fotot stannar i den här webbläsaren. Bara flapparna sparas.',
     zoom: 'Zoom', posX: 'Vågrät position', posY: 'Lodrät position', dither: 'Rastrering', ditherHint: 'Blandar flappar för att antyda mellanfärgerna', blankColour: 'Räkna tomma flappar som en färg',
+    photoAudit: 'Fotodiagnos', noAuditImage: 'Ingen bild att diagnostisera',
+    auditCrop: 'Beskärningsfönster', auditPalette: 'Palett', auditBlankOn: 'inkluderar den tomma flappen', auditBlankOff: 'åtta färger, ingen tom',
+    auditChecks: 'Kontroller', auditChecksOk: 'alla kontroller godkända', auditChecksFail: n => `${n} kontroll(er) underkända`, auditFirstFail: 'Första problemet',
     today: 'Idag', yesterday: 'Igår', drafts: 'Tidigare meddelanden', draftsNote: 'Sparas i den här webbläsaren. Ett meddelande sparas här när du lämnar redigeraren efter en ändring.', noDrafts: 'Inget ännu. Ett meddelande sparas här när du lämnar redigeraren efter en ändring.', use: 'Använd',
   }
 };
