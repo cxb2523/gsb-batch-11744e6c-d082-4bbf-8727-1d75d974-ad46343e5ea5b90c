@@ -3,6 +3,7 @@ import type { Transformation } from '@imagekit/javascript';
 import type { SourceOptions } from './SourceOptions';
 import type { PlaylistOptions } from './Playlist';
 import type { PlaylistManager } from '../modules/playlist/playlist-manager';
+import type { SourceAuditReport } from '../modules/source-handler/source-audit';
 
 /**
  * Interface for the ImageKit Video Player plugin instance.
@@ -25,6 +26,12 @@ export interface ImageKitVideoPlayerPluginInstance {
    * No-op when analytics is disabled.
    */
   reportError(error: ReportableError): void;
+  /**
+   * Run a source-preparation audit over the current source and return a
+   * structured, JSON-serializable report. Never throws; when no source is set
+   * the report has `auditable: false`.
+   */
+  auditSource(): Promise<SourceAuditReport>;
 }
 
 /** The shape returned by `mapError`. All fields are optional — omitted fields keep their original value. */

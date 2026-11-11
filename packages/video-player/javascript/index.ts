@@ -19,6 +19,11 @@ import { setupKeyboardShortcuts } from './modules/keyboard-shortcuts';
 import { setupMenuPlacement } from './modules/menu-placement';
 import { setupContextMenu } from './modules/context-menu/setup';
 import { createSourceOverride } from './modules/source-handler';
+import {
+  auditSourcePreparation,
+  buildSourceAuditSnapshot,
+} from './modules/source-handler/source-audit';
+import type { SourceAuditReport } from './modules/source-handler/source-audit';
 import { extendTrackSettings } from './modules/subtitles/track-settings-extension';
 import { createAnalyticsTracker, type AnalyticsTrackerHandle } from './modules/analytics/analytics-tracker';
 
@@ -248,6 +253,27 @@ class ImageKitVideoPlayerPlugin extends Plugin {
    */
   public reportError = (error: ReportableError): void => {
     this.analyticsHandle_?.reportError(error);
+  }
+
+  /**
+   * Audits the source preparation pipeline for the current source against a
+   * pure-data snapshot of the plugin state. The audit reuses the real
+   * preparation functions but performs no network requests and never throws.
+   *
+   * @returns a JSON-serializable structured audit report; when no source is
+   * set, an `auditable: false` ("no source, cannot audit") result is returned.
+   */
+  public auditSource = async (): Promise<SourceAuditReport> => {
+    const effectiveAbs =
+      this.currentSource_?.abs ?? this.ikGlobalSettings_.abs ?? null;
+
+    const snapshot = buildSourceAuditSnapshot(
+      this.currentSource_,
+      this.ikGlobalSettings_,
+      effectiveAbs != null
+    );
+
+    return auditSourcePreparation(snapshot, this.ikGlobalSettings_.signerFn);
   }
 
   /**
