@@ -406,6 +406,34 @@ const Effects = (() => {
     setFog(color, density) {
       for (const sys of [P, PA, smokeSys]) { sys.mat.uniforms.fogColor.value.copy(color); sys.mat.uniforms.fogDensity.value = density; }
     },
+    // 特效预算审计（只读）：采集当前各系统的纯数据快照并交给 FxAudit。
+    // init 尚未调用、各系统未就绪时返回“不可诊断”结果，绝不抛异常。
+    auditFx() {
+      if (typeof FxAudit === 'undefined' || !FxAudit || typeof FxAudit.auditSnapshot !== 'function') {
+        return { ok: false, status: 'unavailable', reason: 'FxAudit 模块未加载（需要 js/fxaudit.js）' };
+      }
+      if (!P || !PA || !smokeSys || !holes || !blood || !scorch || !shellMesh) {
+        return { ok: false, status: 'unavailable', reason: 'Effects.init 尚未调用，特效系统未初始化，无法诊断' };
+      }
+      const active = (arr, fn) => arr.reduce((a, x) => a + (fn(x) ? 1 : 0), 0);
+      return FxAudit.auditSnapshot({
+        particles: {
+          P: { max: P.max, n: P.n },
+          PA: { max: PA.max, n: PA.n },
+          smoke: { max: smokeSys.max, n: smokeSys.n },
+        },
+        decals: {
+          holes: { max: holes.max, count: holes.count, i: holes.i },
+          blood: { max: blood.max, count: blood.count, i: blood.i },
+          scorch: { max: scorch.max, count: scorch.count, i: scorch.i },
+        },
+        tracers: { total: tracers.length, active: active(tracers, (t) => t.active) },
+        shells: { max: SHELL_MAX, count: shells.length },
+        flashes: { total: flashes.length, active: active(flashes, (f) => f.sp.visible) },
+        lights: { total: lights.length, active: active(lights, (L) => L.t < L.dur) },
+        smokeClouds: smokes.length,
+      });
+    },
     clearRound() {
       smokes.length = 0; smokeSys.clear(); shells.length = 0;
       for (const t of tracers) { t.active = false; t.mesh.visible = false; }
