@@ -1,0 +1,7 @@
+/* 
+ * react-video-seek-slider styles
+ * This file is a re-export of the styles from lib/styles.css
+ * Users can import it as: import 'react-video-seek-slider/styles.css'
+ */
+
+@import './lib/index.css';
