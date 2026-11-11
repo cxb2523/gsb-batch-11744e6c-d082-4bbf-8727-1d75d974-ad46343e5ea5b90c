@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
-from typing import Protocol, assert_never
+from typing import Protocol, assert_never, runtime_checkable
 
 from app.config import RateLimiterBackend, settings
 
@@ -21,6 +22,35 @@ class RateLimiter(Protocol):
         Returns:
             True if the request is allowed and has been counted. False if the
             client is at its limit, in which case the request is not counted.
+        """
+        ...
+
+
+@runtime_checkable
+class RateLimitRejectInfo(Protocol):
+    """Read-only observability an adapter can offer for the requests it rejects.
+
+    This is a separate, optional surface from RateLimiter. The allow() contract
+    is unchanged: nothing here may count a request or mutate the window. The
+    middleware reads it only after allow() has already returned False, so the
+    answer describes the window that rejected the request.
+    """
+
+    @property
+    def limit(self) -> int:
+        """The configured maximum number of requests counted per window."""
+        ...
+
+    async def retry_after_seconds(self, client_id: str) -> int | None:
+        """Seconds until this client's oldest counted request leaves the window.
+
+        Rounded up and never below 1, so it is directly usable as a Retry-After
+        value. None means the client currently has no request in its window, in
+        which case no request of theirs is being rejected and callers should not
+        need this value.
+
+        Args:
+            client_id: The client's identity, from client_identity().
         """
         ...
 
@@ -76,6 +106,37 @@ class InMemoryRateLimiter:
         active.append(now)
         self._requests[client_id] = active
         return True
+
+    @property
+    def limit(self) -> int:
+        """The configured maximum number of requests counted per window."""
+        return self._max_requests
+
+    async def retry_after_seconds(self, client_id: str) -> int | None:
+        """Seconds until the client's oldest counted request is older than the window.
+
+        Read-only: unlike allow(), this neither records the request nor changes
+        any stored timestamp. The oldest timestamp still inside the window is
+        what makes a full bucket reject requests; once it is one window old it
+        stops counting and the client has room again. The result is rounded up
+        and floored at 1, matching the Retry-After header semantics the
+        middleware needs.
+
+        Args:
+            client_id: The client's identity, from client_identity().
+
+        Returns:
+            The whole number of seconds to wait, or None when the client has no
+            request currently inside its window.
+        """
+        now = self._clock()
+        cutoff = now - self._window_seconds
+        active = [t for t in self._requests.get(client_id, []) if t > cutoff]
+        if not active:
+            return None
+        # Timestamps are appended in clock order, so the first one is the oldest
+        expires_at = active[0] + self._window_seconds
+        return max(1, math.ceil(expires_at - now))
 
     def _drop_idle_clients(self, cutoff: float) -> None:
         """Forget clients whose newest request is older than *cutoff*.
