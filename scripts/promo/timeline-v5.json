@@ -1,0 +1,134 @@
+{
+ "root": "press/promo/work",
+ "overlay_dir": "overlays-v5",
+ "fps": 30,
+ "master_gain_db": 5.5,
+ "_bars": "Music starts on the 0.371 s downbeat candidate; bar lines in video time: 2.508 4.993 7.501 10.008 12.516 15.001 17.508 19.993 22.501 25.008 27.493. Cuts at 7.5/12.5/17.5/22.5 (frames 225/375/525/675), end 27.5.",
+ "_structure": "v4: a longer cold open on the woven planet, captioned as what it becomes after many players (so no separate illustrative tag), then color flood, laying thread, meeting travelers, back to the planet and an end card that just says Maker Jackie. The phone call is cut: without context it reads as two strangers talking. v5: the end card adds the play address yarn.ynot.games above Maker Jackie and arrives earlier so it can be read.",
+ "music": {
+  "file": "press/promo/music/carefree.mp3",
+  "start": 0.371,
+  "fade_out": 2.6,
+  "gain_db": -1.5
+ },
+ "shots": [
+  {
+   "name": "cold open (SIMULATED routes): lantern-lit street wrapped in yarn, pull out to the whole planet",
+   "dir": "v2-woven",
+   "from": 285,
+   "frames": 225
+  },
+  {
+   "name": "lighthouse connects, color floods the pencil sketch",
+   "dir": "opening",
+   "from": 428,
+   "frames": 150
+  },
+  {
+   "name": "pick up + lay the water thread",
+   "dir": "v2-lay2",
+   "from": 10,
+   "frames": 150
+  },
+  {
+   "name": "meet other travelers (real presence)",
+   "dir": "multi-{lang}",
+   "from": 20,
+   "frames": 150
+  },
+  {
+   "name": "closing (SIMULATED routes): wide orbit of the woven planet, the side not seen in the cold open",
+   "dir": "v2-woven",
+   "from": 0,
+   "frames": 150
+  }
+ ],
+ "overlays": [
+  {
+   "png": "cold4-{lang}.png",
+   "start": 0.4,
+   "end": 4.4,
+   "fade": 0.35
+  },
+  {
+   "png": "title4-{lang}.png",
+   "start": 4.8,
+   "end": 7.5,
+   "fade": 0.45,
+   "fade_out": false
+  },
+  {
+   "png": "hook-{lang}.png",
+   "start": 8.8,
+   "end": 12.3,
+   "fade": 0.3
+  },
+  {
+   "png": "lay-{lang}.png",
+   "start": 12.8,
+   "end": 17.3,
+   "fade": 0.3
+  },
+  {
+   "png": "meet-{lang}.png",
+   "start": 17.8,
+   "end": 22.3,
+   "fade": 0.3
+  },
+  {
+   "png": "woven4-{lang}.png",
+   "start": 22.7,
+   "end": 24.2,
+   "fade": 0.3
+  },
+  {
+   "png": "end5-{lang}.png",
+   "start": 24.4,
+   "end": 27.5,
+   "fade": 0.45,
+   "fade_out": false
+  }
+ ],
+ "sfx": [
+  {
+   "file": "arp.wav",
+   "at": 7.6,
+   "gain_db": -11
+  },
+  {
+   "file": "whoosh.wav",
+   "at": 7.9,
+   "gain_db": -9
+  },
+  {
+   "file": "ding.wav",
+   "at": 13.2,
+   "gain_db": -9
+  },
+  {
+   "file": "pop.wav",
+   "at": 18.03,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 18.93,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 19.83,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 20.73,
+   "gain_db": -11
+  },
+  {
+   "file": "arp.wav",
+   "at": 24.4,
+   "gain_db": -12
+  }
+ ]
+}

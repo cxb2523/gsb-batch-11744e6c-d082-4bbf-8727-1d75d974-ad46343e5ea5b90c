@@ -1,0 +1,36 @@
+{
+  "name": "yarn-planet",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A small-planet walking game: your path becomes a colored thread.",
+  "license": "MIT",
+  "homepage": "https://yarn.ynot.games/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/makerjackie/yarn-planet.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4173 --strictPort",
+    "build": "tsc --noEmit && vite build && node scripts/write-build-info.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "test": "tsx --test tests/*.test.ts",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:dry-run": "npm run build && wrangler deploy --dry-run",
+    "verify:online": "node scripts/check-deployment.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "three-mesh-bvh": "^0.9.16"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "^26.6.5",
+    "@types/three": "^0.186.0",
+    "playwright": "^1.57.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "wrangler": "4.90.0"
+  }
+}

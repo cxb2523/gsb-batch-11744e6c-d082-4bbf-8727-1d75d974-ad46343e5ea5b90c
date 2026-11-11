@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>promo overlay</title>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden; }
+  body { font-family: 'PingFang SC', 'Hiragino Sans GB', 'Avenir Next', system-ui, sans-serif; color: #fff7e6; }
+  .layer { position: absolute; inset: 0; }
+  /* fixed corner: url + creator */
+  .corner { position: absolute; left: 40px; top: 32px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .pill { display: flex; align-items: center; gap: 14px; padding: 12px 28px 12px 14px; border-radius: 999px; background: rgb(18 20 44 / 58%); box-shadow: 0 2px 14px rgb(0 0 0 / 18%); }
+  .pill .ball { width: 46px; height: 46px; }
+  .pill b { font-size: 42px; letter-spacing: .02em; font-weight: 800; }
+  .pill span { font-size: 30px; opacity: .85; font-weight: 600; margin-left: 4px; }
+  .tag { padding: 8px 18px; border-radius: 999px; background: rgb(18 20 44 / 55%); font-size: 30px; font-weight: 700; letter-spacing: .08em; color: #ffe2a6; }
+  /* caption */
+  .caption { position: absolute; left: 9%; top: 52%; max-width: 44%; }
+  .caption .glow { position: absolute; inset: -90px -160px -90px -150px; background: radial-gradient(closest-side, rgb(14 16 36 / 46%), rgb(14 16 36 / 24%) 55%, rgb(14 16 36 / 0%)); z-index: -1; }
+  .caption p { margin: 0; font-size: 84px; line-height: 1.18; font-weight: 900; letter-spacing: .03em;
+    -webkit-text-stroke: 0; paint-order: stroke fill; text-shadow: 0 4px 0 rgb(30 28 52 / 70%), 0 0 26px rgb(14 16 36 / 70%); }
+  .caption.en p { font-size: 70px; letter-spacing: .005em; font-family: 'Avenir Next', 'PingFang SC', system-ui, sans-serif; }
+  .caption .note { margin-top: 22px; font-size: 48px; font-weight: 700; letter-spacing: .12em; opacity: .85; text-shadow: 0 0 14px rgb(14 16 36 / 80%); }
+  /* v2 end card: logo + one small line */
+  .end2 { background: radial-gradient(ellipse at 50% 50%, rgb(10 12 34 / 10%), rgb(10 12 34 / 55%) 80%); }
+  .end2 .logo { position: absolute; left: 0; right: 0; top: 30%; display: flex; justify-content: center; }
+  .end2 .logo svg { width: 1180px; filter: drop-shadow(0 8px 0 rgb(12 14 36 / 55%)) drop-shadow(0 0 40px rgb(255 210 140 / 30%)); }
+  .end2 .by { position: absolute; left: 0; right: 0; top: 65%; text-align: center; font-size: 44px; font-weight: 800; letter-spacing: .08em; text-shadow: 0 3px 0 rgb(30 28 52 / 60%), 0 0 20px rgb(14 16 36 / 90%); }
+  .end2 .note { position: absolute; left: 0; right: 0; top: 75%; text-align: center; font-size: 42px; font-weight: 700; letter-spacing: .14em; opacity: .75; }
+  .end2 .site { position: absolute; left: 0; right: 0; top: 61%; text-align: center; font-size: 76px; font-weight: 900; color: #ffd98a; letter-spacing: .03em;
+    font-family: 'Avenir Next', 'PingFang SC', system-ui, sans-serif; text-shadow: 0 4px 0 rgb(30 28 52 / 70%), 0 0 30px rgb(14 16 36 / 85%); }
+  .end2 .by.under { top: 73%; font-size: 40px; opacity: .92; }
+  .end2.bare { background: none; }
+  .end2.bare .note { text-shadow: 0 0 16px rgb(14 16 36 / 90%); }
+  /* hook logo */
+  .hook { position: absolute; left: 0; right: 0; top: 33%; display: flex; justify-content: center; }
+  .hook svg { width: 1040px; filter: drop-shadow(0 8px 0 rgb(12 14 36 / 50%)) drop-shadow(0 0 40px rgb(255 210 140 / 35%)); }
+  /* end card */
+  .end { background: radial-gradient(ellipse at 50% 46%, rgb(10 12 34 / 20%), rgb(10 12 34 / 72%) 75%); }
+  .end .logo { position: absolute; left: 0; right: 0; top: 17%; display: flex; justify-content: center; }
+  .end .logo svg { width: 1080px; filter: drop-shadow(0 8px 0 rgb(12 14 36 / 55%)) drop-shadow(0 0 40px rgb(255 210 140 / 30%)); }
+  .end .url { position: absolute; left: 0; right: 0; top: 50%; text-align: center; font-size: 72px; font-weight: 900; color: #ffd98a; letter-spacing: .02em;
+    text-shadow: 0 4px 0 rgb(30 28 52 / 70%), 0 0 30px rgb(14 16 36 / 80%); }
+  .end .play { position: absolute; left: 0; right: 0; top: 43%; text-align: center; font-size: 36px; font-weight: 700; letter-spacing: .12em; opacity: .92; text-shadow: 0 0 18px rgb(14 16 36 / 90%); }
+  .end .follow { position: absolute; left: 0; right: 0; top: 62%; text-align: center; font-size: 46px; font-weight: 800; text-shadow: 0 0 18px rgb(14 16 36 / 90%); }
+  .end .follow small { display: block; margin-top: 14px; font-size: 40px; font-weight: 600; opacity: .85; }
+  .end .music { position: absolute; left: 0; right: 0; bottom: 5%; text-align: center; font-size: 19px; font-weight: 500; opacity: .72; letter-spacing: .02em; }
+  .end .tag { position: absolute; left: 44px; top: 36px; }
+  /* cover */
+  .cover .logo { position: absolute; left: 70px; top: 60px; }
+  .cover .logo svg { width: 640px; filter: drop-shadow(0 6px 0 rgb(42 44 58 / 35%)); }
+  .cover h1 { position: absolute; left: 86px; top: 300px; margin: 0; font-size: 150px; line-height: 1.12; font-weight: 900; color: #fff4dc;
+    -webkit-text-stroke: 22px #2a2c3a; paint-order: stroke fill; letter-spacing: .02em; filter: drop-shadow(0 8px 0 rgb(42 44 58 / 40%)); }
+  .cover.en h1 { font-size: 128px; font-family: 'Avenir Next', 'PingFang SC', system-ui, sans-serif; }
+  .cover .url { position: absolute; left: 92px; bottom: 70px; padding: 12px 26px; border-radius: 999px; background: #2a2c3a; color: #ffd98a; font-size: 40px; font-weight: 800; }
+</style>
+</head>
+<body>
+<div id="root" class="layer"></div>
+<script type="module">
+  import { logoSvg } from '/src/ui/logo.ts';
+  const q = new URLSearchParams(location.search);
+  const kind = q.get('kind'), lang = q.get('lang') || 'zh', text = q.get('text') || '', tag = q.get('tag') || '';
+  const zh = lang === 'zh';
+  const root = document.getElementById('root');
+  const ball = () => logoSvg({ id: 'b' + Math.random().toString(36).slice(2), animate: false });
+  const logo = () => {
+    const svg = logoSvg({ id: 'l' + Math.random().toString(36).slice(2), animate: false });
+    const box = document.createElement('div'); box.innerHTML = svg;
+    box.querySelector('.logo-name').textContent = zh ? '毛线星球' : 'Yarn Planet';
+    box.querySelector('.logo-sub').textContent = zh ? 'YARN PLANET' : '毛线星球';
+    return box.innerHTML;
+  };
+  const tagText = tag ? (zh ? '画面示意 · 线条为模拟路线' : 'Illustrative · simulated routes') : '';
+  if (kind === 'corner') {
+    // the yarn ball alone: crop the logo's left disc
+    const icon = `<svg class="ball" viewBox="26 30 132 132">${ball().replace(/^<svg[^>]*>|<\/svg>$/g, '').replace(/<text[\s\S]*?<\/text>/g, '').replace(/<g fill="none" stroke-linecap="round" stroke-linejoin="round">[\s\S]*?<\/g>/, '')}</svg>`;
+    root.innerHTML = `<div class="corner"><div class="pill">${icon}<b>yarnplanet.makerjackie.com</b><span>by Maker Jackie</span></div>${tagText ? `<div class="tag">${tagText}</div>` : ''}</div>`;
+  } else if (kind === 'tag') {
+    root.innerHTML = `<div class="corner"><div class="tag">${zh ? '画面示意 · 线条为模拟路线' : 'Illustrative · simulated routes'}</div></div>`;
+  } else if (kind === 'caption') {
+    const note = q.get('note');
+    root.innerHTML = `<div class="caption ${zh ? '' : 'en'}"><div class="glow"></div>${text.split('|').map(line => `<p>${line}</p>`).join('')}${note ? `<div class="note">${note}</div>` : ''}</div>`;
+  } else if (kind === 'hook') {
+    root.innerHTML = `<div class="hook">${logo()}</div>`;
+  } else if (kind === 'end') {
+    root.className = 'layer end';
+    root.innerHTML = `<div class="logo">${logo()}</div>
+      <div class="play">${zh ? '浏览器打开就能玩 · 手机也可以' : 'Play free in your browser · phone or desktop'}</div>
+      <div class="url">yarnplanet.makerjackie.com</div>
+      <div class="follow">${zh ? '抖音 · 小红书 · B站 · 公众号 · X<small>全网同名：Maker Jackie　·　X @maker_jackie</small>' : 'Made by Maker Jackie<small>X @maker_jackie · Bilibili · Xiaohongshu · Douyin · WeChat</small>'}</div>
+      <div class="music">Music: “Carefree” by Kevin MacLeod (incompetech.com) · Licensed under CC BY 4.0</div>
+      ${tagText ? `<div class="tag">${tagText}</div>` : ''}`;
+  }
+  if (kind === 'end2') {
+    root.className = 'layer end2';
+    const by = q.get('by') ?? (zh ? 'Maker Jackie 做的网页小游戏' : 'A little web game by Maker Jackie');
+    const site = q.get('url') ? `<div class="site">${q.get('url')}</div>` : '';
+    root.innerHTML = `<div class="logo">${logo()}</div>${site}<div class="by${site ? ' under' : ''}">${by}</div>${q.get('note') ? `<div class="note">${zh ? '示意' : 'Illustrative'}</div>` : ''}`;
+  }
+  // v3: title logo over the cold open (no vignette), and the illustrative note alone
+  // at the end card's note position, so it sits in the same place at both ends.
+  if (kind === 'title3') {
+    root.className = 'layer end2 bare';
+    root.innerHTML = `<div class="logo">${logo()}</div>`;
+  }
+  if (kind === 'note3') {
+    root.className = 'layer end2 bare';
+    root.innerHTML = `<div class="note">${zh ? '示意' : 'Illustrative'}</div>`;
+  }
+  if (kind === 'cover') {
+    root.className = `layer cover ${zh ? '' : 'en'}`;
+    root.innerHTML = `<div class="logo">${logo()}</div><h1>${text.split('|').join('<br>')}</h1>${q.get('url') ? '<div class="url">yarnplanet.makerjackie.com</div>' : ''}`;
+  }
+  document.body.dataset.ready = '1';
+</script>
+</body>
+</html>

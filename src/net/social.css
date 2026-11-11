@@ -1,0 +1,43 @@
+/* Other players: greeting button + wheel, speech bubbles, online count. */
+.social { position: fixed; inset: 0; pointer-events: none; z-index: 6; font-family: inherit; }
+.social-button {
+  position: absolute; right: 18px; bottom: 74px; pointer-events: auto;
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 999px;
+  background: #f6f0e2; color: #2a2c3a; border: 2.5px solid #2a2c3a; box-shadow: 0 3px 0 #2a2c3a;
+  font-size: 20px; cursor: pointer;
+}
+.social-button kbd, .social-greeting kbd {
+  font: 700 12px/1 ui-monospace, monospace; padding: 3px 5px; border-radius: 5px; border: 1.5px solid #2a2c3a; background: #fff8e8;
+}
+.social-button:active { transform: translateY(2px); box-shadow: 0 1px 0 #2a2c3a; }
+.social-wheel {
+  position: absolute; right: 18px; bottom: 126px; pointer-events: auto;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 14px;
+  background: #f6f0e2; border: 2.5px solid #2a2c3a; box-shadow: 0 4px 0 #2a2c3a;
+}
+.social-greeting {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 0; border-radius: 9px;
+  background: transparent; color: #2a2c3a; font: 600 15px/1.2 inherit; text-align: left; cursor: pointer;
+}
+.social-greeting:hover, .social-greeting:focus-visible { background: #ffe7a8; outline: none; }
+.social-online {
+  position: absolute; right: 18px; top: 74px; margin: 0; padding: 5px 11px; border-radius: 999px;
+  background: rgba(246, 240, 226, .92); color: #2a2c3a; font: 600 13px/1.2 inherit; border: 2px solid #2a2c3a;
+}
+.social-online::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #5cc46b; vertical-align: 1px; }
+.social-bubble {
+  position: absolute; left: 0; top: 0; max-width: 220px; padding: 7px 12px; border-radius: 14px;
+  background: #fffaf0; color: #2a2c3a; border: 2.5px solid #2a2c3a; box-shadow: 0 3px 0 rgba(42, 44, 58, .9);
+  font: 700 15px/1.25 inherit; white-space: nowrap; transition: opacity .2s; will-change: transform;
+}
+.social-bubble::after {
+  content: ''; position: absolute; left: 50%; bottom: -9px; width: 12px; height: 12px; margin-left: -6px;
+  background: #fffaf0; border-right: 2.5px solid #2a2c3a; border-bottom: 2.5px solid #2a2c3a; transform: rotate(45deg);
+}
+.social-travelers { margin: 10px 0 0; font-size: 15px; font-weight: 600; letter-spacing: .05em; color: #ffd98a; text-shadow: 0 0 10px rgb(10 12 34 / 90%); }
+@media (hover: none) and (pointer: coarse) {
+  .social-button { bottom: auto; top: 128px; right: 14px; padding: 7px 10px; }
+  .social-button kbd, .social-greeting kbd { display: none; }
+  .social-wheel { bottom: auto; top: 178px; right: 14px; }
+  .social-online { top: 74px; right: 14px; font-size: 12px; }
+}

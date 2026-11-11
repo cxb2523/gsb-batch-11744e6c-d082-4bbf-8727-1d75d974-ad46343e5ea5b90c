@@ -1,0 +1,30 @@
+node_modules/
+dist/
+.DS_Store
+.history/
+.wrangler/
+.env
+.env.*
+!.env.example
+release/
+docs/acceptance/*.png
+.claude/worktrees/
+__pycache__/
+*.pyc
+press/media/
+
+# prototype: generated simulated routes (scripts/woven-sample.ts)
+public/woven/
+
+# promo production media (frames, renders); scripts and notes are tracked
+press/promo/work/
+press/promo/*.mp4
+press/promo/*.jpg
+press/promo/*/*.mp4
+press/promo/*/*.jpg
+press/promo/*/publish/
+press/promo/*/social/
+CLAUDE.local.md
+
+# promo music is CC BY 4.0, downloaded locally (scripts/promo/README.md)
+press/promo/music/

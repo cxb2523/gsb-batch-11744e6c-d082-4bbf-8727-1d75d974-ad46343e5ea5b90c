@@ -1,0 +1,44 @@
+{
+  "root": "press/promo/work",
+  "fps": 30,
+  "master_gain_db": 5.5,
+  "_bars": "Carefree downbeat candidates (librosa, see beats.json): 2.879 5.364 7.872 10.379 12.887 15.372 17.879 20.364 22.872 25.379 27.864 30.372 32.879 35.387 37.895 40.380 42.864. Cuts land on the frame nearest a bar line (|error| <= 17 ms).",
+  "music": { "file": "press/promo/music/carefree.mp3", "start": 0.0, "fade_out": 2.4, "gain_db": -1.5 },
+  "shots": [
+    { "name": "hook-woven (SIMULATED routes)", "dir": "woven", "from": 0, "frames": 161 },
+    { "name": "arrive-walk", "dir": "opening", "from": 95, "frames": 150 },
+    { "name": "pickup-lay", "dir": "opening", "from": 247, "frames": 150 },
+    { "name": "connect-color", "dir": "opening", "from": 393, "frames": 217, "hold": 8 },
+    { "name": "phone", "dir": "phone-{lang}", "from": 178, "frames": 150 },
+    { "name": "multiplayer", "dir": "multi-{lang}", "from": 20, "frames": 150 },
+    { "name": "finale (SIMULATED local threads)", "dir": "finale", "from": 361, "frames": 151 },
+    { "name": "end-title", "dir": "title", "from": 0, "frames": 165 }
+  ],
+  "overlays": [
+    { "png": "corner-tag-{lang}.png", "start": 0.0, "end": 5.367, "fade_in": false, "fade": 0.2 },
+    { "png": "tag-{lang}.png", "start": 0.0, "end": 5.367, "fade_in": false, "fade": 0.2, "keep_clean": true, "clean_only": true },
+    { "png": "hook-{lang}.png", "start": 2.88, "end": 5.30, "fade": 0.35 },
+    { "png": "corner-{lang}.png", "start": 5.367, "end": 32.867, "fade_in": false, "fade_out": false },
+    { "png": "cap1-{lang}.png", "start": 5.65, "end": 10.20, "fade": 0.3 },
+    { "png": "cap2-{lang}.png", "start": 10.65, "end": 15.20, "fade": 0.3 },
+    { "png": "cap3-{lang}.png", "start": 16.40, "end": 22.70, "fade": 0.3 },
+    { "png": "phone1-{lang}.png", "start": 23.10, "end": 25.55, "fade": 0.25 },
+    { "png": "phone2-{lang}.png", "start": 25.70, "end": 27.75, "fade": 0.25 },
+    { "png": "cap4-{lang}.png", "start": 28.10, "end": 32.70, "fade": 0.3 },
+    { "png": "corner-tag-{lang}.png", "start": 32.867, "end": 37.900, "fade_in": false, "fade": 0.2 },
+    { "png": "tag-{lang}.png", "start": 32.867, "end": 37.900, "fade_in": false, "fade": 0.2, "keep_clean": true, "clean_only": true },
+    { "png": "cap5-{lang}.png", "start": 33.15, "end": 37.70, "fade": 0.3 },
+    { "png": "end-{lang}.png", "start": 37.900, "end": 43.40, "fade": 0.5, "fade_out": false }
+  ],
+  "sfx": [
+    { "file": "arp.wav", "at": 2.88, "gain_db": -13 },
+    { "file": "ding.wav", "at": 10.87, "gain_db": -9 },
+    { "file": "arp.wav", "at": 15.50, "gain_db": -8 },
+    { "file": "whoosh.wav", "at": 16.55, "gain_db": -10 },
+    { "file": "pop.wav", "at": 28.40, "gain_db": -11 },
+    { "file": "pop.wav", "at": 29.30, "gain_db": -11 },
+    { "file": "pop.wav", "at": 30.20, "gain_db": -11 },
+    { "file": "pop.wav", "at": 31.10, "gain_db": -11 },
+    { "file": "arp.wav", "at": 37.90, "gain_db": -12 }
+  ]
+}

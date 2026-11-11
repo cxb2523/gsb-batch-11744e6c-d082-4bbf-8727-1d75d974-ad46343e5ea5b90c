@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "unspool-01mvp",
+  // Static assets, plus /api/* (presence WebSocket and stored walks) on the Planet Durable Object.
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-05-14",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "PLANET", "class_name": "Planet" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Planet"] }],
+  "routes": [
+    { "pattern": "yarn.ynot.games", "custom_domain": true },
+    { "pattern": "yarnplanet.makerjackie.com", "custom_domain": true },
+    { "pattern": "unspool.makerjackie.com", "custom_domain": true },
+    { "pattern": "unspool.01mvp.com", "custom_domain": true }
+  ]
+}

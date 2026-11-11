@@ -1,0 +1,147 @@
+{
+ "root": "press/promo/work",
+ "overlay_dir": "overlays-v2",
+ "fps": 30,
+ "master_gain_db": 5.5,
+ "_bars": "Music starts on the 0.371 s downbeat candidate. Bar lines in video time (source bar - 0.371): 2.508 4.993 7.501 10.008 12.516 15.001 17.508 19.993 22.501 25.008 27.493 30.001 -> cuts at frames 150/300/450/600/675 (within 1 frame).",
+ "music": {
+  "file": "press/promo/music/carefree.mp3",
+  "start": 0.371,
+  "fade_out": 2.6,
+  "gain_db": -1.5
+ },
+ "shots": [
+  {
+   "name": "hook: lighthouse connects, color floods",
+   "dir": "opening",
+   "from": 428,
+   "frames": 150
+  },
+  {
+   "name": "pick up + lay the water thread",
+   "dir": "v2-lay2",
+   "from": 10,
+   "frames": 150
+  },
+  {
+   "name": "old neighbours' call",
+   "dir": "v2-phone-{lang}",
+   "from": 184,
+   "frames": 150
+  },
+  {
+   "name": "meet other travelers (real presence)",
+   "dir": "multi-{lang}",
+   "from": 20,
+   "frames": 150
+  },
+  {
+   "name": "finale: night falls over the planet (the player's own thread)",
+   "dir": "v2-finale",
+   "from": 440,
+   "frames": 75
+  },
+  {
+   "name": "illustrative woven planet: street-level yarn, pull out (SIMULATED)",
+   "dir": "v2-woven",
+   "from": 285,
+   "frames": 225
+  }
+ ],
+ "overlays": [
+  {
+   "png": "hook-{lang}.png",
+   "start": 1.3,
+   "end": 4.8,
+   "fade": 0.3
+  },
+  {
+   "png": "lay-{lang}.png",
+   "start": 5.3,
+   "end": 9.8,
+   "fade": 0.3
+  },
+  {
+   "png": "phone-{lang}.png",
+   "start": 10.25,
+   "end": 12.05,
+   "fade": 0.25
+  },
+  {
+   "png": "phone2-{lang}.png",
+   "start": 12.35,
+   "end": 14.75,
+   "fade": 0.25
+  },
+  {
+   "png": "meet-{lang}.png",
+   "start": 15.3,
+   "end": 19.8,
+   "fade": 0.3
+  },
+  {
+   "png": "woven-{lang}.png",
+   "start": 22.75,
+   "end": 27.3,
+   "fade": 0.3
+  },
+  {
+   "png": "note-{lang}.png",
+   "start": 22.5,
+   "end": 30.0,
+   "fade": 0.25,
+   "fade_out": false,
+   "keep_clean": true,
+   "clean_only": true
+  },
+  {
+   "png": "end-{lang}.png",
+   "start": 27.5,
+   "end": 30.0,
+   "fade": 0.45,
+   "fade_out": false
+  }
+ ],
+ "sfx": [
+  {
+   "file": "arp.wav",
+   "at": 0.1,
+   "gain_db": -11
+  },
+  {
+   "file": "whoosh.wav",
+   "at": 0.4,
+   "gain_db": -9
+  },
+  {
+   "file": "ding.wav",
+   "at": 5.7,
+   "gain_db": -9
+  },
+  {
+   "file": "pop.wav",
+   "at": 15.53,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 16.43,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 17.33,
+   "gain_db": -11
+  },
+  {
+   "file": "pop.wav",
+   "at": 18.23,
+   "gain_db": -11
+  },
+  {
+   "file": "arp.wav",
+   "at": 27.5,
+   "gain_db": -12
+  }
+ ]
+}
