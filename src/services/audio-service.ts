@@ -34,6 +34,8 @@ import type WaveTables from "./audio/wave-tables";
 import { getFrequency } from "./audio/pitch";
 import { processVoiceLists } from "./audio/audio-util";
 import ADSR from "./audio/adsr-module";
+import { auditPitchEnvelope } from "./audio/envelope-audit";
+import type { EnvelopeScheduleStep, PitchEnvelopeAudit, PitchEnvelopeAuditInput } from "./audio/envelope-audit";
 import type { EffluxAudioEvent } from "@/model/types/audio-event";
 import type { EventVoice, EventVoiceList } from "@/model/types/event-voice";
 import type { Instrument, InstrumentOscillator, OscillatorProp } from "@/model/types/instrument";
@@ -399,6 +401,31 @@ export const noteOff = ( event: EffluxAudioEvent, startTimeInSeconds = audioCont
  * retrieve a reference to the applications AudioContext
  */
 export const getAudioContext = (): BaseAudioContext => audioContext;
+
+/**
+ * read-only query for voice pool observability: returns the amount of currently
+ * available (unused) voices in the pool for each oscillator of given instrument.
+ * An empty Array is returned when the environment hasn't been prepared yet or
+ * the instrument index is unknown. When the pool for an oscillator is exhausted
+ * (count is 0) noteOn will skip that oscillator until voices are returned to the pool.
+ */
+export const getAvailableVoiceCount = ( instrumentIndex: number ): number[] => {
+    const instrumentModules = instrumentModulesList?.[ instrumentIndex ];
+    if ( !instrumentModules ) {
+        return [];
+    }
+    return instrumentModules.voices.map(( voiceList: InstrumentVoiceList ): number => voiceList.length );
+};
+
+// expose the envelope scheduling audit for debugging purposes (e.g. from pages or the
+// browser console). This is a pure function and has no effect on the audio engine.
+export { auditPitchEnvelope };
+export type { EnvelopeScheduleStep, PitchEnvelopeAudit, PitchEnvelopeAuditInput };
+
+// @ts-expect-error 'import.meta' property not allowed, not an issue Vite takes care of it
+if ( import.meta.env.MODE !== "production" && typeof window !== "undefined" ) {
+    ( window as unknown as { effluxEnvelopeAudit: typeof auditPitchEnvelope }).effluxEnvelopeAudit = auditPitchEnvelope;
+}
 
 export const isRecording = (): boolean => recordOutput;
 
