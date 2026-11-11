@@ -139,6 +139,59 @@ def audit_flight(audio, t0, trk, *, half_width, label, log, trace=None):
     return s
 
 
+def exposure_audit_report(audio, t0, trk, observer_enu, *, half_width, seed=11, log=None,
+                          include_scrub=True):
+    """Importable library entry point: the structured flyover exposure report.
+
+    This keeps the ``flyover-audit`` CLI (its arguments and output) untouched while
+    exposing the report object to library callers and tests. It runs the existing
+    :func:`audit_flight` on the original audio (and, when requested, on scrubbed
+    audio), then assembles those authoritative summaries with the pure-data report
+    produced by :mod:`flyover_scrub.exposure` (process evidence, timing, degradation
+    status and JSON-safe types). The variant blocks' geolocation fields and verdict
+    are overwritten from the ``audit_flight`` outputs, so the verdict is the one
+    the existing function computed on the same input, never a re-derived copy.
+
+    Returns a plain ``dict`` safe for ``json.dumps``.
+    """
+    from .exposure import build_exposure_report
+
+    log = log or (lambda *a, **k: None)
+    observer_enu = np.asarray(observer_enu, dtype=float)
+    report = build_exposure_report(
+        np.asarray(audio, dtype=float), SR, trk, t0, observer_enu,
+        half_width=half_width, seed=seed, include_scrub=include_scrub,
+    )
+
+    def _overlay(block, flight_summary):
+        if flight_summary is None:
+            # audit_flight declined this flight (short clip / no coverage); the
+            # exposure report already carries the matching degraded status.
+            return block
+        if block is None:
+            return block
+        for key in ("top_error_m", "truth_rank", "n_candidates", "top_score",
+                    "top_zscore", "f0_hz", "strength_vs_chance", "verdict"):
+            if key in flight_summary:
+                block[key] = flight_summary[key]
+        if "cpa_horizontal_m" in flight_summary and report.get("closest_approach"):
+            report["closest_approach"]["audit_cpa_range_m"] = float(
+                flight_summary["cpa_horizontal_m"]
+            )
+        return block
+
+    original = audit_flight(np.asarray(audio, dtype=float), t0, trk, half_width=half_width,
+                            label="original", log=log)
+    _overlay(report["original"], original)
+
+    if include_scrub and report.get("scrubbed") is not None:
+        scrubbed, _ = scrub(np.asarray(audio, dtype=float), SR, ScrubConfig(seed=seed))
+        scrubbed_summary = audit_flight(scrubbed, t0, trk, half_width=half_width,
+                                        label="scrubbed", log=log)
+        _overlay(report["scrubbed"], scrubbed_summary)
+    return report
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="flyover-audit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("recording", type=Path)
