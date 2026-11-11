@@ -1,0 +1,16 @@
+# 文本文件统一以 LF 存入仓库，检出时按平台自动处理
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.jpg binary
+*.png binary
+*.ico binary
+
+# 语言统计
+*.html linguist-detectable=true
+*.js   linguist-detectable=true
+*.css  linguist-detectable=true
+lib/three.min.js linguist-vendored=true
+
+# Windows 批处理必须是 CRLF
+*.cmd text eol=crlf

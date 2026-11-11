@@ -1,0 +1,16 @@
+# 操作系统
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 依赖与构建产物（本项目为纯静态，无构建步骤，仅作兜底）
+node_modules/
+dist/
+*.log
