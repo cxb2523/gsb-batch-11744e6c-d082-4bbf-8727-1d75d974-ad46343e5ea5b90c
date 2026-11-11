@@ -141,6 +141,9 @@ class WAFManager:
         self.consecutive_blocks: int = 0
         self.throttled: bool = False
         self.warned: bool = False
+        # Tracks whether the request delay has already been doubled for the
+        # current WAF name, so the delay is doubled at most once per WAF.
+        self.delay_doubled: bool = False
 
     async def handle_response(
         self,
@@ -151,11 +154,20 @@ class WAFManager:
     ) -> bool:
         waf_info = detect_waf(status_code, headers, body)
         if not waf_info:
+            # A clean response ends the current block streak: reset the
+            # backoff bookkeeping so a future streak starts fresh.
             self.consecutive_blocks = 0
+            self.throttled = False
+            self.delay_doubled = False
             return False
 
         self.consecutive_blocks += 1
         waf_name = waf_info["name"]
+
+        if self.detected_waf != waf_name:
+            # A different WAF is now answering: arm one new doubling for it.
+            # The consecutive-block streak itself is intentionally preserved.
+            self.delay_doubled = False
 
         if not self.warned or self.detected_waf != waf_name:
             self.detected_waf = waf_name
@@ -165,8 +177,10 @@ class WAFManager:
                     f"WAF / Rate-Limit detected [{waf_name}] ({waf_info['reason']})!"
                 )
 
-        if config and (not self.throttled or self.consecutive_blocks >= 2):
+        if config and not self.delay_doubled:
+            # Double the configured delay exactly once per WAF name.
             self.throttled = True
+            self.delay_doubled = True
             old_min = config.delay_min
             old_max = config.delay_max
             config.delay_min = max(config.delay_min * 2, 3000)
