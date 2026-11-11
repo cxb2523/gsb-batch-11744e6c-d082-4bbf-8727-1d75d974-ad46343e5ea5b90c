@@ -2111,8 +2111,9 @@ const AD_BETA={
   colorRef:{red:.563,gold:.244},
   audioRef:[1.35629,1.35629,1.37592,1.37592,0.94406,0.94406,0.89338,0.89338,0.88605,1.10420,1.28443,1.31082,1.07120,1.00868,0.94033,0.46180,0.38233,0.24627,0.06926,0.16969,-0.03769,-0.15653,-0.22108,-0.49261,-0.39619,-0.64213,-0.79143,-0.93498,-0.89506,-0.93163,-1.05381,-0.97525,-1.11524,-0.95748,-1.30602,-1.33459,-1.40212,-1.48051,-1.41964,-1.53038],
   roi:{x:.22917,y:.61111,w:.57292,h:.21296},
-  sampleMs:500,warmupMs:3000,enterScore:.85,enterHits:2,
-  btnGate:.90,audioGate:.85,jumpSec:15,maxJumps:4,cooldownMs:3000
+  sampleMs:500,warmupMs:3000,enterScore:.85,enterHits:2,hitGapMs:800,
+  btnGate:.90,audioGate:.85,btnGateStrict:.95,colGateStrict:.85,
+  jumpSec:15,maxJumps:4,cooldownMs:3000,episodeCoolMs:600000
 };
 /* Worker 内只做逐像素视觉判定，主线程负责音频与状态机 */
 const AD_WORKER_SRC=[
@@ -2133,7 +2134,7 @@ const AD_WORKER_SRC=[
 'postMessage({btn:btn,col:col});};'
 ].join("\n");
 const AD_BANDS=(function(){var a=[];for(var i=0;i<=40;i++)a.push(60*Math.pow(7600/60,i/40));return a})();
-const adS={on:false,timer:null,warm:0,hits:0,cool:0,start:0,lastSkip:0,lastFrom:0,jumps:0,audio:0,audioOk:false,
+const adS={on:false,timer:null,warm:0,hits:0,firstHit:0,degHits:0,cool:0,start:0,lastSkip:0,lastFrom:0,undoValid:false,jumps:0,audio:0,audioOk:false,audioReady:false,
   audioTimer:null,audioBuf:[],silent:0,canvas:null,ctx:null,actx:null,analyser:null,srcNode:null,
   worker:null,workerUrl:null,busy:false,workerFail:false,
   disabledEp:-1,resumeBound:false};
@@ -2206,6 +2207,7 @@ function adAudioTick(){
     var dot=0,nr=0,nq=0;
     for(j=0;j<40;j++){dot+=avg[j]*AD_BETA.audioRef[j];nr+=AD_BETA.audioRef[j]*AD_BETA.audioRef[j];nq+=avg[j]*avg[j];}
     adS.audio=Math.max(0,Math.min(1,dot/(Math.sqrt(nr*nq)||1)));
+    adS.audioReady=true;
   }
 }
 
@@ -2262,16 +2264,23 @@ function adSample(){
 function adOnVision(btn,col){
   adS.busy=false;
   if(!adS.on)return;
-  var score,gate;
-  if(adS.audioOk&&adS.audio>0){
-    score=.40*btn+.40*adS.audio+.20*col;
-    gate=btn>=AD_BETA.btnGate&&adS.audio>=AD_BETA.audioGate;
+  var now=performance.now();
+  if(adS.audioOk&&adS.audioReady){
+    /* 直接判定：按钮与音频同时超阈值，立即跳；不计入累积判定 */
+    if(btn>=AD_BETA.btnGate&&adS.audio>=AD_BETA.audioGate){adS.hits=0;adSkipNow();return;}
+    /* 累积判定：融合得分连续两次达标，且两次命中间隔约 1 秒；与直接判定互不覆盖 */
+    var score=.40*btn+.40*adS.audio+.20*col;
+    if(score>=AD_BETA.enterScore){
+      if(!adS.hits){adS.hits=1;adS.firstHit=now;}
+      else if(now-adS.firstHit>=AD_BETA.hitGapMs)adS.hits=2;
+    }else adS.hits=0;
+    if(adS.hits>=2){adS.hits=0;adSkipNow();}
   }else{
-    score=.60*btn+.40*col;
-    gate=btn>=.95&&col>=.85;
+    /* 音频降级：纯视觉严格门控（按钮≥0.95 且配色≥0.85），连续两次确认，不放松到融合分以免误跳正片 */
+    if(btn>=AD_BETA.btnGateStrict&&col>=AD_BETA.colGateStrict)adS.degHits++;
+    else adS.degHits=0;
+    if(adS.degHits>=2){adS.degHits=0;adSkipNow();}
   }
-  adS.hits=(score>=AD_BETA.enterScore||gate)?adS.hits+1:0;
-  if(adS.hits>=AD_BETA.enterHits||gate)adSkipNow();
 }
 
 /* ---------- 跳过与撤销 ---------- */
@@ -2285,10 +2294,10 @@ function adSkipNow(){
   var target=Math.min(dur>0?dur-1:1e9,t+AD_BETA.jumpSec);
   if(target<=t+1)return;
   var from=t,to=target;
-  adS.lastSkip=now;adS.lastFrom=from;adS.jumps++;adS.hits=0;adS.cool=now+AD_BETA.cooldownMs;
+  adS.lastSkip=now;adS.lastFrom=from;adS.undoValid=true;adS.jumps++;adS.hits=0;adS.degHits=0;adS.cool=now+AD_BETA.cooldownMs;
   try{videoEl.currentTime=target;}catch(e){}
   adShowUndo(from,to);
-  if(adS.jumps>=AD_BETA.maxJumps){adS.cool=now+600000;toast("连续跳过多次，已暂停 10 分钟");}
+  if(adS.jumps>=AD_BETA.maxJumps){adS.cool=now+AD_BETA.episodeCoolMs;toast("连续跳过多次，已暂停 10 分钟");}
 }
 function adShowUndo(from,to){
   var el=document.getElementById("adUndo"),txt=document.getElementById("adUndoText");
@@ -2301,7 +2310,7 @@ function adShowUndo(from,to){
 /* ---------- 生命周期 ---------- */
 function adSkipStart(){
   if(adS.on)return;
-  adS.on=true;adS.warm=performance.now()+AD_BETA.warmupMs;adS.hits=0;adS.jumps=0;adS.start=0;adS.lastFrom=0;
+  adS.on=true;adS.warm=performance.now()+AD_BETA.warmupMs;adS.hits=0;adS.firstHit=0;adS.degHits=0;adS.jumps=0;adS.start=0;adS.lastFrom=0;adS.undoValid=false;
   adWorkerInit();
   adAudioStart();
   clearInterval(adS.timer);adS.timer=setInterval(adSample,AD_BETA.sampleMs);
@@ -2309,19 +2318,30 @@ function adSkipStart(){
 function adSkipStop(){
   adS.on=false;clearInterval(adS.timer);adS.timer=null;adS.busy=false;
   clearInterval(adS.audioTimer);adS.audioTimer=null;
+  adS.audioBuf=[];adS.audioReady=false;adS.audio=0;adS.silent=0;adS.hits=0;adS.degHits=0;
   if(adS.worker){try{adS.worker.terminate()}catch(e){}adS.worker=null;}
   if(adS.workerUrl){try{URL.revokeObjectURL(adS.workerUrl)}catch(e){}adS.workerUrl=null;}
   var el=document.getElementById("adUndo");if(el)el.classList.remove("show");
 }
-function adSkipReset(){adS.hits=0;adS.cool=0;adS.start=0;adS.jumps=0;adS.lastFrom=0;adS.busy=false;adS.disabledEp=-1;if(adS.on)adS.warm=performance.now()+AD_BETA.warmupMs;}
+function adSkipReset(){
+  adS.hits=0;adS.firstHit=0;adS.degHits=0;adS.cool=0;adS.start=0;adS.jumps=0;adS.lastFrom=0;adS.undoValid=false;adS.busy=false;adS.disabledEp=-1;
+  adS.audioBuf=[];adS.audioReady=false;adS.audio=0;adS.silent=0;
+  clearTimeout(adUndoTimer);var el=document.getElementById("adUndo");if(el)el.classList.remove("show");
+  if(adS.on)adS.warm=performance.now()+AD_BETA.warmupMs;
+}
 function adSkipInit(){
-  var btn=document.getElementById("adUndoBtn");
-  if(btn&&!btn._bound){btn._bound=true;btn.addEventListener("click",function(){
-    if(adS.lastFrom>0){try{videoEl.currentTime=adS.lastFrom;}catch(e){}}
-    adS.disabledEp=playerEp;adS.hits=0;
-    document.getElementById("adUndo").classList.remove("show");
-    toast("已取消，本集不再自动跳过");
-  });}
+  var bindUndo=function(){
+    var btn=document.getElementById("adUndoBtn");
+    if(btn&&!btn._bound){btn._bound=true;btn.addEventListener("click",function(){
+      if(adS.undoValid){try{videoEl.currentTime=adS.lastFrom;}catch(e){}adS.undoValid=false;}
+      adS.disabledEp=playerEp;adS.hits=0;adS.degHits=0;
+      document.getElementById("adUndo").classList.remove("show");
+      toast("已取消，本集不再自动跳过");
+    });}
+  };
+  bindUndo();
+  /* #adUndo 位于本脚本之后解析，需在 DOM 就绪后再补绑定 */
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",bindUndo);
   if(playerSettings.adSkip)adSkipStart();
   window.adSkip={start:adSkipStart,stop:adSkipStop,state:adS};
 }
