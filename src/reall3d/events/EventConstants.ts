@@ -628,6 +628,8 @@ export const ViewerNeedUpdate = i++;
 export const ViewerSetPointcloudMode = i++;
 /** 销毁 */
 export const ViewerUtilsDispose = i++;
+/** 取模型加载进度快照 */
+export const GetLoadProgress = i++;
 /** 销毁 */
 export const WorkerDispose = i++;
 /** 更新Worker相关参数 */

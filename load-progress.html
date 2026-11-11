@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+    <head>
+        <title>Reall3dViewer - getLoadProgress() verification</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+        <style>
+            html,
+            body {
+                margin: 0;
+                height: 100%;
+                background: #000;
+                color: #d7e0ff;
+                font-family: Consolas, 'Courier New', monospace;
+                overflow: hidden;
+            }
+            #gsviewer {
+                position: absolute;
+                inset: 0;
+            }
+            #panel {
+                position: absolute;
+                top: 12px;
+                left: 12px;
+                z-index: 9999;
+                width: 420px;
+                max-height: calc(100vh - 24px);
+                overflow: auto;
+                background: rgba(12, 16, 32, 0.82);
+                border: 1px solid rgba(120, 150, 255, 0.45);
+                border-radius: 8px;
+                padding: 12px;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            #panel h3 {
+                margin: 0 0 8px;
+                font-size: 14px;
+            }
+            .row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                margin: 6px 0;
+            }
+            button {
+                background: #2a3a7a;
+                color: #fff;
+                border: 1px solid #5b76d6;
+                border-radius: 5px;
+                padding: 5px 9px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            button:hover {
+                background: #3a4f9e;
+            }
+            pre {
+                margin: 6px 0 0;
+                padding: 8px;
+                background: rgba(0, 0, 0, 0.55);
+                border-radius: 6px;
+                white-space: pre-wrap;
+                word-break: break-all;
+                color: #9be7a8;
+            }
+            #log {
+                color: #ffd089;
+                max-height: 180px;
+                overflow: auto;
+            }
+            .hint {
+                color: #8fa3d8;
+            }
+        </style>
+    </head>
+
+    <body>
+        <div id="gsviewer"></div>
+        <div id="panel">
+            <h3>getLoadProgress() verification</h3>
+            <div class="hint">
+                Console API: <code>window.loadProgressDemo</code> — call <code>.snapshot()</code> anytime.
+            </div>
+            <div class="row">
+                <button id="btn-normal">1. normal .splat</button>
+                <button id="btn-fail">2. missing URL (fail)</button>
+                <button id="btn-invalid">2b. invalid data (Invalid)</button>
+                <button id="btn-abort">3. fetchLimit abort</button>
+                <button id="btn-dispose">4. dispose then query</button>
+                <button id="btn-snapshot">snapshot()</button>
+                <button id="btn-clear">clear log</button>
+            </div>
+            <div>Latest snapshot:</div>
+            <pre id="snapshot"></pre>
+            <div>Log:</div>
+            <pre id="log"></pre>
+        </div>
+
+        <script type="module">
+            import { Reall3dViewer } from './src/reall3d/viewer/Reall3dViewer';
+            import { ModelStatus } from './src/reall3d/modeldata/ModelData';
+
+            const SAMPLE_URL = './testdata/load-progress/load-progress-test.splat'; // 1000 points, 32000 bytes
+            const INVALID_URL = './testdata/load-progress/invalid-test.splat'; // 12 bytes, not a whole Gaussian record
+            const MISSING_URL = './testdata/load-progress/does-not-exist.splat'; // 404 on purpose (real http servers)
+
+            const snapshotEl = document.querySelector('#snapshot');
+            const logEl = document.querySelector('#log');
+
+            const log = (...args) => {
+                const line = args
+                    .map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a)))
+                    .join(' ');
+                logEl.textContent = `${new Date().toLocaleTimeString()}  ${line}\n` + logEl.textContent;
+            };
+
+            const showSnapshot = tag => {
+                const p = viewer.getLoadProgress();
+                snapshotEl.textContent = JSON.stringify({ tag, ...p }, null, 2);
+                log(tag, p.status, `${p.progress}%`);
+                // Hard guarantees required by the spec:
+                const finite = Number.isFinite(p.progress) && p.progress >= 0 && p.progress <= 100;
+                const countsOk = [p.downloadSize, p.fileSize, p.dataSplatCount, p.modelSplatCount].every(
+                    n => Number.isFinite(n) && n >= 0,
+                );
+                if (!finite || !countsOk) log('!!! invalid snapshot (NaN/Infinity/negative/out-of-range)');
+                return p;
+            };
+
+            const recreateViewer = () => {
+                viewer?.dispose();
+                viewer = new Reall3dViewer({ debugMode: false, shDegree: 3, disableDropLocalFile: true });
+            };
+
+            let viewer = new Reall3dViewer({ debugMode: false, shDegree: 3, disableDropLocalFile: true });
+
+            // 1) Normal path: real local .splat, poll until FetchDone
+            document.querySelector('#btn-normal').addEventListener('click', async () => {
+                recreateViewer();
+                log('load normal sample:', SAMPLE_URL);
+                showSnapshot('before-addModel');
+                await viewer.addModel({ url: SAMPLE_URL, format: 'splat' });
+
+                const timer = setInterval(() => {
+                    const p = showSnapshot('polling');
+                    if ([ModelStatus[ModelStatus.FetchDone], ModelStatus[ModelStatus.FetchFailed], ModelStatus[ModelStatus.Invalid]].includes(p.status)) {
+                        clearInterval(timer);
+                        log('terminal snapshot:', p.status);
+                    }
+                }, 100);
+            });
+
+            // 2) Failure path: URL that does not exist -> FetchFailed on a real 404.
+            //    Under the Vite dev SPA fallback it may serve HTML instead, which yields Invalid.
+            document.querySelector('#btn-fail').addEventListener('click', async () => {
+                recreateViewer();
+                log('load missing url:', MISSING_URL);
+                await viewer.addModel({ url: MISSING_URL, format: 'splat' });
+                let tries = 0;
+                const timer = setInterval(() => {
+                    const p = showSnapshot('polling-fail');
+                    if (['FetchFailed', 'Invalid'].includes(p.status) || ++tries > 50) {
+                        clearInterval(timer);
+                        log('failure path terminal:', p.status);
+                    }
+                }, 100);
+            });
+
+            // 2b) Invalid path: a file smaller than one Gaussian record -> Invalid
+            document.querySelector('#btn-invalid').addEventListener('click', async () => {
+                recreateViewer();
+                log('load invalid sample:', INVALID_URL);
+                await viewer.addModel({ url: INVALID_URL, format: 'splat' });
+                let tries = 0;
+                const timer = setInterval(() => {
+                    const p = showSnapshot('polling-invalid');
+                    if (['Invalid', 'FetchFailed'].includes(p.status) || ++tries > 50) {
+                        clearInterval(timer);
+                        log('invalid path terminal:', p.status);
+                    }
+                }, 100);
+            });
+
+            // 3) Abort path: fetchLimit smaller than the model -> FetchAborted, progress <= 100.
+            //    fetchLimit is driven by meta.maxRenderCountOfPc on the SplatMesh library API.
+            document.querySelector('#btn-abort').addEventListener('click', async () => {
+                recreateViewer();
+                log('load with fetchLimit=200 (model has 1000 points)');
+                viewer.splatMesh.addModel({ url: SAMPLE_URL, format: 'splat' }, { maxRenderCountOfPc: 200 });
+                let tries = 0;
+                const timer = setInterval(() => {
+                    const p = showSnapshot('polling-abort');
+                    if (p.status === 'FetchAborted' || p.status === 'FetchDone' || ++tries > 50) {
+                        clearInterval(timer);
+                        log('abort path terminal:', p.status, 'progress=', p.progress);
+                    }
+                }, 100);
+            });
+
+            // 4) Dispose: must return the empty snapshot and never throw
+            document.querySelector('#btn-dispose').addEventListener('click', () => {
+                viewer.dispose();
+                const p = showSnapshot('after-dispose');
+                const ok = p.status === 'FetchReady' && p.progress === 0;
+                log(ok ? 'dispose empty snapshot OK' : '!!! dispose snapshot wrong', p);
+            });
+
+            document.querySelector('#btn-snapshot').addEventListener('click', () => showSnapshot('manual'));
+            document.querySelector('#btn-clear').addEventListener('click', () => (logEl.textContent = ''));
+
+            // Console entry points
+            window.loadProgressDemo = {
+                snapshot: () => showSnapshot('console'),
+                loadNormal: () => document.querySelector('#btn-normal').click(),
+                loadFail: () => document.querySelector('#btn-fail').click(),
+                loadInvalid: () => document.querySelector('#btn-invalid').click(),
+                loadAbort: () => document.querySelector('#btn-abort').click(),
+                dispose: () => document.querySelector('#btn-dispose').click(),
+            };
+
+            log('ready. viewer.getLoadProgress() =', viewer.getLoadProgress());
+            showSnapshot('initial');
+        </script>
+    </body>
+</html>

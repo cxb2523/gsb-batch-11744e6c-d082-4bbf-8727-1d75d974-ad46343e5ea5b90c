@@ -42,10 +42,12 @@ import {
     GetModelShDegree,
     GetLodModelShDegree,
     OnLoadAndRenderPointCloudPly,
+    GetLoadProgress,
 } from '../events/EventConstants';
 import { Events } from '../events/Events';
 import { ModelStatus, SplatModel } from './ModelData';
 import { ModelOptions } from './ModelOptions';
+import { buildLoadProgress, emptyLoadProgress, LoadProgress } from './LoadProgress';
 import { loadPly } from './loaders/PlyLoader';
 import { loadSplat } from './loaders/SplatLoader';
 import { loadSpx } from './loaders/SpxLoader';
@@ -82,8 +84,37 @@ export function setupDataManager(events: Events) {
     let palettesUpdated = false;
     let smallSceneActivePoints: any = null; // Object
     let dataShDegree = 0;
+    let terminalProgress: LoadProgress = null; // 模型释放后保留的终态快照
 
     on(GetAabbCenter, () => splatModel?.aabbCenter || new Vector3());
+
+    on(
+        GetLoadProgress,
+        (): LoadProgress => {
+            if (disposed || !splatModel) {
+                // 尚未 addModel、已释放或小场景后期处理已清空模型时，返回终态/空快照
+                return terminalProgress || emptyLoadProgress();
+            }
+            const progress = buildLoadProgress(
+                splatModel.status,
+                splatModel.downloadSize,
+                splatModel.fileSize,
+                splatModel.dataSplatCount,
+                splatModel.modelSplatCount,
+            );
+            // 进入终态后缓存快照，避免稍后模型被清空而丢失加载结果
+            if (
+                splatModel.status === ModelStatus.FetchDone ||
+                splatModel.status === ModelStatus.FetchAborted ||
+                splatModel.status === ModelStatus.FetchFailed ||
+                splatModel.status === ModelStatus.Invalid
+            ) {
+                terminalProgress = progress;
+            }
+            return progress;
+        },
+        true,
+    );
 
     on(
         OnSmallSceneShowDone,
@@ -355,6 +386,7 @@ export function setupDataManager(events: Events) {
     async function addModel(opts: ModelOptions, meta: MetaData) {
         if (disposed) return;
         opts.fetchReload = isNeedReload(meta.updateDate || 0); // 7天内更新的重新下载
+        terminalProgress = null;
 
         const orgUrl = opts.url;
         if (opts.format === 'glb') {
@@ -471,6 +503,7 @@ export function setupDataManager(events: Events) {
         disposed = true;
         splatModel?.abortController?.abort();
         splatModel = null;
+        terminalProgress = null;
         textWatermarkData = null;
         texture0 = null;
     }

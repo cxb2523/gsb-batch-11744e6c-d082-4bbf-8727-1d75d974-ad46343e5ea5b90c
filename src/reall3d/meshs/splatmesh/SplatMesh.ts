@@ -47,6 +47,7 @@ import {
     GetMeta,
     LodDownloadManagerDispose,
     OnStartLodShown,
+    GetLoadProgress,
 } from '../../events/EventConstants';
 import { SplatMeshOptions } from './SplatMeshOptions';
 import { ModelOptions } from '../../modeldata/ModelOptions';
@@ -57,6 +58,7 @@ import { BoundBox } from '../boundbox/BoundBox';
 import { QualityLevels, SortTypes } from '../../utils/GlobalConstants';
 import { AudioText, AudioTextOptions } from '../media/AudioText';
 import { setupAllEventsSplatMesh } from '../../scene/SetupAllEvents';
+import { emptyLoadProgress, LoadProgress } from '../../modeldata/LoadProgress';
 
 /**
  * Gaussian splatting mesh
@@ -231,6 +233,25 @@ export class SplatMesh extends Mesh {
         const that = this;
         if (that.disposed) return;
         return that.events.fire(key, ...args);
+    }
+
+    /**
+     * 获取当前模型加载进度快照（数据全部来自真实加载过程）。
+     * 尚未 addModel 或已 dispose 时返回明确的空快照（FetchReady、计数为 0、百分比为 0），不抛异常。
+     * @returns 加载进度快照
+     */
+    public getLoadProgress(): LoadProgress {
+        const that = this;
+        if (that.disposed || !that.events) return emptyLoadProgress();
+
+        try {
+            // 小场景（数据管理器）与大场景（LOD 管理器）均注册了该事件，取第一个有效快照
+            const rs = that.events.fire(GetLoadProgress);
+            const snapshot: LoadProgress = Array.isArray(rs) ? rs.find((item: LoadProgress) => item) : rs;
+            return snapshot || emptyLoadProgress();
+        } catch (e) {
+            return emptyLoadProgress();
+        }
     }
 
     /**

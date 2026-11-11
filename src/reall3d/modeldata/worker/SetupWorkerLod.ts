@@ -38,6 +38,7 @@ import {
     OnStartLodShown,
     GetSortType,
     WorkerUpdateParams,
+    GetLoadProgress,
 } from '../../events/EventConstants';
 import {
     WkA10Information,
@@ -81,6 +82,7 @@ import { DataStatus, SplatFile, SplatTiles } from '../SplatTiles';
 import { SplatMeshOptions } from '../../meshs/splatmesh/SplatMeshOptions';
 import { sleep } from '../../utils/CommonUtils';
 import { ModelOptions } from '../ModelOptions';
+import { buildLoadProgress, LoadProgress } from '../LoadProgress';
 import { DataArrayTexture, Matrix4, Vector3 } from 'three';
 
 export function setupWorkerLod(events: Events) {
@@ -132,6 +134,50 @@ export function setupWorkerLod(events: Events) {
         const totalCount = splatTiles.totalCount;
         return { totalCount, lodTargetsTotalCount, lodTargetsFileCount, maxFileSplatCount };
     });
+
+    // 大场景（LOD）加载进度：按已下载点数/目标总点数聚合，状态由各分片真实状态推导
+    on(
+        GetLoadProgress,
+        (): LoadProgress => {
+            if (disposed || !splatTiles) {
+                return buildLoadProgress(ModelStatus.FetchReady, 0, 0, 0, 0);
+            }
+
+            let dataSplatCount = 0;
+            let fetching = false;
+            let failed = false;
+            let aborted = false;
+            let invalid = false;
+            const files = splatTiles.files || {};
+            for (const fileKey in files) {
+                const splatFile: SplatFile = files[fileKey];
+                dataSplatCount += splatFile.downloadCount || 0;
+                const status: DataStatus = splatFile.status || DataStatus.None;
+                (status & DataStatus.Fetching) > 0 && (fetching = true);
+                (status & DataStatus.FetchFailed) > 0 && (failed = true);
+                (status & DataStatus.FetchAborted) > 0 && (aborted = true);
+                (status & DataStatus.Invalid) > 0 && (invalid = true);
+            }
+
+            const total = splatTiles.lodTargetsTotalCount || splatTiles.totalCount || 0;
+            let status: ModelStatus;
+            if (invalid) {
+                status = ModelStatus.Invalid;
+            } else if (aborted) {
+                status = ModelStatus.FetchAborted;
+            } else if (failed) {
+                status = ModelStatus.FetchFailed;
+            } else if (fetching || dataSplatCount < total) {
+                status = ModelStatus.Fetching;
+            } else {
+                status = ModelStatus.FetchDone;
+            }
+
+            // LOD 分片在 worker 中下载，主线程不累计字节数，字节字段保持 0
+            return buildLoadProgress(status, 0, 0, dataSplatCount, total);
+        },
+        true,
+    );
 
     on(WorkerUpdateParams, async () => worker.postMessage({ [WkA01UpdateParams]: true, [WkSortType]: fire(GetSortType) }), true);
 

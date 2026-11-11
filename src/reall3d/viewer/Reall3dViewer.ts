@@ -86,6 +86,7 @@ import {
 import { SplatMesh } from '../meshs/splatmesh/SplatMesh';
 import { ModelOptions } from '../modeldata/ModelOptions';
 import { Events } from '../events/Events';
+import { emptyLoadProgress, LoadProgress } from '../modeldata/LoadProgress';
 import { copyGsViewerOptions, genDefaultSceneMeta, initCamera, initGsViewerOptions, initRenderer } from '../utils/ViewerUtils';
 import { Reall3dViewerOptions } from './Reall3dViewerOptions';
 import { SplatMeshOptions } from '../meshs/splatmesh/SplatMeshOptions';
@@ -424,6 +425,21 @@ export class Reall3dViewer {
 
         fire(Information, { scale: `1 : ${fire(GetOptions).meterScale} m` });
         return Object.assign({ ...fire(GetOptions) }, splatOpts);
+    }
+
+    /**
+     * 获取当前模型加载进度快照（转发至 SplatMesh.getLoadProgress）。
+     * 尚未 addModel 或已 dispose 时返回明确的空快照（FetchReady、计数为 0、百分比为 0），不抛异常。
+     * @returns 加载进度快照
+     */
+    public getLoadProgress(): LoadProgress {
+        const that = this;
+        if (that.disposed || !that.splatMesh) return emptyLoadProgress();
+        try {
+            return that.splatMesh.getLoadProgress();
+        } catch (e) {
+            return emptyLoadProgress();
+        }
     }
 
     /**

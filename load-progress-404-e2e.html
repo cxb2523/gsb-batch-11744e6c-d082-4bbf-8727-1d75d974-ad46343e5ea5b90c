@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>load-progress 404 e2e</title>
+    </head>
+    <body>
+        <div id="gsviewer"></div>
+        <pre id="result">PENDING</pre>
+        <script type="module">
+            import { Reall3dViewer } from './src/reall3d/viewer/Reall3dViewer';
+
+            // Points at the strict static server (no SPA fallback): missing path is a real 404
+            const MISSING_URL = 'http://localhost:4199/testdata/load-progress/does-not-exist.splat';
+            const wait = ms => new Promise(r => setTimeout(r, ms));
+            const results = [];
+            const record = (name, ok, detail) => results.push({ name, ok, detail });
+
+            try {
+                const viewer = new Reall3dViewer({ debugMode: false, shDegree: 3, disableDropLocalFile: true });
+                await viewer.addModel({ url: MISSING_URL, format: 'splat' });
+
+                const start = performance.now();
+                let terminal = null;
+                while (performance.now() - start < 8000) {
+                    const s = viewer.getLoadProgress();
+                    if (s.status === 'FetchFailed' || s.status === 'Invalid' || s.status === 'FetchDone') {
+                        terminal = s;
+                        break;
+                    }
+                    await wait(100);
+                }
+                terminal = terminal || viewer.getLoadProgress();
+
+                const clean =
+                    [terminal.progress, terminal.downloadSize, terminal.fileSize, terminal.dataSplatCount, terminal.modelSplatCount].every(
+                        n => Number.isFinite(n) && n >= 0,
+                    ) && terminal.progress <= 100;
+
+                record('missing-url-fetch-failed', terminal.status === 'FetchFailed' && clean, terminal);
+                viewer.dispose();
+            } catch (e) {
+                record('unexpected-exception', false, { message: e?.message });
+            }
+
+            const allOk = results.every(r => r.ok);
+            document.querySelector('#result').textContent = JSON.stringify({ allOk, results }, null, 2);
+            document.title = allOk ? 'E2E_RESULT:PASS' : 'E2E_RESULT:FAIL';
+        </script>
+    </body>
+</html>

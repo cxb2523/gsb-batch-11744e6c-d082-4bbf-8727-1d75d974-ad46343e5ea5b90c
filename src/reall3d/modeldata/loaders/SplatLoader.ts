@@ -57,7 +57,13 @@ export async function loadSplat(model: SplatModel) {
             }
 
             // 超过限制时终止下载
-            model.downloadSplatCount >= model.fetchLimit && model.abortController.abort();
+            if (model.downloadSplatCount >= model.fetchLimit) {
+                model.abortController.abort();
+                // 本地小文件时底层流可能在 abort 生效前就结束读取，需主动标记为中止，
+                // 避免 finally 将状态覆盖为 FetchDone
+                model.status === ModelStatus.Fetching && (model.status = ModelStatus.FetchAborted);
+                break;
+            }
         }
     } catch (e) {
         if (e.name === 'AbortError') {
