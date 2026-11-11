@@ -19,6 +19,10 @@ import { Line } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraViewMode, LabelDisplayMode, StageFrame } from '../core/types';
 import { computeFrustumGateDimensions } from '../core/opticsMath';
+import {
+  diagnoseStageCam,
+  type StageCamDiagnostics,
+} from './stageCamDiagnostics';
 import { StageBillboardLabel } from './StageBillboardLabel';
 import {
   StageCameraDofBrackets,
@@ -64,6 +68,37 @@ export interface StageCameraRigProps {
   cameraMode: CameraViewMode;
   uiFrame: StageFrame;
   labelMode?: LabelDisplayMode;
+}
+
+/**
+ * Read-only diagnostics entry point: collects a plain-data snapshot from one
+ * StageFrame and returns the frustum cone & focus plane diagnostics for it.
+ * Never throws — frames missing stageCamera yield a 'no-camera' result.
+ */
+export function buildStageCamSnapshot(
+  frame: StageFrame | null | undefined
+): StageCamDiagnostics {
+  const cam = frame?.stageCamera;
+  if (!cam) {
+    return diagnoseStageCam(null);
+  }
+  return diagnoseStageCam({
+    frustumDepth: cam.frustumDepth,
+    focalLengthMm: cam.transform.pose.focalLengthMm,
+    aspectRatio: cam.transform.aspectRatio,
+    maneuver: cam.maneuver,
+    frustumColor: cam.frustumColor,
+    dof: cam.dof
+      ? {
+          enabled: cam.dof.enabled,
+          hasExplicitFocus: cam.dof.hasExplicitFocus,
+          focusDistanceM: cam.dof.focusDistanceM,
+          nearLimitM: cam.dof.nearLimitM,
+          farLimitM: cam.dof.farLimitM,
+          apertureFStop: cam.dof.apertureFStop,
+        }
+      : undefined,
+  });
 }
 
 export const StageCameraRig: React.FC<StageCameraRigProps> = ({
