@@ -1,0 +1,1267 @@
+/**
+ * 3D装箱模拟器算法核心模块 - packer.js (v2.3 极致优化版)
+ * 
+ * 升级为：多起点局部搜索最佳适配算法 (Multi-Start Best-Fit Scoring Heuristic)
+ * 1. 空间接触面积计算 (Contact Area Maximization)：使箱子自动紧贴容器边角或其他箱子，消除局部空洞。
+ * 2. 词典式高度-深度评分模型 (Lexicographical Height-Depth Scoring)：强力压低重心，保证每层平整度，防止不规则凸起。
+ * 3. 自适应多策略混合搜索 (Multi-Start Meta-Heuristic)：使用 5 种基础排序策略与 30 次随机打乱，配合不同的轴向压缩权重，秒级内搜索全局最优解。
+ */
+
+// 核心常量定义
+const EPS_OVERLAP = 0.001;      // 碰撞检测容差
+const EPS_CONTACT = 0.01;       // 接触面积计算容差
+const EPS_STABILITY = 0.05;     // 稳定性检查容差
+const EPS_DIMENSION = 0.001;      // 公共维度检测容差
+const DEFAULT_SUPPORT_RATIO = 0.5;  // 默认最低支撑率
+
+// 碰撞检测辅助函数：检查两个三维立方体是否在空间上重叠 (支持旋转后的 rw/rh/rd 尺寸)
+function boxesOverlap(a, b, eps = EPS_OVERLAP) {
+    const aw = a.rw !== undefined ? a.rw : a.w;
+    const ah = a.rh !== undefined ? a.rh : a.h;
+    const ad = a.rd !== undefined ? a.rd : a.d;
+    const bw = b.rw !== undefined ? b.rw : b.w;
+    const bh = b.rh !== undefined ? b.rh : b.h;
+    const bd = b.rd !== undefined ? b.rd : b.d;
+    return (
+        a.x < b.x + bw - eps && a.x + aw > b.x + eps &&
+        a.y < b.y + bh - eps && a.y + ah > b.y + eps &&
+        a.z < b.z + bd - eps && a.z + ad > b.z + eps
+    );
+}
+
+// 物品类定义
+class Item {
+    constructor(id, name, w, h, d, color = '#3b82f6', weight = 0) {
+        const dimensions = { w, h, d };
+        for (const [axis, value] of Object.entries(dimensions)) {
+            if (!Number.isFinite(value) || value <= 0) {
+                throw new RangeError(`Item ${axis} must be a finite number greater than 0, got ${value}`);
+            }
+        }
+        if (!Number.isFinite(weight) || weight < 0) {
+            throw new RangeError(`Item weight must be a finite non-negative number, got ${weight}`);
+        }
+
+        this.id = id;          // 唯一标识符
+        this.name = name;      // 名称
+        this.w = w;            // 原始宽度
+        this.h = h;            // 原始高度
+        this.d = d;            // 原始深度
+        this.color = color;    // 渲染颜色
+        this.weight = weight;  // 重量
+        
+        // 放置坐标 (以容器左下后角为原点)
+        this.x = 0;
+        this.y = 0;
+        this.z = 0;
+        
+        // 旋转后的尺寸 (默认不旋转)
+        this.rw = w;
+        this.rh = h;
+        this.rd = d;
+        this.rotationType = 0; // 0 到 5 种旋转状态
+    }
+
+    // 获取某个旋转状态下的尺寸
+    getRotatedDimensions(rotationType) {
+        // 6种旋转朝向定义：
+        // 0: [W, H, D] - 原始状态
+        // 1: [W, D, H]
+        // 2: [H, W, D]
+        // 3: [H, D, W]
+        // 4: [D, W, H]
+        // 5: [D, H, W]
+        switch (rotationType) {
+            case 0: return [this.w, this.h, this.d];
+            case 1: return [this.w, this.d, this.h];
+            case 2: return [this.h, this.w, this.d];
+            case 3: return [this.h, this.d, this.w];
+            case 4: return [this.d, this.w, this.h];
+            case 5: return [this.d, this.h, this.w];
+            default: return [this.w, this.h, this.d];
+        }
+    }
+
+    // 设置旋转状态
+    setRotation(rotationType) {
+        const [rw, rh, rd] = this.getRotatedDimensions(rotationType);
+        this.rw = rw;
+        this.rh = rh;
+        this.rd = rd;
+        this.rotationType = rotationType;
+    }
+}
+
+// 装箱核心类
+class Packer {
+    static DEFAULT_SCORE_WEIGHTS = {
+        packedCount: 10000000,
+        packedVolume: 10,
+        maxHeightPenalty: 100,
+        contactArea: 0.1,
+        w_y: 100000
+    };
+
+    // 3D 碰撞检测辅助方法：检查指定空间位置及尺寸是否与任何已放置物体冲突（无临时对象分配，高性能）
+    static checkCollision(px, py, pz, rw, rh, rd, placed, eps = EPS_OVERLAP) {
+        for (let i = 0; i < placed.length; i++) {
+            const p = placed[i];
+            if (px < p.x + p.rw - eps && px + rw > p.x + eps &&
+                py < p.y + p.rh - eps && py + rh > p.y + eps &&
+                pz < p.z + p.rd - eps && pz + rd > p.z + eps) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 2D 碰撞检测辅助方法：无临时对象分配，高性能
+    static checkCollision2D(px, py, rw, rh, placedList, eps = EPS_OVERLAP) {
+        for (let i = 0; i < placedList.length; i++) {
+            const p = placedList[i];
+            if (px < p.x + p.w - eps && px + rw > p.x + eps &&
+                py < p.y + p.h - eps && py + rh > p.y + eps) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Mulberry32 确定性随机数发生器
+    static mulberry32(seed) {
+        return function() {
+            let t = seed += 0x6D2B79F5;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    // 获取物品独特的非对称三维方向，避免重复计算 (支持缓存优化)
+    static getUniqueOrientations(item) {
+        if (item._uniqueOrientations) return item._uniqueOrientations;
+        const orientations = [];
+        const seen = new Set();
+        for (let rType = 0; rType < 6; rType++) {
+            const [rw, rh, rd] = item.getRotatedDimensions(rType);
+            const key = `${rw}_${rh}_${rd}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                orientations.push({ rw, rh, rd, rotationType: rType });
+            }
+        }
+        item._uniqueOrientations = orientations;
+        return orientations;
+    }
+
+    // EMS 剪枝与优化函数
+    static pruneSpaces(spacesList, remainingPool, maxSpaces = 200) {
+        const pruned = [];
+        const typeKeys = new Set();
+        remainingPool = remainingPool.filter(item => {
+            const key = [item.w, item.h, item.d].join('|');
+            if (typeKeys.has(key)) return false;
+            typeKeys.add(key);
+            return true;
+        });
+        for (let i = 0; i < spacesList.length; i++) {
+            const s1 = spacesList[i];
+            if (s1.w <= EPS_OVERLAP || s1.h <= EPS_OVERLAP || s1.d <= EPS_OVERLAP) {
+                continue;
+            }
+
+            // A. 空间可容纳性检查 (Fit-check)
+            let canFitAny = false;
+            for (let j = 0; j < remainingPool.length; j++) {
+                const orientations = Packer.getUniqueOrientations(remainingPool[j]);
+                for (let oIdx = 0; oIdx < orientations.length; oIdx++) {
+                    const o = orientations[oIdx];
+                    if (o.rw <= s1.w + EPS_OVERLAP && o.rh <= s1.h + EPS_OVERLAP && o.rd <= s1.d + EPS_OVERLAP) {
+                        canFitAny = true;
+                        break;
+                    }
+                }
+                if (canFitAny) break;
+            }
+            if (!canFitAny) continue; // 过滤掉无法容纳任何剩下物品的空腔
+
+            // B. 重叠与包含关系剪枝
+            let isContained = false;
+            for (let j = 0; j < spacesList.length; j++) {
+                if (i === j) continue;
+                const s2 = spacesList[j];
+                
+                // 如果坐标和尺寸完全相同，只保留索引较小的那个以去重
+                if (Math.abs(s1.x - s2.x) < EPS_OVERLAP &&
+                    Math.abs(s1.y - s2.y) < EPS_OVERLAP &&
+                    Math.abs(s1.z - s2.z) < EPS_OVERLAP &&
+                    Math.abs(s1.w - s2.w) < EPS_OVERLAP &&
+                    Math.abs(s1.h - s2.h) < EPS_OVERLAP &&
+                    Math.abs(s1.d - s2.d) < EPS_OVERLAP) {
+                    if (i > j) {
+                        isContained = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (s1.x >= s2.x - EPS_OVERLAP &&
+                    s1.y >= s2.y - EPS_OVERLAP &&
+                    s1.z >= s2.z - EPS_OVERLAP &&
+                    s1.x + s1.w <= s2.x + s2.w + EPS_OVERLAP &&
+                    s1.y + s1.h <= s2.y + s2.h + EPS_OVERLAP &&
+                    s1.z + s1.d <= s2.z + s2.d + EPS_OVERLAP) {
+                    isContained = true;
+                    break;
+                }
+            }
+            if (!isContained) {
+                pruned.push(s1);
+            }
+        }
+
+        // C. 排序：鼓励低重心、贴近角落堆放 (按 Y -> Z -> X 升序)
+        pruned.sort((a, b) => {
+            if (Math.abs(a.y - b.y) > EPS_OVERLAP) return a.y - b.y;
+            if (Math.abs(a.z - b.z) > EPS_OVERLAP) return a.z - b.z;
+            return a.x - b.x;
+        });
+
+        // D. 数量上限截断 (防止 spaces 膨胀)
+        if (pruned.length > maxSpaces) {
+            return pruned.slice(0, maxSpaces);
+        }
+        return pruned;
+    }
+
+    // 获取空腔底面候选位置：EMS 四角 + 已放置物体边界生成的极点
+    static getEMSPositions(s, rw, rd, placed = [], maxPositions = 4) {
+        const unique = [];
+        const seen = new Set();
+
+        const addPosition = (x, z) => {
+            if (unique.length >= maxPositions) return;
+            // 确保候选点与尺寸摆放后仍在 EMS 容纳范围
+            if (x >= s.x - EPS_OVERLAP && z >= s.z - EPS_OVERLAP &&
+                x + rw <= s.x + s.w + EPS_OVERLAP && z + rd <= s.z + s.d + EPS_OVERLAP) {
+                const key = `${x.toFixed(2)}_${z.toFixed(2)}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    unique.push({ x, y: s.y, z });
+                }
+            }
+        };
+
+        addPosition(s.x, s.z);
+        addPosition(s.x + s.w - rw, s.z);
+        addPosition(s.x, s.z + s.d - rd);
+        addPosition(s.x + s.w - rw, s.z + s.d - rd);
+
+        if (maxPositions <= 4) {
+            return unique;
+        }
+
+        for (let i = placed.length - 1; i >= 0 && unique.length < maxPositions; i--) {
+            const p = placed[i];
+            const sameLayer = p.y <= s.y + EPS_STABILITY && p.y + p.rh > s.y + EPS_OVERLAP;
+            const supportLayer = Math.abs((p.y + p.rh) - s.y) < EPS_STABILITY;
+            if (!sameLayer && !supportLayer) continue;
+
+            const rightX = p.x + p.rw;
+            const leftX = p.x - rw;
+            const frontZ = p.z + p.rd;
+            const backZ = p.z - rd;
+
+            addPosition(rightX, p.z);
+            addPosition(rightX, frontZ - rd);
+            addPosition(leftX, p.z);
+            addPosition(leftX, frontZ - rd);
+            addPosition(p.x, frontZ);
+            addPosition(rightX - rw, frontZ);
+            addPosition(p.x, backZ);
+            addPosition(rightX - rw, backZ);
+        }
+
+        unique.sort((a, b) => (a.z !== b.z) ? a.z - b.z : a.x - b.x);
+        return unique;
+    }
+
+    // 创建 Y-top 支撑哈希索引对象
+    static createSupportIndex() {
+        return {
+            index: new Map(),
+            add(item) {
+                const key = Math.round((item.y + item.rh) / EPS_STABILITY);
+                if (!this.index.has(key)) {
+                    this.index.set(key, []);
+                }
+                this.index.get(key).push(item);
+            },
+            get(y) {
+                const key = Math.round(y / EPS_STABILITY);
+                const matches = [];
+                // 四舍五入的桶边界可能把实际相差很小的两个高度分到相邻桶，
+                // 因此同时查询相邻桶，并使用真实高度差做最终过滤。
+                for (let offset = -1; offset <= 1; offset++) {
+                    const bucket = this.index.get(key + offset) || [];
+                    for (const item of bucket) {
+                        if (Math.abs((item.y + item.rh) - y) < EPS_STABILITY) {
+                            matches.push(item);
+                        }
+                    }
+                }
+                return matches;
+            }
+        };
+    }
+
+    // 自动校验装载结果是否合法，返回 { valid: boolean, errors: Array }
+    static validatePackingResult(placed, binW, binH, binD, checkStability = true, supportRatio = DEFAULT_SUPPORT_RATIO) {
+        const errors = [];
+        const eps = EPS_OVERLAP;
+        if (![binW, binH, binD].every(value => Number.isFinite(value) && value > 0) ||
+            !Number.isFinite(supportRatio) || supportRatio < 0 || supportRatio > 1 || !Array.isArray(placed)) {
+            return { valid: false, errors: [{ type: 'INVALID_INPUT', detail: 'Invalid container, support ratio, or item list' }] };
+        }
+        const ids = new Set();
+        const supportIndex = checkStability ? Packer.createSupportIndex() : null;
+        if (supportIndex) placed.forEach(item => { if (item && Number.isFinite(item.y + item.rh)) supportIndex.add(item); });
+
+        for (let i = 0; i < placed.length; i++) {
+            const item = placed[i];
+            if (!item) {
+                errors.push({ type: 'INVALID_GEOMETRY', detail: 'Item is missing' });
+                continue;
+            }
+            if (ids.has(item.id)) errors.push({ type: 'DUPLICATE_ID', item, detail: 'Item ids must be unique' });
+            ids.add(item.id);
+
+            if (![item.x, item.y, item.z, item.rw, item.rh, item.rd].every(Number.isFinite) ||
+                item.rw <= 0 || item.rh <= 0 || item.rd <= 0) {
+                errors.push({ type: 'INVALID_GEOMETRY', item, detail: 'Position and rotated dimensions must be finite; dimensions must be positive' });
+                continue;
+            }
+            
+            // 越界检查
+            if (item.x < -eps || item.y < -eps || item.z < -eps) {
+                errors.push({ type: 'NEGATIVE_POSITION', item, detail: `Position is negative: (${item.x}, ${item.y}, ${item.z})` });
+            }
+            if (item.x + item.rw > binW + eps || item.y + item.rh > binH + eps || item.z + item.rd > binD + eps) {
+                errors.push({ type: 'OUT_OF_BOUNDS', item, detail: `Out of container boundaries: max limit (${binW}, ${binH}, ${binD}), got (${item.x + item.rw}, ${item.y + item.rh}, ${item.z + item.rd})` });
+            }
+
+            // 支撑性检查
+            if (checkStability && item.y > 0) {
+                let supportedArea = 0;
+                const bottomArea = item.rw * item.rd;
+                const supporters = supportIndex.get(item.y);
+                for (const pItem of supporters) {
+                    if (pItem === item) continue;
+                    const xOverlap = Math.max(0, Math.min(item.x + item.rw, pItem.x + pItem.rw) - Math.max(item.x, pItem.x));
+                    const zOverlap = Math.max(0, Math.min(item.z + item.rd, pItem.z + pItem.rd) - Math.max(item.z, pItem.z));
+                    supportedArea += xOverlap * zOverlap;
+                }
+                if ((supportedArea / bottomArea) < supportRatio - eps) {
+                    errors.push({ type: 'UNSTABLE', item, detail: `Insufficient support: expected ratio ${supportRatio}, got ${(supportedArea / bottomArea).toFixed(3)}` });
+                }
+            }
+        }
+
+        // Sweep-and-prune：按 X 起点排序，X 轴已分离后即可停止内层扫描。
+        const byMinX = placed
+            .filter(item => item && [item.x, item.y, item.z, item.rw, item.rh, item.rd].every(Number.isFinite))
+            .slice()
+            .sort((a, b) => a.x - b.x);
+        for (let i = 0; i < byMinX.length; i++) {
+            const item = byMinX[i];
+            for (let j = i + 1; j < byMinX.length; j++) {
+                const other = byMinX[j];
+                if (other.x >= item.x + item.rw - eps) break;
+                if (boxesOverlap(item, other, eps)) {
+                    errors.push({ type: 'OVERLAP', itemA: item, itemB: other, detail: `Overlap detected between items ${item.id} and ${other.id}` });
+                }
+            }
+        }
+
+        return { valid: errors.length === 0, errors };
+    }
+
+    constructor(binW, binH, binD) {
+        for (const [axis, value] of Object.entries({ binW, binH, binD })) {
+            if (!Number.isFinite(value) || value <= 0) {
+                throw new RangeError(`${axis} must be a finite number greater than 0, got ${value}`);
+            }
+        }
+        this.binW = binW; // 容器宽度
+        this.binH = binH; // 容器高度
+        this.binD = binD; // 容器深度
+        this.items = [];  // 已成功装入的物品
+        this.unpacked = []; // 未能装入的物品
+    }
+
+    static shuffled(items, seed) {
+        const copy = [...items], random = Packer.mulberry32(seed);
+        for (let i = copy.length - 1; i > 0; i--) {
+            const j = Math.floor(random() * (i + 1));
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+        }
+        return copy;
+    }
+
+    static layoutSignature(items) {
+        return JSON.stringify(items.map(item => [item.name, item.w, item.h, item.d, item.weight,
+            item.x, item.y, item.z, item.rw, item.rh, item.rd].map(value => typeof value === 'number' ? Math.round(value * 10000) / 10000 : value))
+            .map(values => JSON.stringify(values)).sort());
+    }
+
+    static packingMetrics(items) {
+        return { count: items.length, volume: items.reduce((sum, item) => sum + item.rw * item.rh * item.rd, 0),
+            height: items.reduce((height, item) => Math.max(height, item.y + item.rh), 0) };
+    }
+
+    static comparePackings(a, b) {
+        const left = Packer.packingMetrics(a), right = Packer.packingMetrics(b);
+        if (left.count !== right.count) return left.count - right.count;
+        if (Math.abs(left.volume - right.volume) > EPS_OVERLAP) return left.volume - right.volume;
+        return Math.abs(right.height - left.height) > EPS_OVERLAP ? right.height - left.height : 0;
+    }
+
+    static assertItems(items) {
+        if (!Array.isArray(items) || items.length > 1000) throw new RangeError('Expected an array of at most 1000 items');
+        const ids = new Set();
+        for (const item of items) {
+            if (!(item instanceof Item) || ![item.w, item.h, item.d].every(v => Number.isFinite(v) && v > 0) ||
+                !Number.isFinite(item.weight) || item.weight < 0 || ids.has(item.id)) {
+                throw new RangeError('Items must have valid dimensions, weights, and unique ids');
+            }
+            ids.add(item.id);
+        }
+    }
+
+    // 执行多起点最佳适配装箱算法（多维启发式与局部扰动搜索）
+    pack(itemsToPack, options = {}) {
+        Packer.assertItems(itemsToPack);
+        const checkStability = options.checkStability !== false; // 是否校验重力支撑
+        const supportRatio = options.supportRatio !== undefined ? options.supportRatio : DEFAULT_SUPPORT_RATIO; // 支撑面积占比阈值
+        if (!Number.isFinite(supportRatio) || supportRatio < 0 || supportRatio > 1) {
+            throw new RangeError(`supportRatio must be between 0 and 1, got ${supportRatio}`);
+        }
+
+        this.items = [];
+        this.unpacked = [];
+
+        // 0. 尝试公维对齐层级回溯策略
+        const layerPacked = this.tryLayerBacktrackingPack(itemsToPack, checkStability, supportRatio, options);
+        if (layerPacked) {
+            const validation = Packer.validatePackingResult(
+                layerPacked,
+                this.binW,
+                this.binH,
+                this.binD,
+                checkStability,
+                supportRatio
+            );
+            if (validation.valid) {
+                this.items = layerPacked;
+                this.unpacked = [];
+                return;
+            }
+        }
+
+        // 1. 降级为单线程贪心搜索
+        const numTrials = itemsToPack.length > 200 ? 15 : (itemsToPack.length > 100 ? 30 : 60);
+        const bestPacking = this.runGreedyPackTrials(itemsToPack, options, 0, numTrials);
+
+        this.items = bestPacking.items;
+        this.unpacked = bestPacking.unpacked;
+    }
+
+    // 执行子范围区间的贪心装箱试验
+    runGreedyPackTrials(itemsToPack, options = {}, startTrial = 0, numTrials = 60) {
+        Packer.assertItems(itemsToPack);
+        if (!Number.isInteger(startTrial) || startTrial < 0 || !Number.isInteger(numTrials) || numTrials < 1 || numTrials > 1000) throw new RangeError('Invalid trial range');
+        const deadline = options.timeBudgetMs === undefined ? Infinity : performance.now() + options.timeBudgetMs;
+        if (options.explore) itemsToPack = Packer.shuffled(itemsToPack, options.seed);
+        const checkStability = options.checkStability !== false;
+        const supportRatio = options.supportRatio !== undefined ? options.supportRatio : DEFAULT_SUPPORT_RATIO;
+        if (!Number.isFinite(supportRatio) || supportRatio < 0 || supportRatio > 1) {
+            throw new RangeError(`supportRatio must be between 0 and 1, got ${supportRatio}`);
+        }
+
+        let bestPacking = { items: [], unpacked: [...itemsToPack], score: -Infinity };
+        let bestScore = -Infinity;
+
+        const biggerFirst = options.biggerFirst !== false;
+        const largeFirstStrategies = [
+            (list) => [...list].sort((a, b) => (b.w * b.h * b.d) - (a.w * a.h * a.d)),
+            (list) => [...list].sort((a, b) => Math.max(b.w, b.h, b.d) - Math.max(a.w, a.h, a.d)),
+            (list) => [...list].sort((a, b) => b.h - a.h),
+            (list) => [...list].sort((a, b) => (b.w * b.d) - (a.w * a.d)),
+            (list) => [...list].sort((a, b) => b.w - a.w),
+            (list) => [...list].sort((a, b) => b.d - a.d),
+            (list) => [...list].sort((a, b) => (b.weight || 0) - (a.weight || 0)),
+            (list) => [...list].sort((a, b) => {
+                const volA = a.w * a.h * a.d;
+                const volB = b.w * b.h * b.d;
+                return ((b.weight || 0) / volB) - ((a.weight || 0) / volA);
+            }),
+            (list) => [...list].sort((a, b) => (a.w * a.h * a.d) - (b.w * b.h * b.d))
+        ];
+        const smallFirstStrategies = [
+            (list) => [...list].sort((a, b) => (a.w * a.h * a.d) - (b.w * b.h * b.d)),
+            (list) => [...list].sort((a, b) => Math.min(a.w, a.h, a.d) - Math.min(b.w, b.h, b.d)),
+            (list) => [...list].sort((a, b) => a.h - b.h),
+            (list) => [...list].sort((a, b) => (a.w * a.d) - (b.w * b.d)),
+            (list) => [...list].sort((a, b) => a.w - b.w),
+            (list) => [...list].sort((a, b) => a.d - b.d),
+            (list) => [...list].sort((a, b) => (a.weight || 0) - (b.weight || 0)),
+            (list) => [...list].sort((a, b) => {
+                const volA = a.w * a.h * a.d;
+                const volB = b.w * b.h * b.d;
+                return ((a.weight || 0) / volA) - ((b.weight || 0) / volB);
+            }),
+            (list) => [...list].sort((a, b) => (b.w * b.h * b.d) - (a.w * a.h * a.d))
+        ];
+        const strategies = biggerFirst ? largeFirstStrategies : smallFirstStrategies;
+
+        const perturbList = (list, strategyIdx, rng) => {
+            const baseSorted = strategies[strategyIdx % strategies.length](list);
+            return baseSorted
+                .map((item, idx) => ({
+                    item,
+                    key: idx + (rng() * 16 - 8)
+                }))
+                .sort((a, b) => a.key - b.key)
+                .map(x => x.item);
+        };
+
+        const limitEnd = startTrial + numTrials;
+        const baseSeed = options.seed !== undefined ? options.seed : 20260617;
+        const scoreWeights = { ...Packer.DEFAULT_SCORE_WEIGHTS, ...(options.weights || {}) };
+
+        for (let trial = startTrial; trial < limitEnd; trial++) {
+            if (trial > startTrial && performance.now() > deadline) break;
+            const rng = Packer.mulberry32(baseSeed + trial);
+            let sortedItems;
+            let lookAheadK = 1;
+            
+            if (trial < strategies.length * 2) {
+                const strategyIdx = trial % strategies.length;
+                lookAheadK = trial < strategies.length ? 1 : 8;
+                sortedItems = strategies[strategyIdx](itemsToPack);
+            } else {
+                const strategyIdx = Math.floor(rng() * strategies.length);
+                sortedItems = perturbList(itemsToPack, strategyIdx, rng);
+                const kOptions = [1, 2, 4, 8, 12, 16, 24, 32, 48, 9999];
+                lookAheadK = kOptions[Math.floor(rng() * kOptions.length)];
+            }
+
+            let w_y = scoreWeights.w_y !== undefined ? scoreWeights.w_y : 100000;
+            let w_z, w_x;
+            if (trial % 3 === 0) {
+                w_z = 1000;
+                w_x = 1;
+            } else if (trial % 3 === 1) {
+                w_z = 1;
+                w_x = 1000;
+            } else {
+                w_z = 100;
+                w_x = 100;
+            }
+
+            const maxSpaces = options.maxSpaces !== undefined ? options.maxSpaces : 200;
+            const maxCandidatePositions = options.maxCandidatePositions !== undefined
+                ? options.maxCandidatePositions
+                : (trial % 5 === 0 ? 16 : 4);
+            const currentPacking = this.runSinglePack(sortedItems, checkStability, supportRatio, w_y, w_z, w_x, lookAheadK, maxSpaces, maxCandidatePositions, deadline);
+
+            // 自动校验所生成结果的合法性
+            const validation = Packer.validatePackingResult(currentPacking.items, this.binW, this.binH, this.binD, checkStability, supportRatio);
+            if (!validation.valid) {
+                console.warn("Trial result validation failed:", validation.errors);
+                continue; // 丢弃非法的解
+            }
+
+            const packedCount = currentPacking.items.length;
+            let packedVolume = 0;
+            let maxHeight = 0;
+            for (const item of currentPacking.items) {
+                packedVolume += item.rw * item.rh * item.rd;
+                if (item.y + item.rh > maxHeight) {
+                    maxHeight = item.y + item.rh;
+                }
+            }
+            const totalContact = this.calculateTotalContactArea(currentPacking.items);
+            const trialScore = packedCount * scoreWeights.packedCount + 
+                               packedVolume * scoreWeights.packedVolume - 
+                               maxHeight * scoreWeights.maxHeightPenalty + 
+                               totalContact * scoreWeights.contactArea;
+
+            if (options.excludeSignature && Packer.layoutSignature(currentPacking.items) === options.excludeSignature) continue;
+            const quality = Packer.comparePackings(currentPacking.items, bestPacking.items);
+            if (quality > 0 || (quality === 0 && trialScore > bestScore)) {
+                bestScore = trialScore;
+                bestPacking = {
+                    items: currentPacking.items.map(it => {
+                        const clone = new Item(it.id, it.name, it.w, it.h, it.d, it.color, it.weight);
+                        clone.x = it.x;
+                        clone.y = it.y;
+                        clone.z = it.z;
+                        clone.setRotation(it.rotationType);
+                        return clone;
+                    }),
+                    unpacked: currentPacking.unpacked.map(it => {
+                        return new Item(it.id, it.name, it.w, it.h, it.d, it.color, it.weight);
+                    }),
+                    score: trialScore
+                };
+            }
+            if (bestPacking.items.length === itemsToPack.length) break;
+        }
+
+        return bestPacking;
+    }
+
+    // 运行单次装入模拟 (基于 EMS 最大空腔与多物前瞻的最佳适配算法)
+    runSinglePack(sortedItems, checkStability, supportRatio, w_y, w_z, w_x, lookAheadK, maxSpaces = 200, maxCandidatePositions = 4, deadline = Infinity) {
+        const placed = [];
+        const pool = [...sortedItems]; // 待装载货物池
+
+        // 初始时仅有 1 个代表整个容器的最大空腔
+        let spaces = [{ x: 0, y: 0, z: 0, w: this.binW, h: this.binH, d: this.binD }];
+
+        // Y-top 支撑校验哈希索引
+        const supportIndex = Packer.createSupportIndex();
+
+        // EMS 切割与更新函数
+        const placeBoxInEMS = (spacesList, box) => {
+            const nextSpaces = [];
+            for (let i = 0; i < spacesList.length; i++) {
+                const s = spacesList[i];
+                // 检查 s 是否与 box 在空间上重叠 (相交)
+                if (s.x + s.w <= box.x + EPS_OVERLAP || box.x + box.rw <= s.x + EPS_OVERLAP ||
+                    s.y + s.h <= box.y + EPS_OVERLAP || box.y + box.rh <= s.y + EPS_OVERLAP ||
+                    s.z + s.d <= box.z + EPS_OVERLAP || box.z + box.rd <= s.z + EPS_OVERLAP) {
+                    // 没有重叠，保留该空间
+                    nextSpaces.push(s);
+                    continue;
+                }
+
+                // 相交，将被 box 切割为最多 6 个子空间
+                // X 轴方向切割
+                if (box.x > s.x) {
+                    nextSpaces.push({ x: s.x, y: s.y, z: s.z, w: box.x - s.x, h: s.h, d: s.d });
+                }
+                if (box.x + box.rw < s.x + s.w) {
+                    nextSpaces.push({ x: box.x + box.rw, y: s.y, z: s.z, w: (s.x + s.w) - (box.x + box.rw), h: s.h, d: s.d });
+                }
+                // Y 轴方向切割
+                if (box.y > s.y) {
+                    nextSpaces.push({ x: s.x, y: s.y, z: s.z, w: s.w, h: box.y - s.y, d: s.d });
+                }
+                if (box.y + box.rh < s.y + s.h) {
+                    nextSpaces.push({ x: s.x, y: box.y + box.rh, z: s.z, w: s.w, h: (s.y + s.h) - (box.y + box.rh), d: s.d });
+                }
+                // Z 轴方向切割
+                if (box.z > s.z) {
+                    nextSpaces.push({ x: s.x, y: s.y, z: s.z, w: s.w, h: s.h, d: box.z - s.z });
+                }
+                if (box.z + box.rd < s.z + s.d) {
+                    nextSpaces.push({ x: s.x, y: s.y, z: box.z + box.rd, w: s.w, h: s.h, d: (s.z + s.d) - (box.z + box.rd) });
+                }
+            }
+
+            return Packer.pruneSpaces(nextSpaces, pool, maxSpaces);
+        };
+
+        while (pool.length > 0) {
+            if (performance.now() > deadline) break;
+            let bestChoice = null;
+            let maxScore = -Infinity;
+
+            // 限制前瞻窗口范围为：[1, 货物池长度] 之间的有效值
+            const k = Math.max(1, Math.min(lookAheadK, pool.length));
+
+            // 1. 尝试从前瞻窗口内的 K 个货物中选取最适配的进行码放
+            // 采用货物品质类型去重优化，确保相同规格的货物只被校验一次
+            const processedTypesInWindow = new Set();
+            for (let i = 0; i < pool.length; i++) {
+                if (performance.now() > deadline) break;
+                // Only widen the look-ahead when its whole window has no feasible placement.
+                if (i === k && bestChoice) break;
+                const item = pool[i];
+                const itemTypeKey = `${item.name}_${item.w}_${item.h}_${item.d}_${item.weight || 0}`;
+                if (processedTypesInWindow.has(itemTypeKey)) continue;
+                processedTypesInWindow.add(itemTypeKey);
+
+                // 获取唯一的非对称旋转方向
+                const uniqueOrientations = Packer.getUniqueOrientations(item);
+
+                for (let sIdx = 0; sIdx < spaces.length; sIdx++) {
+                    const s = spaces[sIdx];
+
+                    for (let rIdx = 0; rIdx < uniqueOrientations.length; rIdx++) {
+                        const rot = uniqueOrientations[rIdx];
+                        const rw = rot.rw;
+                        const rh = rot.rh;
+                        const rd = rot.rd;
+
+                        // 尺寸可行性检查 (是否能完全放入该 EMS 空腔)
+                        if (rw > s.w + EPS_OVERLAP || rh > s.h + EPS_OVERLAP || rd > s.d + EPS_OVERLAP) {
+                            continue;
+                        }
+
+                        // 获取底面 4 个角坐标作为候选摆放点
+                        const candidatePositions = Packer.getEMSPositions(s, rw, rd, placed, maxCandidatePositions);
+
+                        for (let pIdxCoord = 0; pIdxCoord < candidatePositions.length; pIdxCoord++) {
+                            const pos = candidatePositions[pIdxCoord];
+                            const px = pos.x;
+                            const py = pos.y;
+                            const pz = pos.z;
+
+                            // 越界检查 (防止 epsilon 累积误差)
+                            if (px + rw > this.binW || py + rh > this.binH || pz + rd > this.binD) {
+                                continue;
+                            }
+
+                            // 碰撞冲突检查
+                            if (Packer.checkCollision(px, py, pz, rw, rh, rd, placed, EPS_OVERLAP)) {
+                                continue;
+                            }
+
+                            // 重力支撑性检查
+                            if (checkStability && py > 0) {
+                                let supportedArea = 0;
+                                const bottomArea = rw * rd;
+                                const supporters = supportIndex.get(py);
+                                for (let pIdx = 0; pIdx < supporters.length; pIdx++) {
+                                    const pItem = supporters[pIdx];
+                                    const xOverlap = Math.max(0, Math.min(px + rw, pItem.x + pItem.rw) - Math.max(px, pItem.x));
+                                    const zOverlap = Math.max(0, Math.min(pz + rd, pItem.z + pItem.rd) - Math.max(pz, pItem.z));
+                                    supportedArea += xOverlap * zOverlap;
+                                }
+                                if ((supportedArea / bottomArea) < supportRatio) {
+                                    continue;
+                                }
+                            }
+
+                            // 契合度与壁面接触评分 (传扁平参数，避免分配临时对象)
+                            const contact = this.getPlacementContactArea(px, py, pz, rw, rh, rd, placed, item.id);
+                            const score = - (py + rh) * w_y - (pz + rd) * w_z - (px + rw) * w_x + contact * 10;
+
+                            if (score > maxScore) {
+                                maxScore = score;
+                                bestChoice = { poolIndex: i, x: px, y: py, z: pz, rotationType: rot.rotationType, rw, rh, rd, item };
+                            }
+                        }
+                    }
+                }
+            }
+
+            // C. 提交并放置挑选出来的最优货物，并从剩余池中移除它
+            if (bestChoice) {
+                const item = bestChoice.item;
+                const placedItem = new Item(item.id, item.name, item.w, item.h, item.d, item.color, item.weight);
+                placedItem.x = bestChoice.x;
+                placedItem.y = bestChoice.y;
+                placedItem.z = bestChoice.z;
+                placedItem.setRotation(bestChoice.rotationType);
+                placed.push(placedItem);
+
+                // 添加至支撑索引
+                supportIndex.add(placedItem);
+
+                // 更新 EMS 空腔列表
+                spaces = placeBoxInEMS(spaces, placedItem);
+
+                pool.splice(bestChoice.poolIndex, 1);
+            } else {
+                // 如果池内剩余任何货物在所有可行空间下均无法码放，则装箱结束
+                break;
+            }
+        }
+
+        return { items: placed, unpacked: pool };
+    }
+
+    // 计算单个候选盒放置时的壁面及物体接触面积 (cm²) - 支持扁平坐标和尺寸参数以避免临时对象分配
+    getPlacementContactArea(boxOrX, placedOrPy, pz, rw, rh, rd, placed, boxId) {
+        let px, py, pzVal, rwVal, rhVal, rdVal, placedList, idVal;
+        const eps = EPS_CONTACT;
+
+        if (typeof boxOrX === 'object') {
+            const box = boxOrX;
+            px = box.x;
+            py = box.y;
+            pzVal = box.z;
+            rwVal = box.rw;
+            rhVal = box.rh;
+            rdVal = box.rd;
+            placedList = placedOrPy;
+            idVal = box.id;
+        } else {
+            px = boxOrX;
+            py = placedOrPy;
+            pzVal = pz;
+            rwVal = rw;
+            rhVal = rh;
+            rdVal = rd;
+            placedList = placed;
+            idVal = boxId;
+        }
+
+        let contact = 0;
+
+        // 与容器内壁接触
+        if (py < eps) contact += rwVal * rdVal; // 底面
+        if (px < eps) contact += rhVal * rdVal; // 左面
+        if (pzVal < eps) contact += rwVal * rhVal; // 后面
+        if (Math.abs(px + rwVal - this.binW) < eps) contact += rhVal * rdVal; // 右面
+        if (Math.abs(pzVal + rdVal - this.binD) < eps) contact += rwVal * rhVal; // 前面
+
+        // 与其它放置物品的面接触
+        for (let i = 0; i < placedList.length; i++) {
+            const item = placedList[i];
+            if (item.x === px && item.y === py && item.z === pzVal && item.rw === rwVal && item.rh === rhVal && item.rd === rdVal) continue;
+            if (idVal !== undefined && item.id === idVal) continue;
+
+            // X 轴邻接 (左右接触)
+            if (Math.abs(px + rwVal - item.x) < eps || Math.abs(item.x + item.rw - px) < eps) {
+                const yOverlap = Math.max(0, Math.min(py + rhVal, item.y + item.rh) - Math.max(py, item.y));
+                const zOverlap = Math.max(0, Math.min(pzVal + rdVal, item.z + item.rd) - Math.max(pzVal, item.z));
+                contact += yOverlap * zOverlap;
+            }
+            // Y 轴邻接 (上下接触)
+            if (Math.abs(py + rhVal - item.y) < eps || Math.abs(item.y + item.rh - py) < eps) {
+                const xOverlap = Math.max(0, Math.min(px + rwVal, item.x + item.rw) - Math.max(px, item.x));
+                const zOverlap = Math.max(0, Math.min(pzVal + rdVal, item.z + item.rd) - Math.max(pzVal, item.z));
+                contact += xOverlap * zOverlap;
+            }
+            // Z 轴邻接 (前后接触)
+            if (Math.abs(pzVal + rdVal - item.z) < eps || Math.abs(item.z + item.rd - pzVal) < eps) {
+                const xOverlap = Math.max(0, Math.min(px + rwVal, item.x + item.rw) - Math.max(px, item.x));
+                const yOverlap = Math.max(0, Math.min(py + rhVal, item.y + item.rh) - Math.max(py, item.y));
+                contact += xOverlap * yOverlap;
+            }
+        }
+
+        return contact;
+    }
+
+    // 计算整体装载方案的总体接触面积
+    calculateTotalContactArea(placed) {
+        let total = 0;
+        let wallContact = 0;
+        for (let i = 0; i < placed.length; i++) {
+            const box = placed[i];
+            total += this.getPlacementContactArea(box, placed);
+            if (box.y < EPS_CONTACT) wallContact += box.rw * box.rd;
+            if (box.x < EPS_CONTACT) wallContact += box.rh * box.rd;
+            if (box.z < EPS_CONTACT) wallContact += box.rw * box.rh;
+            if (Math.abs(box.x + box.rw - this.binW) < EPS_CONTACT) wallContact += box.rh * box.rd;
+            if (Math.abs(box.z + box.rd - this.binD) < EPS_CONTACT) wallContact += box.rw * box.rh;
+        }
+        // 箱体之间的接触会从两侧各计算一次，容器壁接触只计算一次。
+        return wallContact + (total - wallContact) / 2;
+    }
+
+    // 静态辅助方法：执行重力落底
+    // 给定物品在 X-Z 平面的位置与尺寸，计算其在 Y 轴能下落到的最低合法位置
+    static getGravityDropY(candidate, placedItems, binH, options = {}) {
+        let landingY = 0;
+        const maxLandingY = options.maxLandingY === undefined ? Infinity : options.maxLandingY;
+
+        for (const item of placedItems) {
+            // 排除待测物自身
+            if (item.id === candidate.id) continue;
+
+            // 检测 X-Z 轴投影是否重叠
+            const xOverlap = candidate.x < item.x + item.rw && candidate.x + candidate.rw > item.x;
+            const zOverlap = candidate.z < item.z + item.rd && candidate.z + candidate.rd > item.z;
+
+            if (xOverlap && zOverlap) {
+                const itemTop = item.y + item.rh;
+                if (itemTop <= maxLandingY + EPS_STABILITY && itemTop > landingY) {
+                    landingY = itemTop;
+                }
+            }
+        }
+
+        // 如果加上盒子高度超过容器高度，则返回 null
+        if (landingY + candidate.rh > binH) {
+            return null;
+        }
+
+        return landingY;
+    }
+
+    // 公维对齐层级回溯策略入口
+    tryLayerBacktrackingPack(itemsToPack, checkStability, supportRatio, options = {}) {
+        return this.tryLayerBacktrackingPackWithPartitions(itemsToPack, checkStability, supportRatio, 0, 30, options);
+    }
+
+    // 支持指定组合范围的层级回溯分发策略
+    tryLayerBacktrackingPackWithPartitions(itemsToPack, checkStability, supportRatio, startPartition, endPartition, options = {}) {
+        if (options.explore) itemsToPack = Packer.shuffled(itemsToPack, options.seed);
+        if (!itemsToPack.length || itemsToPack.length > 128) return null;
+        const deadline = performance.now() + 10000;
+        if (itemsToPack.reduce((sum, item) => sum + item.w * item.h * item.d, 0) > this.binW * this.binH * this.binD + EPS_OVERLAP) return null;
+        // 1. 检测是否有所有物品共同持有的特征维度 (公维)
+        let commonDim = null;
+        if (itemsToPack.length > 0) {
+            const firstItem = itemsToPack[0];
+            const candidates = [firstItem.w, firstItem.h, firstItem.d];
+            for (const cand of candidates) {
+                let isCommon = true;
+                for (const item of itemsToPack) {
+                    if (Math.abs(item.w - cand) > EPS_DIMENSION && Math.abs(item.h - cand) > EPS_DIMENSION && Math.abs(item.d - cand) > EPS_DIMENSION) {
+                        isCommon = false;
+                        break;
+                    }
+                }
+                if (isCommon) {
+                    commonDim = cand;
+                    break;
+                }
+            }
+        }
+
+        if (!commonDim) return null;
+
+        // 2. 检查 Z 轴 (深度) 是否适合作为层级对齐轴线
+        const numLayers = Math.floor(this.binD / commonDim);
+        // shortcut: deep recursion is limited to 64 layers; the greedy solver handles larger layer counts.
+        if (numLayers < 1 || numLayers > 64) return null;
+
+        const crossW = this.binW;
+        const crossH = this.binH;
+
+        // 3. 提取物品在 Z 轴公维对齐后的 2D 尺寸 (w2d, h2d) 及其 3D 旋转映射关系
+        const items2D = itemsToPack.map(item => {
+            let w2d, h2d, rot3d_0, rot3d_2;
+            if (Math.abs(item.d - commonDim) <= EPS_DIMENSION) {
+                w2d = item.w;
+                h2d = item.h;
+                rot3d_0 = 0; // [w, h, d]
+                rot3d_2 = 2; // [h, w, d]
+            } else if (Math.abs(item.h - commonDim) <= EPS_DIMENSION) {
+                w2d = item.w;
+                h2d = item.d;
+                rot3d_0 = 1; // [w, d, h]
+                rot3d_2 = 4; // [d, w, h]
+            } else {
+                w2d = item.h;
+                h2d = item.d;
+                rot3d_0 = 3; // [h, d, w]
+                rot3d_2 = 5; // [d, h, w]
+            }
+            return {
+                typeKey: `${item.w}|${item.h}|${item.d}`,
+                name: item.name,
+                w2d,
+                h2d,
+                rot3d_0,
+                rot3d_2,
+                originalItem: item
+            };
+        });
+
+        // 4. 按完整规格分组。名称仅用于展示，不能作为几何类型键。
+        const itemTypes = [];
+        const typeMap = new Map();
+        for (const item of items2D) {
+            const key = item.typeKey;
+            if (!typeMap.has(key)) {
+                typeMap.set(key, {
+                    key,
+                    name: item.name,
+                    w2d: item.w2d,
+                    h2d: item.h2d,
+                    rot3d_0: item.rot3d_0,
+                    rot3d_2: item.rot3d_2,
+                    originalItems: [],
+                    qty: 0
+                });
+                itemTypes.push(typeMap.get(key));
+            }
+            typeMap.get(key).originalItems.push(item.originalItem);
+            typeMap.get(key).qty++;
+        }
+
+        // 5. 生成所有可能的分拆方案（按层面积差异与对称性排序）
+        const candidates = this.getPartitions(itemTypes, numLayers, crossW, crossH);
+        const partitions = options.explore ? Packer.shuffled(candidates, options.seed) : candidates;
+        if (partitions.length === 0) return null;
+
+        // 限制索引在有效区间内
+        const limitStart = Math.max(0, startPartition);
+        const limitEnd = Math.min(partitions.length, endPartition);
+
+        // 6. 依次尝试指定区间内的分拆方案，为每层调用 2D 稳定回溯求解器
+        for (let pIdx = limitStart; pIdx < limitEnd; pIdx++) {
+            if (performance.now() > deadline) return null;
+            const partition = partitions[pIdx];
+            let allLayersSuccess = true;
+            const layersSolutions = [];
+
+            for (let layerIdx = 0; layerIdx < numLayers; layerIdx++) {
+                const layerQtyMap = partition[layerIdx];
+                const layerItems = [];
+                for (const type of itemTypes) {
+                    const qty = layerQtyMap[type.key] || 0;
+                    for (let q = 0; q < qty; q++) {
+                        layerItems.push(type);
+                    }
+                }
+
+                // 2D 稳定回溯求解
+                const res = this.solve2D(crossW, crossH, layerItems, checkStability, supportRatio, deadline);
+                if (!res.success) {
+                    allLayersSuccess = false;
+                    break;
+                }
+                layersSolutions.push(res.solutions);
+            }
+
+            if (allLayersSuccess) {
+                // 成功拼合每层 2D 坐标为完整 3D 坐标
+                const placed3D = [];
+                // 为每个品类重设一个独立的可消费物品池，以分配唯一的 id
+                const typeItemPools = new Map();
+                for (const type of itemTypes) {
+                    typeItemPools.set(type.key, [...type.originalItems]);
+                }
+
+                for (let layerIdx = 0; layerIdx < numLayers; layerIdx++) {
+                    const zOffset = layerIdx * commonDim;
+                    const layerSol = layersSolutions[layerIdx];
+                    for (const sol of layerSol) {
+                        const original = typeItemPools.get(sol.typeKey).pop();
+                        const it = new Item(original.id, original.name, original.w, original.h, original.d, original.color, original.weight);
+                        it.x = sol.x;
+                        it.y = sol.y;
+                        it.z = zOffset;
+                        it.setRotation(sol.rotationType);
+                        placed3D.push(it);
+                    }
+                }
+
+                if (!Packer.validatePackingResult(placed3D, this.binW, this.binH, this.binD, checkStability, supportRatio).valid) continue;
+
+                if (options.excludeSignature && Packer.layoutSignature(placed3D) === options.excludeSignature) continue;
+                return placed3D;
+            }
+        }
+
+        return null;
+    }
+
+    // 辅助函数：生成所有合理的层面积分拆组合 (采用对称偏差剪枝优化，杜绝组合数爆炸)
+    getPartitions(itemTypes, numLayers, crossW, crossH) {
+        const partitions = [];
+        if (!Number.isInteger(numLayers) || numLayers < 1 || numLayers > 64 || itemTypes.length > 128) return partitions;
+        let visited = 0;
+        const maxVisits = 20000;
+        const currentPartition = Array.from({ length: numLayers }, () => Object.create(null));
+        for (const type of itemTypes) {
+            for (let j = 0; j < numLayers; j++) {
+                currentPartition[j][type.key] = 0;
+            }
+        }
+
+        const maxArea = crossW * crossH;
+
+        const searchPartition = (typeIdx) => {
+            if (partitions.length >= 5000 || ++visited > maxVisits) return;
+            if (typeIdx === itemTypes.length) {
+                const layerAreas = [];
+                for (let j = 0; j < numLayers; j++) {
+                    let area = 0;
+                    for (const type of itemTypes) {
+                        area += currentPartition[j][type.key] * type.w2d * type.h2d;
+                    }
+                    if (area > maxArea) return;
+                    layerAreas.push(area);
+                }
+                const clone = currentPartition.map(layer => ({ ...layer }));
+                const minArea = Math.min(...layerAreas);
+                const maxAreaVal = Math.max(...layerAreas);
+                
+                // 计算对称性得分 (数值越小代表各层分配的相同货物数量越均匀)
+                let symmetryScore = 0;
+                for (const type of itemTypes) {
+                    const target = type.qty / numLayers;
+                    for (let j = 0; j < numLayers; j++) {
+                        symmetryScore += Math.abs(clone[j][type.key] - target);
+                    }
+                }
+
+                partitions.push({ 
+                    layers: clone, 
+                    diff: maxAreaVal - minArea,
+                    symmetryScore: symmetryScore
+                });
+                return;
+            }
+
+            const type = itemTypes[typeIdx];
+            const qty = type.qty;
+            const avg = qty / numLayers;
+            const maxDev = Math.max(1, Math.ceil(avg * 0.4));
+            const minQty = Math.max(0, Math.floor(avg - maxDev));
+            const maxQty = Math.min(qty, Math.ceil(avg + maxDev));
+
+            const distribute = (layerIdx, remainingQty) => {
+                if (partitions.length >= 5000 || ++visited > maxVisits) return;
+                if (layerIdx === numLayers - 1) {
+                    if (remainingQty >= minQty && remainingQty <= maxQty) {
+                        currentPartition[layerIdx][type.key] = remainingQty;
+                        searchPartition(typeIdx + 1);
+                    }
+                    return;
+                }
+
+                const startQ = Math.max(minQty, remainingQty - (numLayers - 1 - layerIdx) * maxQty);
+                const endQ = Math.min(maxQty, remainingQty - (numLayers - 1 - layerIdx) * minQty);
+
+                for (let q = startQ; q <= endQ && visited <= maxVisits && partitions.length < 5000; q++) {
+                    currentPartition[layerIdx][type.key] = q;
+                    distribute(layerIdx + 1, remainingQty - q);
+                }
+            };
+
+            distribute(0, qty);
+        };
+
+        searchPartition(0);
+        
+        // 优先按对称性得分排序，对称性相同时按面积差异排序
+        partitions.sort((a, b) => {
+            if (Math.abs(a.symmetryScore - b.symmetryScore) > 0.01) {
+                return a.symmetryScore - b.symmetryScore;
+            }
+            return a.diff - b.diff;
+        });
+        
+        return partitions.map(p => p.layers);
+    }
+
+    // 辅助函数：2D 稳定回溯求解器
+    solve2D(binW, binH, items, checkStability, supportRatio, deadline = performance.now() + 1500) {
+        let solutions = [];
+        let placed = [];
+        let pool = [...items];
+
+        // backtrack 使用 pop()，这里刻意让小件优先。当前候选点生成策略在
+        // 49 件基准布局上依赖这一顺序；改变顺序前必须先扩充候选点与基准测试。
+        pool.sort((a, b) => (b.w2d * b.h2d) - (a.w2d * a.h2d));
+
+        let nodesVisited = 0;
+        const maxNodes = 100000; // 调大上限以确保能够找到解
+
+        const backtrack = () => {
+            nodesVisited++;
+            if (nodesVisited > maxNodes || (nodesVisited % 128 === 0 && performance.now() > deadline)) return false;
+
+            if (pool.length === 0) {
+                solutions = placed.map(p => ({
+                    typeKey: p.typeKey,
+                    name: p.name,
+                    x: p.x,
+                    y: p.y,
+                    w: p.w,
+                    h: p.h,
+                    rotationType: p.rotationType,
+                    item: p.item
+                }));
+                return true;
+            }
+
+            const item = pool.pop();
+
+            const pivots = [[0, 0]];
+            for (const p of placed) {
+                pivots.push([p.x + p.w, p.y]);
+                pivots.push([p.x, p.y + p.h]);
+            }
+
+            const uniquePivots = [];
+            const seen = new Set();
+            for (const [px, py] of pivots) {
+                if (px >= binW || py >= binH) continue;
+                const key = `${px.toFixed(1)},${py.toFixed(1)}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    uniquePivots.push({ x: px, y: py });
+                }
+            }
+
+            uniquePivots.sort((a, b) => (a.y !== b.y) ? a.y - b.y : a.x - b.x);
+
+            const isSquare = Math.abs(item.w2d - item.h2d) < 0.01;
+            const rotations = isSquare
+                ? [{ rw: item.w2d, rh: item.h2d, rot: item.rot3d_0 }]
+                : [
+                    { rw: item.w2d, rh: item.h2d, rot: item.rot3d_0 },
+                    { rw: item.h2d, rh: item.w2d, rot: item.rot3d_2 }
+                ];
+
+            for (const r of rotations) {
+                for (const pivot of uniquePivots) {
+                    if (pivot.x + r.rw > binW || pivot.y + r.rh > binH) continue;
+
+                    // 碰撞冲突检查 (无分配对象，高性能)
+                    if (Packer.checkCollision2D(pivot.x, pivot.y, r.rw, r.rh, placed, EPS_OVERLAP)) {
+                        continue;
+                    }
+
+                    // 2D 支撑性校验
+                    if (checkStability && pivot.y > 0) {
+                        let supportedWidth = 0;
+                        for (const p of placed) {
+                            if (Math.abs((p.y + p.h) - pivot.y) < EPS_STABILITY) {
+                                const xOverlap = Math.max(0, Math.min(pivot.x + r.rw, p.x + p.w) - Math.max(pivot.x, p.x));
+                                supportedWidth += xOverlap;
+                            }
+                        }
+                        if ((supportedWidth / r.rw) < supportRatio) {
+                            continue;
+                        }
+                    }
+
+                    placed.push({
+                        typeKey: item.key,
+                        name: item.name,
+                        x: pivot.x,
+                        y: pivot.y,
+                        w: r.rw,
+                        h: r.rh,
+                        rotationType: r.rot,
+                        item: item.originalItem
+                    });
+
+                    if (backtrack()) return true;
+
+                    placed.pop();
+                }
+            }
+
+            pool.push(item);
+            return false;
+        };
+
+        const success = backtrack();
+        return { success, solutions, nodesVisited };
+    }
+}
+
+// 浏览器全局与 Node.js 测试环境双兼容。
+if (typeof window !== 'undefined') {
+    window.boxesOverlap = boxesOverlap;
+    window.Item = Item;
+    window.Packer = Packer;
+}
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { boxesOverlap, Item, Packer };
+}

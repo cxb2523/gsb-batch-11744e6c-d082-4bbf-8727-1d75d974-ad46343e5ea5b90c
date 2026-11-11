@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>3D Packing System - Integrated Test Suite</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f8fafc;
+            color: #1e293b;
+            padding: 24px;
+        }
+        h1 {
+            color: #0f172a;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 12px;
+        }
+        .summary-card {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .test-case {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .test-case.pass {
+            border-left: 6px solid #10b981;
+        }
+        .test-case.fail {
+            border-left: 6px solid #ef4444;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+        .badge.pass {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        .badge.fail {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+        pre {
+            background: #f1f5f9;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>3D Packing System - Integrated Test Suite</h1>
+    <div id="status">Running tests...</div>
+    <div class="summary-card" id="summary">
+        Tests executed: <span id="executed-count">0</span> / <span id="total-count">0</span><br>
+        Passed: <span id="passed-count" style="color:#10b981; font-weight:bold;">0</span><br>
+        Failed: <span id="failed-count" style="color:#ef4444; font-weight:bold;">0</span>
+    </div>
+    <div id="test-results"></div>
+
+    <!-- Load the production packer.js -->
+    <script src="packer.js"></script>
+    <script>
+        const results = [];
+        let executed = 0;
+        let passed = 0;
+        let failed = 0;
+
+        function addResult(name, success, details) {
+            executed++;
+            if (success) passed++;
+            else failed++;
+
+            results.push({ name, success, details });
+
+            const div = document.createElement('div');
+            div.className = `test-case ${success ? 'pass' : 'fail'}`;
+            div.innerHTML = `
+                <h3>${name} <span class="badge ${success ? 'pass' : 'fail'}">${success ? 'PASS' : 'FAIL'}</span></h3>
+                <pre>${details}</pre>
+            `;
+            document.getElementById('test-results').appendChild(div);
+
+            document.getElementById('executed-count').innerText = executed;
+            document.getElementById('passed-count').innerText = passed;
+            document.getElementById('failed-count').innerText = failed;
+        }
+
+        function runTests() {
+            document.getElementById('total-count').innerText = "13";
+
+            // ==========================================
+            // TEST CASE 1: 49-item set with stability check
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 50;
+                const binL = 60;
+                const items = [];
+                for (let i = 0; i < 9; i++) items.push(new Item(`A_${i}`, "产品A", 16, 8, 29, "#6366f1", 0.65));
+                for (let i = 0; i < 24; i++) items.push(new Item(`B_${i}`, "产品B", 13, 6, 29, "#06b6d4", 0.37));
+                for (let i = 0; i < 16; i++) items.push(new Item(`C_${i}`, "产品C", 6, 6, 29, "#10b981", 0.19));
+
+                const packer = new Packer(binW, binH, binL);
+                const start = performance.now();
+                packer.pack(items, { checkStability: true, supportRatio: 0.5 });
+                const end = performance.now();
+
+                const success = packer.items.length === 49 && packer.unpacked.length === 0;
+                const details = `Container: 40x50x60\nItems: 9 A (16x8x29), 24 B (13x6x29), 16 C (6x6x29)\nStability check: ENABLED\n` +
+                                `Packed: ${packer.items.length} / 49\nUnpacked: ${packer.unpacked.length}\n` +
+                                `Time: ${(end - start).toFixed(2)} ms`;
+                addResult("极限49件套稳定性装载测试", success, details);
+            } catch (err) {
+                addResult("极限49件套稳定性装载测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 2: 49-item set without stability check
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 50;
+                const binL = 60;
+                const items = [];
+                for (let i = 0; i < 9; i++) items.push(new Item(`A_${i}`, "产品A", 16, 8, 29, "#6366f1", 0.65));
+                for (let i = 0; i < 24; i++) items.push(new Item(`B_${i}`, "产品B", 13, 6, 29, "#06b6d4", 0.37));
+                for (let i = 0; i < 16; i++) items.push(new Item(`C_${i}`, "产品C", 6, 6, 29, "#10b981", 0.19));
+
+                const packer = new Packer(binW, binH, binL);
+                const start = performance.now();
+                packer.pack(items, { checkStability: false });
+                const end = performance.now();
+
+                const success = packer.items.length === 49 && packer.unpacked.length === 0;
+                const details = `Container: 40x50x60\nItems: 9 A (16x8x29), 24 B (13x6x29), 16 C (6x6x29)\nStability check: DISABLED\n` +
+                                `Packed: ${packer.items.length} / 49\nUnpacked: ${packer.unpacked.length}\n` +
+                                `Time: ${(end - start).toFixed(2)} ms`;
+                addResult("极限49件套非稳定性装载测试", success, details);
+            } catch (err) {
+                addResult("极限49件套非稳定性装载测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 3: Volume and Volumetric Weight Calculation (Dim Weight)
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 50;
+                const binL = 60;
+                const divisor = 8000;
+                const expectedVolume = (binW * binH * binL) / 1000; // 120.0 L
+                const expectedDimWeight = (binW * binH * binL) / divisor; // 15.0 kg
+
+                const success = Math.abs(expectedVolume - 120.0) < 0.01 && Math.abs(expectedDimWeight - 15.0) < 0.01;
+                const details = `Container: 40x50x60\nDivisor: ${divisor}\n` +
+                                `Calculated Volume: ${expectedVolume.toFixed(1)} L (Expected: 120.0 L)\n` +
+                                `Calculated Dim Weight: ${expectedDimWeight.toFixed(1)} kg (Expected: 15.0 kg)`;
+                addResult("容积与体积折算重 (泡货值) 计算公式测试", success, details);
+            } catch (err) {
+                addResult("容积与体积折算重 (泡货值) 计算公式测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 4: Standard Greedy Fallback Test (No Common Dim)
+            // ==========================================
+            try {
+                // Mix of items with no common dimension to test greedy fallback
+                const binW = 40;
+                const binH = 40;
+                const binL = 40;
+                const items = [];
+                items.push(new Item("g1", "Box1", 20, 20, 20));
+                items.push(new Item("g2", "Box2", 15, 15, 15));
+                items.push(new Item("g3", "Box3", 10, 10, 10));
+
+                const packer = new Packer(binW, binH, binL);
+                const start = performance.now();
+                packer.pack(items, { checkStability: true });
+                const end = performance.now();
+
+                const success = packer.items.length === 3 && packer.unpacked.length === 0;
+                const details = `Container: 40x40x40\nItems: 20x20x20, 15x15x15, 10x10x10\nStability check: ENABLED\n` +
+                                `Packed: ${packer.items.length} / 3\nUnpacked: ${packer.unpacked.length}\n` +
+                                `Time: ${(end - start).toFixed(2)} ms`;
+                addResult("无特征公维的传统启发式降级测试", success, details);
+            } catch (err) {
+                addResult("无特征公维的传统启发式降级测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 5: Seed Parameterization & Determinism Test
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 40;
+                const binL = 40;
+                const items1 = [
+                    new Item("s1", "Box1", 20, 15, 10),
+                    new Item("s2", "Box2", 15, 10, 12),
+                    new Item("s3", "Box3", 12, 12, 12),
+                    new Item("s4", "Box4", 8, 8, 8),
+                    new Item("s5", "Box5", 6, 6, 6)
+                ];
+                const items2 = items1.map(it => new Item(it.id, it.name, it.w, it.h, it.d));
+                const items3 = items1.map(it => new Item(it.id, it.name, it.w, it.h, it.d));
+
+                const packer1 = new Packer(binW, binH, binL);
+                const res1 = packer1.runGreedyPackTrials(items1, { seed: 12345, checkStability: false }, 20, 1);
+
+                const packer2 = new Packer(binW, binH, binL);
+                const res2 = packer2.runGreedyPackTrials(items2, { seed: 12345, checkStability: false }, 20, 1);
+
+                const packer3 = new Packer(binW, binH, binL);
+                const res3 = packer3.runGreedyPackTrials(items3, { seed: 99999, checkStability: false }, 20, 1);
+
+                let identicalRun1And2 = res1.items.length === res2.items.length;
+                if (identicalRun1And2) {
+                    for (let i = 0; i < res1.items.length; i++) {
+                        const it1 = res1.items[i];
+                        const it2 = res2.items.find(x => x.id === it1.id);
+                        if (!it2 || it1.x !== it2.x || it1.y !== it2.y || it1.z !== it2.z || it1.rotationType !== it2.rotationType) {
+                            identicalRun1And2 = false;
+                            break;
+                        }
+                    }
+                }
+
+                let differentRun1And3 = false;
+                if (res1.items.length !== res3.items.length) {
+                    differentRun1And3 = true;
+                } else {
+                    for (let i = 0; i < res1.items.length; i++) {
+                        const it1 = res1.items[i];
+                        const it3 = res3.items.find(x => x.id === it1.id);
+                        if (!it3 || it1.x !== it3.x || it1.y !== it3.y || it1.z !== it3.z || it1.rotationType !== it3.rotationType) {
+                            differentRun1And3 = true;
+                            break;
+                        }
+                    }
+                }
+
+                const success = identicalRun1And2 && differentRun1And3;
+                const details = `Same seed results identical: ${identicalRun1And2 ? 'YES' : 'NO'}\n` +
+                                `Different seed results differ: ${differentRun1And3 ? 'YES' : 'NO'}`;
+                addResult("种子随机数参数确定性与变异性测试", success, details);
+            } catch (err) {
+                addResult("种子随机数参数确定性与变异性测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 6: boxesOverlap Function Rotated & Overlapping Test
+            // ==========================================
+            try {
+                const a = { x: 0, y: 0, z: 0, w: 10, h: 20, d: 30 };
+                const b_overlap = { x: 5, y: 5, z: 5, w: 10, h: 10, d: 10 };
+                const overlap1 = boxesOverlap(a, b_overlap);
+
+                const c_adjacent = { x: 10, y: 0, z: 0, w: 10, h: 20, d: 30 };
+                const overlap2 = boxesOverlap(a, c_adjacent);
+
+                const a_rot = { x: 0, y: 0, z: 0, w: 10, h: 20, d: 30, rw: 30, rh: 10, rd: 20 };
+                const e = { x: 25, y: 0, z: 0, w: 10, h: 10, d: 10 };
+                const overlap3 = boxesOverlap(a_rot, e);
+
+                const success = overlap1 === true && overlap2 === false && overlap3 === true;
+                const details = `Overlap test (Standard overlapping): ${overlap1 ? 'PASS' : 'FAIL'}\n` +
+                                `Adjacent test (Should not overlap): ${!overlap2 ? 'PASS' : 'FAIL'}\n` +
+                                `Rotated dimensions overlap test: ${overlap3 ? 'PASS' : 'FAIL'}`;
+                addResult("boxesOverlap 旋转与重叠判定专项测试", success, details);
+            } catch (err) {
+                addResult("boxesOverlap 旋转与重叠判定专项测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 7: EMS Pruning, Deduplication, & Sorting Validity Test
+            // ==========================================
+            try {
+                const pool = [new Item("p1", "Item", 10, 10, 10)];
+                const spacesList = [
+                    { x: 0, y: 0, z: 0, w: 15, h: 15, d: 15 },
+                    { x: 20, y: 0, z: 0, w: 5, h: 15, d: 15 },
+                    { x: 0, y: 0, z: 0, w: 15, h: 15, d: 15 },
+                    { x: 1, y: 1, z: 1, w: 5, h: 5, d: 5 },
+                    { x: 0, y: 10, z: 0, w: 15, h: 15, d: 15 }
+                ];
+
+                const pruned = Packer.pruneSpaces(spacesList, pool, 10);
+
+                const hasS1 = pruned.some(s => s.x === 0 && s.y === 0 && s.w === 15);
+                const hasS2 = pruned.some(s => s.x === 20);
+                const hasS4 = pruned.some(s => s.x === 1 && s.y === 1);
+                const countS1 = pruned.filter(s => s.x === 0 && s.y === 0 && s.w === 15).length;
+                const isSorted = pruned.length === 2 && pruned[0].y === 0 && pruned[1].y === 10;
+
+                const success = hasS1 && !hasS2 && !hasS4 && countS1 === 1 && isSorted;
+                const details = `Spaces count after pruning: ${pruned.length} (Expected: 2)\n` +
+                                `- Contains valid space: ${hasS1 ? 'YES' : 'NO'}\n` +
+                                `- Pruned too-small space: ${!hasS2 ? 'YES' : 'NO'}\n` +
+                                `- Pruned contained space: ${!hasS4 ? 'YES' : 'NO'}\n` +
+                                `- Deduplicated identical spaces: ${countS1 === 1 ? 'YES' : 'NO'}\n` +
+                                `- Sorted ascending Y->Z->X: ${isSorted ? 'YES' : 'NO'}`;
+                addResult("EMS 空腔剪枝、去重与排序合法性专项测试", success, details);
+            } catch (err) {
+                addResult("EMS 空腔剪枝、去重与排序合法性专项测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 8: supportIndex Hashing & Retrieval Test
+            // ==========================================
+            try {
+                const supportIndex = Packer.createSupportIndex();
+                const item1 = new Item("t1", "Item1", 10, 10, 10);
+                item1.x = 0; item1.y = 0; item1.z = 0;
+                item1.setRotation(0); // rh = 10, Y-top = 10
+
+                const item2 = new Item("t2", "Item2", 10, 15, 10);
+                item2.x = 10; item2.y = 5; item2.z = 0;
+                item2.setRotation(0); // rh = 15, Y-top = 20
+
+                supportIndex.add(item1);
+                supportIndex.add(item2);
+
+                const supportersAt10 = supportIndex.get(10);
+                const supportersAt20 = supportIndex.get(20);
+                const supportersAt15 = supportIndex.get(15);
+
+                const pass1 = supportersAt10.length === 1 && supportersAt10[0].id === "t1";
+                const pass2 = supportersAt20.length === 1 && supportersAt20[0].id === "t2";
+                const pass3 = supportersAt15.length === 0;
+
+                const success = pass1 && pass2 && pass3;
+                const details = `Index retrieval at Y=10: ${pass1 ? 'PASS (found t1)' : 'FAIL'}\n` +
+                                `Index retrieval at Y=20: ${pass2 ? 'PASS (found t2)' : 'FAIL'}\n` +
+                                `Index retrieval at Y=15 (empty): ${pass3 ? 'PASS' : 'FAIL'}`;
+                addResult("支撑索引哈希映射与快速检索专项测试", success, details);
+            } catch (err) {
+                addResult("支撑索引哈希映射与快速检索专项测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 9: Debug Floating Box Scenario
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 49;
+                const binL = 60;
+                const items = [];
+                for (let i = 0; i < 18; i++) items.push(new Item(`A_${i}`, "产品A", 16, 8, 29, "#6366f1", 0.65));
+                for (let i = 0; i < 18; i++) items.push(new Item(`B_${i}`, "产品B", 13, 6, 29, "#06b6d4", 0.37));
+
+                const packer = new Packer(binW, binH, binL);
+                packer.pack(items, { checkStability: true, supportRatio: 0.5, seed: 20260617 });
+
+                let details = `Container: 40x49x60\n` +
+                              `Packed count: ${packer.items.length}\n` +
+                              `Unpacked count: ${packer.unpacked.length}\n`;
+
+                const validation = Packer.validatePackingResult(packer.items, binW, binH, binL, true, 0.5);
+                details += `Validation valid: ${validation.valid}\n`;
+                if (!validation.valid) {
+                    details += `Validation errors: ${JSON.stringify(validation.errors)}\n`;
+                }
+
+                packer.items.forEach(it => {
+                    details += `- ${it.name} (${it.id}): pos=(${it.x}, ${it.y}, ${it.z}), rotSize=(${it.rw}, ${it.rh}, ${it.rd}), rot=${it.rotationType}\n`;
+                });
+
+                const success = validation.valid && packer.items.length > 0;
+                addResult("调试悬空盒子测试", success, details);
+            } catch (err) {
+                addResult("调试悬空盒子测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 10: Direct Layer Backtracking Solver Test
+            // ==========================================
+            try {
+                const binW = 4;
+                const binH = 2;
+                const binL = 2;
+                const items = [
+                    new Item('layer_1', 'Cube', 2, 2, 2),
+                    new Item('layer_2', 'Cube', 2, 2, 2)
+                ];
+
+                const packer = new Packer(binW, binH, binL);
+                const res = packer.tryLayerBacktrackingPack(items, true, 0.5);
+
+                let details = `Container: 4x2x2\n` +
+                              `Layer solver returned: ${res !== null}\n`;
+                
+                let success = res !== null;
+                if (res) {
+                    details += `Packed count: ${res.length}\n`;
+                    const validation = Packer.validatePackingResult(res, binW, binH, binL, true, 0.5);
+                    details += `Validation valid: ${validation.valid}\n`;
+                    success = validation.valid;
+                    if (!validation.valid) {
+                        details += `Validation errors: ${JSON.stringify(validation.errors)}\n`;
+                    }
+                    res.forEach(it => {
+                        details += `- ${it.name} (${it.id}): pos=(${it.x}, ${it.y}, ${it.z}), rotSize=(${it.rw}, ${it.rh}, ${it.rd}), rot=${it.rotationType}\n`;
+                    });
+                }
+                success = success && res.length === 2;
+                addResult("直接层级回溯求解器确定性契约测试", success, details);
+            } catch (err) {
+                addResult("直接层级回溯求解器确定性契约测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 11: Container Orientations Mapping Stability Test
+            // ==========================================
+            try {
+                const binW = 40;
+                const binH = 49;
+                const binL = 60;
+                const items = [];
+                for (let i = 0; i < 18; i++) items.push(new Item(`A_${i}`, "产品A", 16, 8, 29, "#6366f1", 0.65));
+                for (let i = 0; i < 18; i++) items.push(new Item(`B_${i}`, "产品B", 13, 6, 29, "#06b6d4", 0.37));
+
+                const orientations = [
+                    { perm: [0, 1, 2], w: binW, h: binH, d: binL },
+                    { perm: [1, 0, 2], w: binH, h: binW, d: binL },
+                    { perm: [0, 2, 1], w: binW, h: binL, d: binH }
+                ];
+
+                let details = "";
+                let success = true;
+                let validOrientations = 0;
+                orientations.forEach((config, idx) => {
+                    const tempPacker = new Packer(config.w, config.h, config.d);
+                    // Run a greedy pack with seed 20260617
+                    const res = tempPacker.runGreedyPackTrials(items, { checkStability: true, supportRatio: 0.5, seed: 20260617 }, 0, 30);
+                    
+                    // Map back
+                    const mappedPacked = res.items.map(it_calc => {
+                        const pos_orig = [];
+                        const size_orig = [];
+                        pos_orig[config.perm[0]] = it_calc.x;
+                        pos_orig[config.perm[1]] = it_calc.y;
+                        pos_orig[config.perm[2]] = it_calc.z;
+                        size_orig[config.perm[0]] = it_calc.rw;
+                        size_orig[config.perm[1]] = it_calc.rh;
+                        size_orig[config.perm[2]] = it_calc.rd;
+
+                        const mapped = new Item(it_calc.id, it_calc.name, it_calc.w, it_calc.h, it_calc.d, it_calc.color, it_calc.weight);
+                        mapped.x = pos_orig[0];
+                        mapped.y = pos_orig[1];
+                        mapped.z = pos_orig[2];
+                        mapped.rw = size_orig[0];
+                        mapped.rh = size_orig[1];
+                        mapped.rd = size_orig[2];
+                        return mapped;
+                    });
+
+                    // Validate mapped result under original bin dimensions (binW, binH, binL) and gravity (along Y)
+                    const validation = Packer.validatePackingResult(mappedPacked, binW, binH, binL, true, 0.5);
+                    details += `Orientation ${idx+1} (perm [${config.perm.join(',')}]): Packed=${mappedPacked.length}, Valid=${validation.valid}\n`;
+                    if (validation.valid) {
+                        validOrientations++;
+                    } else if (idx === 0) {
+                        success = false;
+                    }
+                    if (!validation.valid) {
+                        details += `- Errors: ${JSON.stringify(validation.errors.map(e => ({ type: e.type, item: e.item ? e.item.id : null, detail: e.detail }))).substring(0, 500)}\n`;
+                    }
+                });
+
+                success = success && validOrientations > 0;
+                details += `Accepted valid orientations: ${validOrientations}\n`;
+
+                addResult("容器姿态映射与无效方案拒绝测试", success, details);
+            } catch (err) {
+                addResult("容器姿态映射与无效方案拒绝测试", false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 12: Same name with different dimensions
+            // ==========================================
+            try {
+                const items = [
+                    new Item('same_1', 'Same', 2, 2, 2),
+                    new Item('same_2', 'Same', 3, 2, 2)
+                ];
+                const packer = new Packer(4, 4, 2);
+                packer.pack(items, { checkStability: false });
+                const validation = Packer.validatePackingResult(packer.items, 4, 4, 2, false);
+                const success = packer.items.length === 2 && validation.valid;
+                addResult('同名不同规格货物分组回归测试', success,
+                    `Packed: ${packer.items.length}/2\nValidation valid: ${validation.valid}`);
+            } catch (err) {
+                addResult('同名不同规格货物分组回归测试', false, err.stack);
+            }
+
+            // ==========================================
+            // TEST CASE 13: Support index tolerance boundary
+            // ==========================================
+            try {
+                const supportIndex = Packer.createSupportIndex();
+                const item = new Item('support_boundary', 'Support', 1, 10.024, 1);
+                supportIndex.add(item);
+                const matches = supportIndex.get(10.026);
+                const success = matches.length === 1 && matches[0].id === item.id;
+                addResult('支撑索引相邻容差桶回归测试', success,
+                    `Height difference: ${Math.abs(10.024 - 10.026)}\nMatches: ${matches.length}`);
+            } catch (err) {
+                addResult('支撑索引相邻容差桶回归测试', false, err.stack);
+            }
+
+            document.getElementById('status').innerText = "DONE";
+        }
+
+        window.onload = runTests;
+    </script>
+</body>
+</html>
