@@ -1,0 +1,56 @@
+{
+  "name": "@grizzshutsdown/simpleplayer",
+  "version": "0.1.23",
+  "description": "A simple default video player created from Grizz's portfolio for others to use.",
+  "type": "module",
+  "homepage": "https://simpleplayer.grizz.fyi/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grizzshutsdown/simpleplayer.git"
+  },
+  "main": "./dist/simple-player.js",
+  "module": "./dist/simple-player.js",
+  "types": "./dist/simple-player.d.ts",
+  "bin": {
+    "simpleplayer": "bin/install-skill.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/simple-player.d.ts",
+      "import": "./dist/simple-player.js"
+    }
+  },
+  "files": [
+    "bin",
+    "dist/simple-player.d.ts",
+    "dist/player/*.d.ts",
+    "dist/simple-player.js",
+    "dist/simple-player.js.map",
+    "skill",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:package && npm run build:site",
+    "build:package": "vite build && tsc -p tsconfig.build.json",
+    "prebuild:site": "npm install --prefix site --package-lock=false",
+    "build:site": "vite build --config vite.site.config.ts",
+    "dev": "vite dev dev --config vite.config.ts --host 127.0.0.1 --port 5174",
+    "predemo": "npm install --prefix site --package-lock=false",
+    "demo": "vite --config vite.site.config.ts --host 127.0.0.1"
+  },
+  "keywords": [
+    "video",
+    "player",
+    "web-component",
+    "custom-element"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

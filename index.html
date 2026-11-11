@@ -1,0 +1,894 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimplePlayer</title>
+    <meta
+      name="description"
+      content="Framework-free Web Component. It gives you a clean default video player with custom overlay controls, a scrubber, volume, playback speed, Picture-in-Picture, fullscreen, and lazy loading."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="SimplePlayer" />
+    <meta
+      property="og:description"
+      content="Framework-free Web Component. It gives you a clean default video player with custom overlay controls, a scrubber, volume, playback speed, Picture-in-Picture, fullscreen, and lazy loading."
+    />
+    <meta property="og:url" content="https://simpleplayer.grizz.fyi/" />
+    <meta property="og:image" content="https://simpleplayer.grizz.fyi/assets/OG.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <link rel="canonical" href="https://simpleplayer.grizz.fyi/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="SimplePlayer" />
+    <meta
+      name="twitter:description"
+      content="Framework-free Web Component. It gives you a clean default video player with custom overlay controls, a scrubber, volume, playback speed, Picture-in-Picture, fullscreen, and lazy loading."
+    />
+    <meta name="twitter:image" content="https://simpleplayer.grizz.fyi/assets/OG.png" />
+    <link rel="icon" type="image/svg+xml" href="./assets/Favicon.svg" />
+    <script type="module" src="./site/main.ts"></script>
+    <style>
+      @font-face {
+        font-family: "SF Pro Demo";
+        src: url("./assets/SFPro.woff2") format("woff2");
+        font-display: swap;
+        font-style: normal;
+        font-weight: 1 1000;
+      }
+
+      :root {
+        --page-background: #fff;
+        --text-color: #000;
+        --field-background: #fff;
+        --field-border: rgb(0 0 0 / 0.14);
+        --player-background: #fff;
+        --player-shadow: 2px 4px 16px rgb(0 0 0 / 0.04);
+        --muted-color: rgb(0 0 0 / 0.4);
+        --hover-color: #000;
+        --author-hover-background: rgb(0 0 0 / 0.05);
+        --logo-filter: none;
+        --bear-filter: none;
+        --bear-opacity: 1;
+
+        color: var(--text-color);
+        background: var(--page-background);
+        color-scheme: light;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Demo", "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        font-synthesis: none;
+        text-rendering: geometricPrecision;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --page-background: #000;
+          --text-color: #fff;
+          --field-background: rgb(255 255 255 / 0.06);
+          --field-border: rgb(255 255 255 / 0.16);
+          --player-background: #000;
+          --player-shadow: 2px 4px 16px rgb(0 0 0 / 0.4);
+          --muted-color: rgb(255 255 255 / 0.45);
+          --hover-color: #fff;
+          --author-hover-background: rgb(255 255 255 / 0.1);
+          --logo-filter: invert(1);
+          --bear-filter: invert(1);
+          --bear-opacity: 1;
+
+          color-scheme: dark;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--page-background);
+      }
+
+      button,
+      pre {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        color: inherit;
+        background: transparent;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      img,
+      svg {
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-user-drag: none;
+      }
+
+      .page {
+        display: flex;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 192px 24px 96px;
+      }
+
+      .shell {
+        width: min(100%, 540px);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 48px;
+      }
+
+      .intro {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .logo {
+        width: 122.414px;
+        height: 23.195px;
+        display: block;
+        filter: var(--logo-filter);
+      }
+
+      p,
+      h2,
+      pre {
+        margin: 0;
+      }
+
+      .text {
+        max-width: 100%;
+        font-size: 15px;
+        font-weight: 450;
+        line-height: 20px;
+        letter-spacing: -0.24px;
+      }
+
+      .section {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        width: 100%;
+      }
+
+      .section-head {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .title {
+        font-size: 15px;
+        font-weight: 590;
+        line-height: 20px;
+        letter-spacing: -0.24px;
+      }
+
+      .tabs {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .framework-tabs {
+        flex-wrap: nowrap;
+        gap: 24px;
+        width: 100%;
+        transform: scale(var(--framework-tabs-scale, 1));
+        transform-origin: left center;
+      }
+
+      .tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        white-space: nowrap;
+        min-height: 24px;
+        padding: 0;
+        opacity: 0.4;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: opacity 160ms ease;
+      }
+
+      .tab.is-active {
+        opacity: 1;
+      }
+
+      .tab.is-active {
+        cursor: default;
+      }
+
+      .tab-icon {
+        display: block;
+        width: 24px;
+        height: 24px;
+        object-fit: contain;
+      }
+
+      .tab-icon.react {
+        width: 26.672px;
+      }
+
+      .tab-icon.vue {
+        width: 27.801px;
+      }
+
+      .tab-icon.svelte {
+        width: 19.948px;
+      }
+
+      .field {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        width: 100%;
+        min-height: 52px;
+        padding: 16px 16px 16px 8px;
+        border: 1px solid var(--field-border);
+        border-radius: 12px;
+        background: var(--field-background);
+        overflow: hidden;
+      }
+
+      .command {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .prompt {
+        opacity: 0.3;
+      }
+
+      .command-text,
+      .code {
+        opacity: 0.5;
+      }
+
+      .command-text.is-text-swapping,
+      .code.is-text-swapping {
+        animation: text-swap 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        transform-origin: left center;
+      }
+
+      .copy {
+        flex: 0 0 auto;
+        padding: 0;
+        opacity: 0.4;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: opacity 160ms ease;
+      }
+
+      .code-field {
+        align-items: flex-start;
+        min-height: 128px;
+        padding: 16px;
+        transition: height 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+
+      .code {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding-right: 52px;
+        font-family:
+          "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", monospace;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 19px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .code-field .copy {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+      }
+
+      .player-card {
+        width: 100%;
+        height: auto;
+        aspect-ratio: 16 / 9;
+        overflow: hidden;
+        border: 1px solid var(--field-border);
+        border-radius: 16px;
+        background: var(--player-background);
+        box-shadow: var(--player-shadow);
+      }
+
+      .preview-section {
+        width: clamp(540px, 60vw, 960px);
+        max-width: calc(100vw - 48px);
+        align-self: center;
+      }
+
+      .preview-section .section-head {
+        width: min(100%, 540px);
+        align-self: center;
+      }
+
+      .player-card.is-loading-preview simple-player {
+        pointer-events: none;
+      }
+
+      simple-player {
+        display: block;
+        width: 100%;
+        height: 100%;
+        --overlay-blur: 2px;
+      }
+
+      .footer {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .footer-line {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        color: var(--muted-color);
+      }
+
+      .author {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 4px 2px 2px;
+        border-radius: 8px;
+        color: var(--muted-color);
+        text-decoration: none;
+        background: transparent;
+        -webkit-tap-highlight-color: transparent;
+        transition:
+          color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .bear {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        background: transparent;
+        overflow: hidden;
+        transition: background-color 160ms ease;
+      }
+
+      .bear img {
+        display: block;
+        width: 20px;
+        height: 18px;
+        filter: var(--bear-filter);
+        opacity: var(--bear-opacity);
+        transform: scaleX(-1);
+        transition: filter 160ms ease, opacity 160ms ease;
+      }
+
+      .footer-link {
+        color: inherit;
+        text-decoration: none;
+        -webkit-tap-highlight-color: transparent;
+        transition: color 160ms ease;
+      }
+
+      @media (hover: hover) and (pointer: fine) {
+        .tab:hover {
+          opacity: 1;
+        }
+
+        .copy:hover {
+          opacity: 0.7;
+        }
+
+        .author:hover {
+          color: var(--hover-color);
+          background: var(--author-hover-background);
+        }
+
+        .author:hover .bear {
+          background: #fff;
+        }
+
+        .author:hover .bear img {
+          filter: none;
+          opacity: 1;
+        }
+
+        @media (prefers-color-scheme: dark) {
+          .author:hover .bear {
+            background: #000;
+          }
+
+          .author:hover .bear img {
+            filter: invert(1);
+            opacity: 1;
+          }
+        }
+
+        .footer-link:hover {
+          color: var(--hover-color);
+        }
+      }
+
+      @keyframes text-swap {
+        0% {
+          opacity: 0.5;
+          filter: blur(0);
+          transform: scale(1);
+        }
+
+        48% {
+          opacity: 0.46;
+          filter: blur(5px);
+          transform: scale(0.999);
+        }
+
+        52% {
+          opacity: 0.46;
+          filter: blur(5px);
+          transform: scale(0.999);
+        }
+
+        100% {
+          opacity: 0.5;
+          filter: blur(0);
+          transform: scale(1);
+        }
+      }
+
+      @media (max-width: 680px) {
+        .page {
+          padding: 80px 20px 56px;
+        }
+
+        .shell {
+          gap: 40px;
+        }
+
+        .tabs {
+          flex-wrap: wrap;
+          row-gap: 10px;
+        }
+
+        .framework-tabs {
+          flex-wrap: nowrap;
+          width: 90%;
+          gap: 24px;
+        }
+
+        .framework-tabs .tab {
+          font-size: 15px;
+          line-height: 20px;
+        }
+
+        .framework-tabs .tab-icon {
+          width: 24px;
+          height: 24px;
+        }
+
+        .framework-tabs .tab-icon.react {
+          width: 26.672px;
+        }
+
+        .framework-tabs .tab-icon.vue {
+          width: 27.801px;
+        }
+
+        .framework-tabs .tab-icon.svelte {
+          width: 19.948px;
+        }
+
+        .field {
+          min-height: 52px;
+        }
+
+        .command-text {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .code-field {
+          min-height: 148px;
+        }
+
+        .player-card {
+          width: 100%;
+        }
+
+        .preview-section {
+          width: 100%;
+          max-width: 100%;
+        }
+
+        .preview-section .section-head {
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 420px) {
+        .page {
+          padding: 48px 16px 40px;
+        }
+
+        .shell {
+          gap: 36px;
+        }
+
+        .text,
+        .title {
+          font-size: 14px;
+          line-height: 19px;
+        }
+
+        .tabs {
+          gap: 12px;
+        }
+
+        .framework-tabs {
+          flex-wrap: nowrap;
+          width: 90%;
+          gap: 24px;
+        }
+
+        .framework-tabs .tab {
+          font-size: 14px;
+          line-height: 19px;
+        }
+
+        .framework-tabs .tab-icon {
+          width: 21px;
+          height: 21px;
+        }
+
+        .framework-tabs .tab-icon.react {
+          width: 23px;
+        }
+
+        .framework-tabs .tab-icon.vue {
+          width: 23px;
+        }
+
+        .framework-tabs .tab-icon.svelte {
+          width: 17.5px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <div class="shell">
+        <img class="logo" src="./assets/logo.svg" alt="SimplePlayer" />
+
+        <header class="intro">
+          <p class="text">Framework-free Web Component.</p>
+          <p class="text">
+            It gives you a clean default video player with custom overlay
+            controls, a scrubber, volume, playback speed, Picture-in-Picture, fullscreen, and
+            lazy loading.
+          </p>
+        </header>
+
+        <section class="section" aria-labelledby="install-title">
+          <div class="section-head">
+            <h2 class="title" id="install-title">Install</h2>
+            <div class="tabs" role="tablist" aria-label="Package manager">
+              <button class="tab is-active text" type="button" role="tab" aria-selected="true" data-install-tab="npm">npm</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-install-tab="pnpm">pnpm</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-install-tab="yarn">yarn</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-install-tab="bun">bun</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-install-tab="skill">skill</button>
+            </div>
+          </div>
+          <div class="field text">
+            <div class="command">
+              <span class="prompt">$</span>
+              <span class="command-text" data-install-command>npm install @grizzshutsdown/simpleplayer</span>
+            </div>
+            <button class="copy text" type="button" data-copy-target="install">Copy</button>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="usage-title">
+          <div class="section-head">
+            <h2 class="title" id="usage-title">Usage</h2>
+            <div class="tabs framework-tabs" role="tablist" aria-label="Framework">
+              <button class="tab is-active text" type="button" role="tab" aria-selected="true" data-framework-tab="react">
+                <img class="tab-icon react" src="./assets/react.svg" alt="" />
+                React
+              </button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-framework-tab="typescript">
+                <img class="tab-icon" src="./assets/typescript.svg" alt="" />
+                Typescript
+              </button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-framework-tab="vue">
+                <img class="tab-icon vue" src="./assets/vue.svg" alt="" />
+                Vue
+              </button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-framework-tab="svelte">
+                <img class="tab-icon svelte" src="./assets/svelte.svg" alt="" />
+                Svelte
+              </button>
+            </div>
+          </div>
+          <div class="field code-field">
+            <pre class="code" data-usage-code>import '@grizzshutsdown/simpleplayer';
+
+export function App() {
+  return &lt;simple-player src="/video.mp4" aspect-ratio="16 / 9" /&gt;;
+}</pre>
+            <button class="copy text" type="button" data-copy-target="usage">Copy</button>
+          </div>
+        </section>
+
+        <section class="section preview-section" aria-labelledby="example-title">
+          <div class="section-head">
+            <h2 class="title" id="example-title">Previews</h2>
+            <div class="tabs" role="tablist" aria-label="Preview state">
+              <button class="tab is-active text" type="button" role="tab" aria-selected="true" data-example-tab="default">Default</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-example-tab="controls">Controls</button>
+              <button class="tab text" type="button" role="tab" aria-selected="false" data-example-tab="loading">Loading</button>
+            </div>
+          </div>
+          <div class="player-card" data-preview-state="default" aria-busy="false" data-player-card>
+            <simple-player src="https://samplelib.com/mp4/sample-10s.mp4" aspect-ratio="16 / 9"></simple-player>
+          </div>
+        </section>
+
+        <footer class="footer text">
+          <div class="footer-line">
+            <span>Created for fun by</span>
+            <a class="author" href="https://x.com/GrizzShutsDown" target="_blank" rel="noreferrer">
+              <span class="bear">
+                <img src="./assets/bear.svg" alt="" />
+              </span>
+              <span>Grizz</span>
+            </a>
+          </div>
+          <div class="footer-line">
+            <span data-simpleplayer-version>v...</span>
+            <span>•</span>
+            <a class="footer-link" href="https://github.com/grizzshutsdown/simpleplayer" target="_blank" rel="noreferrer">Github</a>
+          </div>
+        </footer>
+      </div>
+    </main>
+
+    <script>
+      const installCommands = {
+        npm: 'npm install @grizzshutsdown/simpleplayer',
+        pnpm: 'pnpm add @grizzshutsdown/simpleplayer',
+        yarn: 'yarn add @grizzshutsdown/simpleplayer',
+        bun: 'bun add @grizzshutsdown/simpleplayer',
+        skill: 'npx @grizzshutsdown/simpleplayer',
+      };
+
+      const usageExamples = {
+        react: `import '@grizzshutsdown/simpleplayer';
+
+export function App() {
+  return <simple-player src="/video.mp4" aspect-ratio="16 / 9" />;
+}`,
+        typescript: `import type { DetailedHTMLProps, HTMLAttributes } from 'react';
+
+declare module 'react' {
+  namespace JSX {
+    interface IntrinsicElements {
+      'simple-player': DetailedHTMLProps<HTMLAttributes<HTMLElement>, HTMLElement> & {
+        src?: string;
+        'aspect-ratio'?: string;
+        'preload-margin'?: string;
+        controls?: boolean;
+        'disable-speed'?: boolean;
+        'disable-autoplay'?: boolean;
+        'pause-on-overlay-click'?: boolean;
+        'show-time'?: boolean;
+      };
+    }
+  }
+}`,
+        vue: `<script setup>
+import '@grizzshutsdown/simpleplayer';
+<\/script>
+
+<template>
+  <simple-player src="/video.mp4" aspect-ratio="16 / 9" />
+</template>`,
+        svelte: `<script>
+  import '@grizzshutsdown/simpleplayer';
+<\/script>
+
+<simple-player src="/video.mp4" aspect-ratio="16 / 9" />`,
+      };
+
+      const installCommand = document.querySelector('[data-install-command]');
+      const usageCode = document.querySelector('[data-usage-code]');
+      const installCopy = document.querySelector('[data-copy-target="install"]');
+      const usageCopy = document.querySelector('[data-copy-target="usage"]');
+      const playerCard = document.querySelector('[data-player-card]');
+      const frameworkTabs = document.querySelector('.framework-tabs');
+      const copyTimers = new WeakMap();
+      const previewVideo = 'https://samplelib.com/mp4/sample-10s.mp4';
+
+      const setActiveTab = (selector, activeButton) => {
+        document.querySelectorAll(selector).forEach((button) => {
+          button.classList.toggle('is-active', button === activeButton);
+          button.setAttribute('aria-selected', button === activeButton ? 'true' : 'false');
+        });
+      };
+
+      const syncFrameworkTabsScale = () => {
+        if (!frameworkTabs) return;
+        frameworkTabs.style.setProperty('--framework-tabs-scale', '1');
+        const scale = Math.min(1, frameworkTabs.clientWidth / Math.max(frameworkTabs.scrollWidth, 1));
+        frameworkTabs.style.setProperty('--framework-tabs-scale', `${scale}`);
+      };
+
+      const copyText = async (value) => {
+        if (navigator.clipboard?.writeText && window.isSecureContext) {
+          await navigator.clipboard.writeText(value);
+          return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        document.body.append(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      };
+
+      const flashCopied = (button) => {
+        if (copyTimers.has(button)) {
+          window.clearTimeout(copyTimers.get(button));
+        }
+
+        button.textContent = 'Copied';
+        const timer = window.setTimeout(() => {
+          button.textContent = 'Copy';
+          copyTimers.delete(button);
+        }, 1200);
+        copyTimers.set(button, timer);
+      };
+
+      const resetCopyButton = (button) => {
+        if (copyTimers.has(button)) {
+          window.clearTimeout(copyTimers.get(button));
+          copyTimers.delete(button);
+        }
+
+        button.textContent = 'Copy';
+      };
+
+      const prepareCodeBoxResize = (element, value) => {
+        const field = element.closest('.code-field');
+        if (!field) return null;
+
+        const currentText = element.textContent;
+        const startHeight = field.getBoundingClientRect().height;
+        const previousHeight = field.style.height;
+
+        field.style.height = 'auto';
+        element.textContent = value;
+        const endHeight = field.getBoundingClientRect().height;
+        element.textContent = currentText;
+        field.style.height = previousHeight;
+
+        field.style.height = `${startHeight}px`;
+        field.style.overflow = 'hidden';
+        void field.offsetHeight;
+
+        return { field, endHeight };
+      };
+
+      const swapText = (element, value) => {
+        if (!element || element.textContent === value) return;
+
+        const resize = prepareCodeBoxResize(element, value);
+
+        element.classList.remove('is-text-swapping');
+        void element.offsetWidth;
+        element.classList.add('is-text-swapping');
+
+        window.setTimeout(() => {
+          element.textContent = value;
+          if (resize) {
+            resize.field.style.height = `${resize.endHeight}px`;
+          }
+        }, 130);
+
+        window.setTimeout(() => {
+          element.classList.remove('is-text-swapping');
+          if (resize) {
+            resize.field.style.height = '';
+            resize.field.style.overflow = '';
+          }
+        }, 280);
+      };
+
+      const renderPlayerPreview = (mode) => {
+        const isLoading = mode === 'loading';
+        const hasControls = mode === 'controls';
+
+        playerCard.dataset.previewState = mode;
+        playerCard.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+        playerCard.classList.toggle('is-loading-preview', mode === 'loading');
+        const src = isLoading ? '' : ` src="${previewVideo}"`;
+        const controls = hasControls ? ' controls show-time pause-on-overlay-click' : '';
+        playerCard.innerHTML = `<simple-player${src} aspect-ratio="16 / 9"${controls}></simple-player>`;
+      };
+
+      document.querySelectorAll('[data-install-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (button.classList.contains('is-active')) return;
+          const key = button.dataset.installTab;
+          swapText(installCommand, installCommands[key]);
+          setActiveTab('[data-install-tab]', button);
+          resetCopyButton(installCopy);
+        });
+      });
+
+      document.querySelectorAll('[data-framework-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (button.classList.contains('is-active')) return;
+          const key = button.dataset.frameworkTab;
+          swapText(usageCode, usageExamples[key]);
+          setActiveTab('[data-framework-tab]', button);
+          resetCopyButton(usageCopy);
+        });
+      });
+
+      document.querySelectorAll('[data-example-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (button.classList.contains('is-active')) return;
+          const key = button.dataset.exampleTab;
+          renderPlayerPreview(key);
+          setActiveTab('[data-example-tab]', button);
+        });
+      });
+
+      document.querySelectorAll('[data-copy-target]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const target = button.dataset.copyTarget;
+          const value = target === 'install' ? installCommand.textContent : usageCode.textContent;
+          await copyText((value || '').trim());
+          flashCopied(button);
+        });
+      });
+
+      if ('ResizeObserver' in window && frameworkTabs) {
+        new ResizeObserver(syncFrameworkTabsScale).observe(frameworkTabs);
+      }
+
+      window.addEventListener('load', syncFrameworkTabsScale);
+      window.addEventListener('resize', syncFrameworkTabsScale);
+      syncFrameworkTabsScale();
+    </script>
+  </body>
+</html>
