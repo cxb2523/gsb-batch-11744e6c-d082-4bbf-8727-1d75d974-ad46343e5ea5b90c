@@ -23,6 +23,7 @@ python3 -m http.server 8000      # any static server; ES modules need http://, n
 | `env.js` | Sky, sun, image-based light, fog, clouds, night sky; three presets that blend; shadow fitting |
 | `kit.js` | Seeded RNG, canvas textures, instancing kit, lathe, arc, profile sweep with mitred corners |
 | `scene.js` | The example subject and every pattern worth copying |
+| `diagnose.js` | Pure-data diagnostics for night lighting and Kit assembly; no three.js, no DOM, JSON-safe output |
 
 URL parameters work out of the box: `?view=front|corner|low|aerial`, `?light=morning|golden|night`, `?quality=high|balanced|fast`, and `?record=1` for a frame-exact recording with `frame-capture`.
 
@@ -79,6 +80,8 @@ Budget for a laptop GPU at 1440x900: under 10 ms a frame, under 300 draw calls, 
 2. Quality tiers: `high` (DPR up to 2, GTAO, 4096 shadows), `balanced` (DPR 1.5), `fast` (DPR 1, no GTAO, 2048 shadows). The starter drops a tier by itself after three seconds of slow frames, and never while recording.
 3. Do not render what is not moving: if nothing animates and the camera is still, skip `composer.render()`.
 4. Keep `castShadow` off for small, distant and flat things.
+
+For a check that does not need a GPU, `diagnose.js` is a pure function over a plain snapshot. `scene.js` exports a read-only `buildSceneSnapshot()` that gathers the point lights and the Kit results, runs the rules and returns a JSON-safe report (glow intensity `night * 3.5`, each light `night * candela` with `visible = night > 0.01`, one draw call per instanced part). Bad input (NaN night, non-finite candela, negative counts) degrades the report with readable reasons instead of throwing; before `buildScene()` runs it answers "not built".
 
 ## Camera
 

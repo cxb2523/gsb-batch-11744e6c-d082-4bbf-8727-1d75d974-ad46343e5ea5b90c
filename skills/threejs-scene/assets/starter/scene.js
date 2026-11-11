@@ -4,10 +4,15 @@
 import * as THREE from 'three';
 import { Kit, place, lathe, arc, sweep, canvasTex, rng } from './kit.js';
 import { U } from './env.js';
+import { diagnoseScene } from './diagnose.js';
 
 const R = 4.2;           // column ring radius, m
 const COL_H = 5.0;       // column height including base and capital
 const PODIUM = 0.75;     // three steps of 0.25 m
+
+// Read-only record of the most recent buildScene() run, used by buildSceneSnapshot().
+// buildScene() itself keeps its old behaviour and return value; this is diagnostics only.
+let sceneState = null;
 
 // ---------------------------------------------------------------- materials
 function speckle(g, w, h, n, r0, r1, colors, rand) {
@@ -106,20 +111,26 @@ function trees(group, rand) {
 export function buildScene() {
   const group = new THREE.Group();
   const rand = rng(2024);
+  // diagnostics: remember each hand-built mesh so buildSceneSnapshot can name it
+  const partNotes = new Map();
+  const note = (mesh, name, geometry) => partNotes.set(mesh, { name, geometry });
 
   const ground = new THREE.Mesh(new THREE.CircleGeometry(400, 64), grass);
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+  note(ground, 'lawn', 'primitive');
   group.add(ground);
 
   // gravel path: a ring around the podium and a straight approach, swept as thin flat bands
   const ring = sweep([[-1.4, 0.01], [1.4, 0.01]], arc(0, 0, R + 4.2, 0, Math.PI * 2, 96), { closed: true });
   const lane = sweep([[-1.2, 0.012], [1.2, 0.012]], [[0, R + 5], [0, 60]], { uvScale: 2 });
-  for (const g of [ring, lane]) { const m = new THREE.Mesh(g, gravel); m.receiveShadow = true; group.add(m); }
+  for (const [g, name] of [[ring, 'gravel-ring'], [lane, 'gravel-lane']]) {
+    const m = new THREE.Mesh(g, gravel); m.receiveShadow = true; note(m, name, 'sweep'); group.add(m);
+  }
 
   // podium: three round steps in one lathe
   const steps = lathe([[0.001, 0], [R + 1.6, 0], [R + 1.6, 0.25], [R + 1.25, 0.25], [R + 1.25, 0.5], [R + 0.9, 0.5],
     [R + 0.9, PODIUM], [0.001, PODIUM]], 96);
-  const podium = new THREE.Mesh(steps, stone); podium.castShadow = podium.receiveShadow = true; group.add(podium);
+  const podium = new THREE.Mesh(steps, stone); podium.castShadow = podium.receiveShadow = true; note(podium, 'podium-steps', 'lathe'); group.add(podium);
 
   // twelve columns, one draw call
   const kit = new Kit().def('column', columnGeometry(COL_H, 0.56), stone);
@@ -132,29 +143,33 @@ export function buildScene() {
   // entablature swept round the ring, then a drum and a shallow dome
   const top = PODIUM + COL_H;
   const ent = new THREE.Mesh(sweep(ENTABLATURE, arc(0, 0, R, 0, Math.PI * 2, 96), { closed: true, y: top }), stone);
-  ent.castShadow = ent.receiveShadow = true; group.add(ent);
+  ent.castShadow = ent.receiveShadow = true; note(ent, 'entablature', 'sweep'); group.add(ent);
   const domeP = [[0.001, 0], [R + 0.3, 0], [R + 0.3, 0.55], [R + 0.05, 0.62]];
   for (let i = 0; i <= 16; i++) { const t = (i / 16) * Math.PI / 2; domeP.push([(R + 0.05) * Math.cos(t), 0.62 + R * 0.62 * Math.sin(t)]); }
   domeP.push([0.35, 0.62 + R * 0.62 + 0.05], [0.35, 0.62 + R * 0.62 + 0.45], [0.001, 0.62 + R * 0.62 + 0.5]);
   const dome = new THREE.Mesh(lathe(domeP, 96), stone);
-  dome.position.y = top + 1.12; dome.castShadow = dome.receiveShadow = true; group.add(dome);
+  dome.position.y = top + 1.12; dome.castShadow = dome.receiveShadow = true; note(dome, 'dome', 'lathe'); group.add(dome);
 
   // an urn at the centre
   const urn = new THREE.Mesh(lathe([[0.001, 0], [0.42, 0], [0.42, 0.12], [0.2, 0.2], [0.18, 0.4], [0.5, 0.8], [0.62, 1.15],
     [0.5, 1.45], [0.3, 1.55], [0.34, 1.62], [0.001, 1.62]], 40), bronze);
-  urn.position.y = PODIUM; urn.castShadow = true; group.add(urn);
+  urn.position.y = PODIUM; urn.castShadow = true; note(urn, 'central-urn', 'lathe'); group.add(urn);
 
   // lamp posts on the approach; at night their globes glow and two real lights spill on the path
   const postGeo = lathe([[0.001, 0], [0.16, 0], [0.16, 0.1], [0.07, 0.25], [0.05, 2.9], [0.09, 3.0], [0.001, 3.0]], 12);
   const lamps = new Kit().def('post', postGeo, bronze).def('globe', new THREE.SphereGeometry(0.2, 20, 12), glow, { cast: false });
   const lights = [];
+  const lampPosts = [];
   for (const z of [12, 22, 32, 42]) for (const x of [-2.2, 2.2]) {
     lamps.add('post', place(x, 0, z));
     lamps.add('globe', place(x, 3.18, z));
+    let candela = null;
     if (z === 12) {
       const l = new THREE.PointLight('#ffc98a', 0, 18, 2);   // decay 2: physically based falloff
       l.position.set(x, 3.1, z); l.userData.candela = 40; group.add(l); lights.push(l);
+      candela = l.userData.candela;
     }
+    lampPosts.push({ x, z, atRowZ12: z === 12, candela });
   }
   lamps.build(group);
 
@@ -164,9 +179,35 @@ export function buildScene() {
   lantern.position.set(0, PODIUM + COL_H - 0.6, 0); lantern.userData.candela = 70;
   group.add(lantern); lights.push(lantern);
   const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 10), glow);
-  bulb.position.copy(lantern.position).add(new THREE.Vector3(0, 0.3, 0)); group.add(bulb);
+  bulb.position.copy(lantern.position).add(new THREE.Vector3(0, 0.3, 0)); note(bulb, 'lantern-bulb', 'primitive'); group.add(bulb);
 
   trees(group, rand);
+
+  // diagnostics: traverse the assembled group. InstancedMesh nodes are Kit output (one draw
+  // call each); everything else was noted at its build site. Lights are already in lampPosts
+  // and in the lantern, so the traversal collects meshes only.
+  const parts = [];
+  group.traverse((obj) => {
+    if (obj.isInstancedMesh) {
+      parts.push({
+        name: obj.name || 'instanced-part',
+        geometry: 'instanced',
+        instances: obj.count,
+        castShadow: obj.castShadow === true,
+        receiveShadow: obj.receiveShadow === true,
+      });
+    } else if (obj.isMesh) {
+      const meta = partNotes.get(obj) || { name: obj.name || 'mesh', geometry: 'primitive' };
+      parts.push({
+        name: meta.name,
+        geometry: meta.geometry,
+        instances: 1,
+        castShadow: obj.castShadow === true,
+        receiveShadow: obj.receiveShadow === true,
+      });
+    }
+  });
+  sceneState = { lampPosts, lanternCandela: lantern.userData.candela, parts };
 
   return {
     group,
@@ -178,4 +219,20 @@ export function buildScene() {
       lights.forEach((l) => { l.visible = night > 0.01; });   // a dark light still costs a shadow pass
     },
   };
+}
+
+/**
+ * Read-only diagnostic entry point. Gathers a pure-data snapshot of the current point lights
+ * and the Kit assembly results, then runs the pure diagnoseScene() rules on it. Returns a
+ * JSON-serialisable report. If buildScene() has not run yet, the report is a "not-built"
+ * result instead of throwing. buildScene() and its return value are unaffected.
+ */
+export function buildSceneSnapshot() {
+  if (!sceneState) return diagnoseScene(null);
+  return diagnoseScene({
+    night: U.uNight.value,
+    lamps: sceneState.lampPosts.map((p) => ({ ...p })),
+    lanternCandela: sceneState.lanternCandela,
+    parts: sceneState.parts.map((p) => ({ ...p })),
+  });
 }
