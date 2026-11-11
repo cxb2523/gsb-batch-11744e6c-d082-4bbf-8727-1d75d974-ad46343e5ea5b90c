@@ -1,0 +1,131 @@
+"""自适应元素指纹的 SQLite 存储。
+
+对齐 Scrapling 的做法：元素以 ``auto_save=True`` 被选中时，其结构指纹
+以 domain + identifier 为键持久化。之后 ``adaptive=True`` 查找时取出存储
+的指纹，与当前文档中每个元素比对，即使网站标记变了也能重新定位元素。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import threading
+from pathlib import Path
+from typing import Any
+
+from typing_extensions import Self
+
+from ..exceptions import InvalidStateError
+
+DEFAULT_DB_PATH = Path.home() / ".web_crawler" / "adaptive.sqlite3"
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS adaptive_elements (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain      TEXT NOT NULL,
+    identifier  TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    tag         TEXT,
+    text        TEXT,
+    url         TEXT,
+    created_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE (domain, identifier)
+);
+CREATE INDEX IF NOT EXISTS idx_adaptive_domain ON adaptive_elements(domain);
+"""
+
+
+class AdaptiveStorage:
+    """线程安全的自适应元素指纹 SQLite 存储。"""
+
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        path = Path(db_path) if db_path else DEFAULT_DB_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._path = path
+        # 实例级锁：不同 AdaptiveStorage 实例（不同 DB）互不阻塞
+        self._lock = threading.Lock()
+        self._closed = False
+        # check_same_thread=False，因为爬虫会使用线程池。
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.executescript(_SCHEMA)
+        self._conn.commit()
+
+    def _check_open(self) -> None:
+        """使用前校验连接仍可用：关闭后给出明确错误而非 ProgrammingError。"""
+        if self._closed:
+            raise InvalidStateError("AdaptiveStorage has been closed")
+
+    def save(
+        self,
+        domain: str,
+        identifier: str,
+        fingerprint: str,
+        tag: str = "",
+        text: str = "",
+        url: str = "",
+    ) -> None:
+        with self._lock:
+            self._check_open()
+            self._conn.execute(
+                "INSERT INTO adaptive_elements (domain, identifier, fingerprint, tag, text, url) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(domain, identifier) DO UPDATE SET "
+                "fingerprint=excluded.fingerprint, tag=excluded.tag, text=excluded.text, url=excluded.url",
+                (domain, identifier, fingerprint, tag, text[:500], url),
+            )
+            self._conn.commit()
+
+    def load(self, domain: str, identifier: str) -> dict[str, Any] | None:
+        with self._lock:
+            self._check_open()
+            cur = self._conn.execute(
+                "SELECT fingerprint, tag, text, url FROM adaptive_elements "
+                "WHERE domain=? AND identifier=?",
+                (domain, identifier),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {"fingerprint": row[0], "tag": row[1], "text": row[2], "url": row[3]}
+
+    def load_all(self, domain: str) -> list[dict[str, Any]]:
+        with self._lock:
+            self._check_open()
+            cur = self._conn.execute(
+                "SELECT identifier, fingerprint, tag, text, url FROM adaptive_elements WHERE domain=?",
+                (domain,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"identifier": r[0], "fingerprint": r[1], "tag": r[2], "text": r[3], "url": r[4]}
+            for r in rows
+        ]
+
+    def delete(self, domain: str, identifier: str | None = None) -> int:
+        with self._lock:
+            self._check_open()
+            if identifier is None:
+                cur = self._conn.execute("DELETE FROM adaptive_elements WHERE domain=?", (domain,))
+            else:
+                cur = self._conn.execute(
+                    "DELETE FROM adaptive_elements WHERE domain=? AND identifier=?",
+                    (domain, identifier),
+                )
+            self._conn.commit()
+            return cur.rowcount
+
+    def close(self) -> None:
+        """关闭连接；幂等，可重复调用。"""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._conn.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
+__all__ = ["DEFAULT_DB_PATH", "AdaptiveStorage"]

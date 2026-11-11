@@ -1,0 +1,152 @@
+"""AI 辅助、合规感知的抽取层。
+
+本子包在核心库之上纯增量扩展：
+
+- :mod:`~web_crawler.ai.llm` — 可插拔 LLM 供应商层（默认模型
+  ``DeepSeek-V4.1-Flash``，经 DeepSeek 的 OpenAI 兼容 API）。
+- :mod:`~web_crawler.ai.extractor` — LLM 生成 CSS 选择器，并用项目自身的
+  :class:`~web_crawler.parser.selector.Selector` 校验，支持自愈。
+- :mod:`~web_crawler.ai.agent` — 组合 fetcher 与抽取器的礼貌 agent
+  （robots.txt、限速、429/503 退避）。
+- :mod:`~web_crawler.ai.hooks` — JS Hook 脚本库（fetch/XHR/cookie/crypto 拦截）。
+- :mod:`~web_crawler.ai.analyzer` — AI webpack 混淆代码分析器。
+- :mod:`~web_crawler.ai.captcha` — 验证码检测与处理（hCaptcha/Turnstile/极验）。
+- :mod:`~web_crawler.ai.reverse_agent` — JS 逆向 Agent 主循环（观察-思考-行动）。
+- :mod:`~web_crawler.ai.planner` — Planner/Actor 双脑分离 + 周期重规划。
+- :mod:`~web_crawler.ai.loop` — 循环检测 + 上下文压缩。
+- :mod:`~web_crawler.ai.judge` — 任务完成 Judge/Validator（done 二次验证）。
+- :mod:`~web_crawler.ai.watchdog` — Watchdog 事件总线 + 崩溃自愈。
+- :mod:`~web_crawler.ai.recorder` — 成功路径编译为确定性脚本。
+- :mod:`~web_crawler.ai.schema` — 结构化抽取 schema 验证（Pydantic）。
+- :mod:`~web_crawler.ai.dom_pruner` — DOM 焦点裁剪（Skyvern/browser-use 风格）。
+- :mod:`~web_crawler.ai.checkpoint` — 任务断点续跑（崩溃自愈 + 状态持久化）。
+- :mod:`~web_crawler.ai.confidence` — 动作置信度评分（规则 + LLM 双路径）。
+- :mod:`~web_crawler.ai.guardrails` — 危险动作护栏（白名单 + 跨域拦截）。
+"""
+
+from __future__ import annotations
+
+from .agent import AIScrapeAgent, RobotsPolicy, ScrapeResult, detect_block
+from .extractor import AIExtractor, ExtractionResult
+from .llm import (
+    DEFAULT_MODEL,
+    DeepSeekProvider,
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    OpenAICompatibleProvider,
+    available_providers,
+    get_provider,
+    register_provider,
+)
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "AIExtractor",
+    "AIScrapeAgent",
+    "ActionGuard",
+    "AnalysisResult",
+    "CaptchaDetector",
+    "CaptchaManager",
+    "CaptchaSolver",
+    "CaptchaType",
+    "Checkpoint",
+    "CheckpointManager",
+    "CheckpointStore",
+    "ClickSolution",
+    "ConfidenceResult",
+    "ConfidenceScorer",
+    "CrashRecovery",
+    "DeepSeekProvider",
+    "DomPruner",
+    "EventBus",
+    "ExtractionResult",
+    "GuardrailAction",
+    "GuardrailResult",
+    "GuardrailRule",
+    "Heartbeat",
+    "HookLibrary",
+    "ImageCaptchaSolver",
+    "ImageSolverConfig",
+    "JSAnalyzer",
+    "JSFragment",
+    "JudgeResult",
+    "LLMMessage",
+    "LLMProvider",
+    "LLMResponse",
+    "OpenAICompatibleProvider",
+    "Plan",
+    "Planner",
+    "PrunedDom",
+    "ReverseAgent",
+    "ReverseAgentConfig",
+    "RobotsPolicy",
+    "RunRecorder",
+    "SchemaValidator",
+    "ScrapeResult",
+    "SliderSolution",
+    "SubGoal",
+    "TaskJudge",
+    "WebPageState",
+    "available_providers",
+    "collect_hook_data",
+    "detect_block",
+    "generate_combined_script",
+    "get_provider",
+    "register_provider",
+]
+
+
+def __getattr__(name: str):
+    """懒加载逆向相关模块，避免 import 时强制依赖 camoufox/playwright。"""
+    _lazy = {
+        "HookLibrary": ("web_crawler.ai.hooks", "HookLibrary"),
+        "generate_combined_script": ("web_crawler.ai.hooks", "generate_combined_script"),
+        "collect_hook_data": ("web_crawler.ai.hooks", "collect_hook_data"),
+        "JSAnalyzer": ("web_crawler.ai.analyzer", "JSAnalyzer"),
+        "JSFragment": ("web_crawler.ai.analyzer", "JSFragment"),
+        "AnalysisResult": ("web_crawler.ai.analyzer", "AnalysisResult"),
+        "CaptchaType": ("web_crawler.ai.captcha", "CaptchaType"),
+        "CaptchaDetector": ("web_crawler.ai.captcha", "CaptchaDetector"),
+        "CaptchaSolver": ("web_crawler.ai.captcha", "CaptchaSolver"),
+        "CaptchaManager": ("web_crawler.ai.captcha", "CaptchaManager"),
+        "ImageCaptchaSolver": ("web_crawler.ai.image_captcha", "ImageCaptchaSolver"),
+        "ImageSolverConfig": ("web_crawler.ai.image_captcha", "ImageSolverConfig"),
+        "SliderSolution": ("web_crawler.ai.image_captcha", "SliderSolution"),
+        "ClickSolution": ("web_crawler.ai.image_captcha", "ClickSolution"),
+        "ReverseAgent": ("web_crawler.ai.reverse_agent", "ReverseAgent"),
+        "ReverseAgentConfig": ("web_crawler.ai.reverse_agent", "ReverseAgentConfig"),
+        # Agent 增强模块
+        "Planner": ("web_crawler.ai.planner", "Planner"),
+        "Plan": ("web_crawler.ai.planner", "Plan"),
+        "SubGoal": ("web_crawler.ai.planner", "SubGoal"),
+        "TaskJudge": ("web_crawler.ai.judge", "TaskJudge"),
+        "JudgeResult": ("web_crawler.ai.judge", "JudgeResult"),
+        "EventBus": ("web_crawler.ai.watchdog", "EventBus"),
+        "Heartbeat": ("web_crawler.ai.watchdog", "Heartbeat"),
+        "CrashRecovery": ("web_crawler.ai.watchdog", "CrashRecovery"),
+        "RunRecorder": ("web_crawler.ai.recorder", "RunRecorder"),
+        "SchemaValidator": ("web_crawler.ai.schema", "SchemaValidator"),
+        "WebPageState": ("web_crawler.ai.schema", "WebPageState"),
+        # 主流 Agent 对齐模块（DomPruner / Checkpoint / Confidence / Guardrails）
+        "DomPruner": ("web_crawler.ai.dom_pruner", "DomPruner"),
+        "PrunedDom": ("web_crawler.ai.dom_pruner", "PrunedDom"),
+        "Checkpoint": ("web_crawler.ai.checkpoint", "Checkpoint"),
+        "CheckpointManager": ("web_crawler.ai.checkpoint", "CheckpointManager"),
+        "CheckpointStore": ("web_crawler.ai.checkpoint", "CheckpointStore"),
+        "ConfidenceScorer": ("web_crawler.ai.confidence", "ConfidenceScorer"),
+        "ConfidenceResult": ("web_crawler.ai.confidence", "ConfidenceResult"),
+        "ActionGuard": ("web_crawler.ai.guardrails", "ActionGuard"),
+        "GuardrailResult": ("web_crawler.ai.guardrails", "GuardrailResult"),
+        "GuardrailAction": ("web_crawler.ai.guardrails", "GuardrailAction"),
+        "GuardrailRule": ("web_crawler.ai.guardrails", "GuardrailRule"),
+    }
+    if name in _lazy:
+        import importlib
+
+        module_path, attr_name = _lazy[name]
+        module = importlib.import_module(module_path)
+        value = getattr(module, attr_name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,77 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Docs build output (mkdocs)
+site/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE
+.idea/
+.vscode/
+
+# 内部过程文档（不随仓库分发）
+REVIEW-REPORT.md
+
+# 本地 AI 辅助工具的运行时目录（会话缓存/临时产物），防御性收录：
+# 避免贡献者机器上的同类工具把 git status 弄脏
+.arts/
+.codeartsdoer/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime generated files
+*.log
+*.sqlite
+*.db
+state.json
+resources_manifest.*
+run_report.*
+summary.txt
+crawler_output/
+/reverse_screenshots/
+reverse_checkpoints/
+.checkpoints/
+.item_state.json
+coverage_final.txt
+coverage_out.txt
+crawler_data.db*
+
+report/
+
+# 根目录下划线前缀的本地临时脚本与导出：只在本地用，不随仓库分发
+# （锚定根目录，不影响 src/ 与 tests/ 下的同名下划线模块）
+/_*.py
+/_*.txt
+/_*.json
+# 根目录下的本地临时目录（如批量脚本的中间产物）
+/.tmp_*/

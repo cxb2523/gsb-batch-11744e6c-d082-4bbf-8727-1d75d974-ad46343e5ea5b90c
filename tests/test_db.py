@@ -1,0 +1,482 @@
+"""app/db.py 单元测试。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from web_crawler.app import db
+
+
+@pytest.fixture(autouse=True)
+def _temp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """每个测试用临时数据库文件。"""
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("CRAWLER_DB_PATH", db_path)
+    # 重新初始化内部连接路径
+    db._DB_PATH = db_path
+    db.init_db()
+
+
+class TestInitDb:
+    def test_init_creates_tables(self) -> None:
+        """init_db 应创建 tasks 和 results 表。"""
+        import sqlite3
+
+        conn = sqlite3.connect(db._DB_PATH)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        conn.close()
+        assert "tasks" in tables
+        assert "results" in tables
+
+    def test_init_idempotent(self) -> None:
+        """多次调用 init_db 不报错。"""
+        db.init_db()
+        db.init_db()
+
+
+class TestCreateTask:
+    def test_create_task_inserts_row(self) -> None:
+        """create_task 插入一行记录。"""
+        db.create_task("t1", "https://example.com", {"workers": 4}, "/tmp/out")
+        task = db.get_task("t1")
+        assert task is not None
+        assert task["url"] == "https://example.com"
+        assert task["status"] == "running"
+        assert task["config"]["workers"] == 4
+
+    def test_create_task_with_empty_config(self) -> None:
+        """create_task 在空配置时正常插入。"""
+        db.create_task("t2", "https://test.com", {}, "/tmp")
+        task = db.get_task("t2")
+        assert task is not None
+        assert task["config"] == {}
+
+
+class TestUpdateTaskStatus:
+    def test_update_status_only(self) -> None:
+        """仅更新 status 字段。"""
+        db.create_task("u1", "https://x.com", {}, "/tmp")
+        db.update_task_status("u1", "paused")
+        task = db.get_task("u1")
+        assert task["status"] == "paused"
+
+    def test_update_with_all_fields(self) -> None:
+        """更新全部字段。"""
+        db.create_task("u2", "https://x.com", {}, "/tmp")
+        db.update_task_status(
+            "u2",
+            "done",
+            exit_code=0,
+            log="done\n",
+            total_resources=10,
+            processed_resources=10,
+            pages_scanned=3,
+            current_url="https://x.com/page2",
+        )
+        task = db.get_task("u2")
+        assert task["status"] == "done"
+        assert task["exit_code"] == 0
+        assert task["total_resources"] == 10
+        assert task["processed_resources"] == 10
+        assert task["pages_scanned"] == 3
+        assert task["current_url"] == "https://x.com/page2"
+        assert task["finished_at"] is not None
+
+    def test_update_nonexistent_task_no_error(self) -> None:
+        """更新不存在的任务不应报错。"""
+        db.update_task_status("nonexistent", "done", exit_code=0)
+
+    def test_log_truncated(self) -> None:
+        """日志超过 80000 字符应被截断。"""
+        db.create_task("u3", "https://x.com", {}, "/tmp")
+        long_log = "x" * 100000
+        db.update_task_status("u3", "done", log=long_log)
+        task = db.get_task("u3")
+        assert len(task["log"]) == 80000
+
+
+class TestListTasks:
+    def test_list_empty(self) -> None:
+        """无任务时 list 返回空。"""
+        result = db.list_tasks()
+        assert result["tasks"] == []
+        assert result["total"] == 0
+
+    def test_list_with_tasks(self) -> None:
+        """有任务时 list 返回任务列表。"""
+        for i in range(5):
+            db.create_task(f"l{i}", f"https://l{i}.com", {}, "/tmp")
+        result = db.list_tasks(page=1, page_size=3)
+        assert len(result["tasks"]) == 3
+        assert result["total"] == 5
+
+    def test_list_status_filter(self) -> None:
+        """list 按 status 过滤。"""
+        db.create_task("f1", "https://a.com", {}, "/tmp")
+        db.create_task("f2", "https://b.com", {}, "/tmp")
+        db.update_task_status("f2", "done", exit_code=0)
+        result = db.list_tasks(status="done")
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["id"] == "f2"
+
+    def test_list_status_all(self) -> None:
+        """list 在 status 为 all 时返回全部。"""
+        db.create_task("a1", "https://a.com", {}, "/tmp")
+        db.update_task_status("a1", "done", exit_code=0)
+        db.create_task("a2", "https://b.com", {}, "/tmp")
+        result = db.list_tasks(status="all")
+        assert result["total"] == 2
+
+    def test_pagination(self) -> None:
+        """list 分页正确。"""
+        for i in range(10):
+            db.create_task(f"p{i}", f"https://p{i}.com", {}, "/tmp")
+        page1 = db.list_tasks(page=1, page_size=4)
+        page2 = db.list_tasks(page=2, page_size=4)
+        page3 = db.list_tasks(page=3, page_size=4)
+        assert len(page1["tasks"]) == 4
+        assert len(page2["tasks"]) == 4
+        assert len(page3["tasks"]) == 2
+
+
+class TestGetTask:
+    def test_get_existing(self) -> None:
+        """get 返回已存在任务。"""
+        db.create_task("g1", "https://g.com", {"k": "v"}, "/out")
+        task = db.get_task("g1")
+        assert task is not None
+        assert task["url"] == "https://g.com"
+
+    def test_get_nonexistent(self) -> None:
+        """get 返回不存在的任务为 None。"""
+        assert db.get_task("nonexistent") is None
+
+
+class TestDeleteTask:
+    def test_delete_existing(self) -> None:
+        """delete 删除已存在任务。"""
+        db.create_task("d1", "https://d.com", {}, "/tmp")
+        assert db.delete_task("d1") is True
+        assert db.get_task("d1") is None
+
+    def test_delete_nonexistent(self) -> None:
+        """delete 删除不存在任务为空操作。"""
+        assert db.delete_task("nonexistent") is False
+
+    def test_delete_cascades_results(self, tmp_path: Path) -> None:
+        # 先创建 manifest 文件
+        """delete 级联删除结果。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://d.com/r.png", "bytes": 100, "status": "ok"}) + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("d2", "https://d.com", {}, str(tmp_path))
+        db.import_results("d2", str(tmp_path))
+        # 确认 results 存在
+        r = db.get_results("d2")
+        assert r["total"] > 0
+        # 删除后 results 也应消失
+        db.delete_task("d2")
+        r = db.get_results("d2")
+        assert r["total"] == 0
+
+
+class TestImportResults:
+    def test_import_from_jsonl(self, tmp_path: Path) -> None:
+        """从 JSONL 导入任务。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps(
+                {
+                    "url": "https://a.com/img.png",
+                    "saved_path": "/out/a.png",
+                    "content_type": "image/png",
+                    "bytes": 1024,
+                    "category": "image",
+                    "found_in": "img",
+                    "kind": "resource",
+                    "page_url": "https://a.com",
+                    "page_title": "A",
+                    "sha256": "abc",
+                    "status": "ok",
+                    "diagnostic": "",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "url": "https://a.com/style.css",
+                    "saved_path": "/out/a.css",
+                    "content_type": "text/css",
+                    "bytes": 512,
+                    "category": "css",
+                    "found_in": "link",
+                    "kind": "resource",
+                    "page_url": "https://a.com",
+                    "page_title": "A",
+                    "sha256": "def",
+                    "status": "ok",
+                    "diagnostic": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("i1", "https://a.com", {}, str(tmp_path))
+        count = db.import_results("i1", str(tmp_path))
+        assert count == 2
+        results = db.get_results("i1")
+        assert results["total"] == 2
+
+    def test_import_from_csv(self, tmp_path: Path) -> None:
+        """从 CSV 导入任务。"""
+        csv_file = tmp_path / "resources_manifest.csv"
+        csv_file.write_text(
+            "url,saved_path,content_type,bytes,category,found_in,kind,page_url,page_title,sha256,status,diagnostic\n"
+            "https://b.com/x.js,/out/x.js,application/javascript,2048,script,script,resource,https://b.com,B,ghi,ok,\n",
+            encoding="utf-8",
+        )
+        db.create_task("i2", "https://b.com", {}, str(tmp_path))
+        count = db.import_results("i2", str(tmp_path))
+        assert count == 1
+
+    def test_import_no_manifest(self, tmp_path: Path) -> None:
+        """无清单时导入为空操作。"""
+        db.create_task("i3", "https://c.com", {}, str(tmp_path))
+        count = db.import_results("i3", str(tmp_path))
+        assert count == 0
+
+
+class TestGetResults:
+    def test_get_results_empty(self) -> None:
+        """无结果时 get_results 返回空。"""
+        db.create_task("r1", "https://r.com", {}, "/tmp")
+        result = db.get_results("r1")
+        assert result["results"] == []
+        assert result["total"] == 0
+
+    def test_get_results_with_search(self, tmp_path: Path) -> None:
+        """get_results 按关键字搜索。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://a.com/image.png", "bytes": 100, "status": "ok"})
+            + "\n"
+            + json.dumps({"url": "https://a.com/script.js", "bytes": 200, "status": "ok"})
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("r2", "https://a.com", {}, str(tmp_path))
+        db.import_results("r2", str(tmp_path))
+        # 搜索 "image"
+        result = db.get_results("r2", search="image")
+        assert result["total"] == 1
+        assert "image" in result["results"][0]["url"]
+        # 搜索 "script"
+        result = db.get_results("r2", search="script")
+        assert result["total"] == 1
+
+    def test_get_results_pagination(self, tmp_path: Path) -> None:
+        """get_results 分页正确。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        lines = [
+            json.dumps({"url": f"https://x.com/r{i}.png", "bytes": i, "status": "ok"})
+            for i in range(60)
+        ]
+        jsonl.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        db.create_task("r3", "https://x.com", {}, str(tmp_path))
+        db.import_results("r3", str(tmp_path))
+        page1 = db.get_results("r3", page=1, page_size=50)
+        page2 = db.get_results("r3", page=2, page_size=50)
+        assert len(page1["results"]) == 50
+        assert len(page2["results"]) == 10
+
+
+class TestImportResultsTolerance:
+    """import_results 逐行容错：坏行跳过、bytes 安全转换、JSONL 损坏回退 CSV。"""
+
+    def test_skips_malformed_lines(self, tmp_path: Path) -> None:
+        """坏行（非法 JSON / 非 dict / 空行）被跳过,其余正常导入。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://a.com/ok.png", "bytes": 10, "status": "ok"})
+            + "\n"
+            + "this is not json\n"
+            + '["not", "a", "dict"]\n'
+            + "\n"
+            + json.dumps({"url": "https://a.com/ok2.png", "bytes": 20, "status": "ok"})
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("t1", "https://a.com", {}, str(tmp_path))
+        count = db.import_results("t1", str(tmp_path))
+        assert count == 2
+        result = db.get_results("t1")
+        assert result["total"] == 2
+
+    def test_bytes_field_non_numeric_defaults_to_zero(self, tmp_path: Path) -> None:
+        """bytes 字段为非数字时不中断导入,回退 0。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://a.com/x.png", "bytes": "abc", "status": "ok"})
+            + "\n"
+            + json.dumps({"url": "https://a.com/y.png", "bytes": 42, "status": "ok"})
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("t2", "https://a.com", {}, str(tmp_path))
+        count = db.import_results("t2", str(tmp_path))
+        assert count == 2
+        results = db.get_results("t2")["results"]
+        sizes = {r["url"]: r["bytes"] for r in results}
+        assert sizes["https://a.com/x.png"] == 0
+        assert sizes["https://a.com/y.png"] == 42
+
+    def test_fallback_to_csv_when_jsonl_unreadable(self, tmp_path: Path) -> None:
+        """JSONL 完全不可读时回退 CSV。"""
+        (tmp_path / "resources_manifest.jsonl").write_text("garbage\nnot json\n", encoding="utf-8")
+        (tmp_path / "resources_manifest.csv").write_text(
+            "url,saved_path,content_type,bytes,category,found_in,kind,page_url,page_title,sha256,status,diagnostic\n"
+            "https://b.com/x.js,/out/x.js,application/javascript,2048,script,script,resource,https://b.com,B,ghi,ok,\n",
+            encoding="utf-8",
+        )
+        db.create_task("t3", "https://b.com", {}, str(tmp_path))
+        count = db.import_results("t3", str(tmp_path))
+        assert count == 1
+        result = db.get_results("t3")
+        assert result["total"] == 1
+        assert result["results"][0]["url"] == "https://b.com/x.js"
+
+    def test_safe_int_variants(self) -> None:
+        """_safe_int 对 bool/数字/字符串/None/任意对象都安全。"""
+        assert db._safe_int(True) == 1
+        assert db._safe_int(False) == 0
+        assert db._safe_int("12") == 12
+        assert db._safe_int(12.7) == 12
+        assert db._safe_int("abc") == 0
+        assert db._safe_int(None) == 0
+        assert db._safe_int(object()) == 0
+
+    def test_get_conn_ignores_stale_close_error(self, tmp_path: Path) -> None:
+        """旧连接关闭失败时仍创建新连接（容错分支）。"""
+
+        class _BadConn:
+            def close(self) -> None:
+                raise OSError("boom")
+
+        original_path = db._DB_PATH
+        try:
+            db._local.conn = _BadConn()  # type: ignore[assignment]
+            db._local._conn_path = str(tmp_path / "old.db")
+            db._DB_PATH = str(tmp_path / "new.db")
+            conn = db._get_conn()
+            assert db._local.conn is conn
+            assert db._local._conn_path == db._DB_PATH
+        finally:
+            db._DB_PATH = original_path
+
+
+class TestConnectionLifecycle:
+    """线程级连接登记与统一关闭（消除 ResourceWarning）。"""
+
+    def test_get_conn_registers_and_path_switch_unregisters(self) -> None:
+        """创建连接时登记；DB 路径切换关闭旧连接并移除登记。"""
+        conn = db._get_conn()
+        assert conn in db._all_conns
+        original_path = db._DB_PATH
+        try:
+            db._DB_PATH = str(Path(original_path).parent / "other.db")
+            new_conn = db._get_conn()
+            assert new_conn is not conn
+            assert conn not in db._all_conns
+            assert new_conn in db._all_conns
+        finally:
+            db._DB_PATH = original_path
+
+    def test_close_thread_connection_idempotent(self) -> None:
+        """close_thread_connection 关闭当前线程连接并移除登记；再次调用无副作用。"""
+        conn = db._get_conn()
+        db.close_thread_connection()
+        assert conn not in db._all_conns
+        assert not hasattr(db._local, "conn") or db._local.conn is None
+        db.close_thread_connection()  # 幂等：不再抛错
+        # 关闭后可正常重建
+        assert db._get_conn() is not None
+
+    def test_close_all_connections_idempotent(self) -> None:
+        """close_all_connections 清空登记表；再次调用无副作用。"""
+        db._get_conn()
+        db.close_all_connections()
+        assert db._all_conns == set()
+        db.close_all_connections()  # 幂等
+        # 关闭后仍可正常使用（下次 _get_conn 重建）
+        db.create_task("lc1", "https://example.com", {}, "/tmp")
+        assert db.get_task("lc1") is not None
+
+    def test_close_swallows_close_errors(self) -> None:
+        """连接 close 抛异常时静默吞掉并继续清理（容错分支）。"""
+
+        class _BadConn:
+            def close(self) -> None:
+                raise OSError("boom")
+
+        # close_thread_connection 的异常分支
+        db._local.conn = _BadConn()  # type: ignore[assignment]
+        db.close_thread_connection()  # 不应抛
+        # close_all_connections 的异常分支
+        db._all_conns.add(_BadConn())  # type: ignore[arg-type]
+        db.close_all_connections()  # 不应抛
+        assert db._all_conns == set()
+
+
+class TestFailStaleRunningTasks:
+    """fail_stale_running_tasks:启动时清理上次进程遗留的僵尸任务。"""
+
+    def test_marks_running_and_paused_as_error(self) -> None:
+        """将运行中和已暂停任务标记为错误。"""
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-running', 'https://a.example', '{}', 'o', 'running', 1)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-paused', 'https://b.example', '{}', 'o', 'paused', 2)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-done', 'https://c.example', '{}', 'o', 'done', 3)"
+        )
+        conn.commit()
+
+        changed = db.fail_stale_running_tasks()
+
+        assert changed == 2
+        rows = {
+            r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM tasks").fetchall()
+        }
+        assert rows["t-running"] == "error"
+        assert rows["t-paused"] == "error"
+        assert rows["t-done"] == "done"
+
+    def test_appends_reason_to_log(self) -> None:
+        """将原因追加到日志。"""
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, log, created_at) VALUES"
+            "('t-log', 'https://a.example', '{}', 'o', 'running', '原有日志', 1)"
+        )
+        conn.commit()
+
+        db.fail_stale_running_tasks()
+
+        log = conn.execute("SELECT log FROM tasks WHERE id='t-log'").fetchone()[0]
+        assert "原有日志" in log
+        assert "启动清理" in log
+
+    def test_noop_when_no_stale_tasks(self) -> None:
+        """无过期任务时为空操作。"""
+        assert db.fail_stale_running_tasks() == 0

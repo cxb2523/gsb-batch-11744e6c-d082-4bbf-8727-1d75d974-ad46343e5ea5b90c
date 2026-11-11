@@ -1,0 +1,3293 @@
+"""MCP server 单元测试：覆盖 ReverseMCPServer 的工具分发、JSON-RPC 协议、
+序列化辅助与 stdio 主循环。所有外部依赖（LLM provider、浏览器、ReverseAgent、
+pentest 工具链）均被 mock，不发起真实网络请求或浏览器启动。
+
+覆盖目标：``src/web_crawler/mcp/server.py``。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import sys
+import threading
+import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from web_crawler.mcp import (
+    _ssrf_gate,
+    _tools_pentest,
+    _tools_reverse,
+    _transport,
+)
+from web_crawler.mcp import server as server_module
+from web_crawler.mcp.server import (
+    ReverseMCPServer,
+    _check_url,
+    _error,
+    _json_default,
+    _resolve_host_ips,
+    _to_json,
+)
+
+# ---------------------------------------------------------------------------
+# 测试辅助：构造一个绕过 __init__ 的 ReverseMCPServer（避免真实 provider/agent）
+# ---------------------------------------------------------------------------
+
+
+def _make_server(
+    *,
+    provider: Any = None,
+    analyzer: Any = None,
+    captcha_manager: Any = None,
+    agent: Any = None,
+) -> ReverseMCPServer:
+    """绕过 __init__ 构造 server，手动注入 mock 依赖。"""
+    srv: ReverseMCPServer = object.__new__(ReverseMCPServer)
+    srv.provider_name = "deepseek"
+    srv.model = "deepseek-v4-pro"
+    srv.provider = provider or MagicMock(name="provider", model="m", name_="deepseek")
+    srv.analyzer = analyzer or MagicMock(name="analyzer")
+    srv.captcha_manager = captcha_manager or MagicMock(name="captcha_manager")
+    srv.agent = agent
+    srv._fetcher = None
+    srv._browser_lock = threading.Lock()
+    srv._progress_sender = None
+    srv._progress_lock = threading.Lock()
+    srv._closed = False
+    return srv
+
+
+@pytest.fixture(autouse=True)
+def _fake_dns_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把目标/URL 主机的 DNS 解析替换为公网占位 IP，避免测试发起真实 DNS 查询。
+
+    需要特定解析结果的测试（如私网主机名）在用例内再 monkeypatch 覆盖。
+    """
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["93.184.216.34"])
+
+
+# -- web_crawler.mcp 包级懒加载 ---------------------------------------------
+
+
+def test_mcp_package_lazy_getattr_resolves_and_caches() -> None:
+    """``web_crawler.mcp`` 的 __getattr__ 懒加载 ReverseMCPServer 并缓存。"""
+    import web_crawler.mcp as mcp_pkg
+
+    # 强制重新解析：删除已缓存属性
+    if "ReverseMCPServer" in mcp_pkg.__dict__:
+        del mcp_pkg.__dict__["ReverseMCPServer"]
+    from web_crawler.mcp.server import ReverseMCPServer as Direct
+
+    assert mcp_pkg.ReverseMCPServer is Direct
+    # 解析后应写入模块全局（缓存）
+    assert mcp_pkg.__dict__["ReverseMCPServer"] is Direct
+
+
+def test_mcp_package_dir_lists_public_names() -> None:
+    """``__dir__`` 应包含 __all__ 中的公开符号。"""
+    import web_crawler.mcp as mcp_pkg
+
+    names = dir(mcp_pkg)
+    assert "ReverseMCPServer" in names
+    assert "main" in names
+
+
+# -- 序列化辅助函数 ----------------------------------------------------------
+
+
+class _Color(Enum):
+    """用于测试 _json_default 枚举序列化。"""
+
+    RED = "red"
+
+
+@dataclass
+class _Point:
+    """用于测试 _json_default dataclass 序列化。"""
+
+    x: int
+    y: int
+
+
+def test_json_default_serializes_dataclass() -> None:
+    """dataclass 实例应被 asdict 序列化为 dict。"""
+    assert _json_default(_Point(1, 2)) == {"x": 1, "y": 2}
+
+
+def test_json_default_serializes_dataclass_type_returns_str() -> None:
+    """dataclass 类本身（非实例）应回退到 str。"""
+    # _Point 是类型对象，is_dataclass 返回 True 但 isinstance(obj, type) 也为 True，
+    # 因此不进 asdict 分支，走 str 兜底。
+    result = _json_default(_Point)
+    assert isinstance(result, str)
+
+
+def test_json_default_serializes_enum() -> None:
+    """枚举成员应序列化为 .value。"""
+    assert _json_default(_Color.RED) == "red"
+
+
+def test_json_default_fallback_to_str() -> None:
+    """无法识别的对象回退到 str。"""
+    obj = object()
+    assert _json_default(obj) == str(obj)
+
+
+def test_to_json_preserves_chinese() -> None:
+    """JSON 序列化不转义中文字符。"""
+    result = _to_json({"msg": "你好"})
+    assert "你好" in result
+    parsed = json.loads(result)
+    assert parsed["msg"] == "你好"
+
+
+def test_to_json_supports_dataclass() -> None:
+    """_to_json 通过 default 钩子序列化 dataclass。"""
+    result = _to_json({"point": _Point(3, 4)})
+    parsed = json.loads(result)
+    assert parsed["point"] == {"x": 3, "y": 4}
+
+
+def test_error_includes_extra_fields() -> None:
+    """_error 构造的错误响应包含 error 与额外字段。"""
+    result = _error("boom", details="x", code=42)
+    parsed = json.loads(result)
+    assert parsed["error"] == "boom"
+    assert parsed["details"] == "x"
+    assert parsed["code"] == 42
+
+
+# -- 分页 / 截断辅助 ---------------------------------------------------------
+
+
+def test_clamp_int_normal_and_boundary() -> None:
+    """_clamp_int 正常值直通，越界收敛到边界，非法输入回退默认。"""
+    assert server_module._clamp_int(7, 50, 1, 100) == 7
+    assert server_module._clamp_int(0, 50, 1, 100) == 1  # 下界
+    assert server_module._clamp_int(999, 50, 1, 100) == 100  # 上界
+    assert server_module._clamp_int("abc", 50, 1, 100) == 50  # 非法 → 默认
+    assert server_module._clamp_int(None, 25, 1, 100) == 25  # None → 默认
+    assert server_module._clamp_int("42", 50, 1, 100) == 42  # 数字字符串可解析
+
+
+def test_paginate_first_middle_last_page() -> None:
+    """_paginate 首页/中间页/尾页元数据正确。"""
+    items = list(range(10))
+    # 首页
+    page, meta = server_module._paginate(items, 0, 4)
+    assert page == [0, 1, 2, 3]
+    assert meta == {
+        "total": 10,
+        "offset": 0,
+        "limit": 4,
+        "has_more": True,
+        "next_offset": 4,
+    }
+    # 中间页
+    page, meta = server_module._paginate(items, 4, 4)
+    assert page == [4, 5, 6, 7]
+    assert meta["has_more"] is True
+    assert meta["next_offset"] == 8
+    # 尾页（不满一页）
+    page, meta = server_module._paginate(items, 8, 4)
+    assert page == [8, 9]
+    assert meta["has_more"] is False
+    assert meta["next_offset"] is None
+
+
+def test_paginate_limit_clamped_and_invalid_inputs() -> None:
+    """limit 超上限被收敛；offset/limit 非法输入回退默认。"""
+    items = list(range(1000))
+    page, meta = server_module._paginate(items, 0, 99999)
+    assert meta["limit"] == server_module._MAX_PAGE_SIZE
+    assert len(page) == server_module._MAX_PAGE_SIZE
+    # 非法 offset → 0，非法 limit → 默认页大小
+    page, meta = server_module._paginate(items, "bad", None)
+    assert meta["offset"] == 0
+    assert meta["limit"] == server_module._DEFAULT_PAGE_SIZE
+
+
+def test_paginate_offset_beyond_end_and_empty_list() -> None:
+    """offset 越界回退到最后有效起点；空列表返回空页。"""
+    items = list(range(5))
+    page, meta = server_module._paginate(items, 100, 2)
+    assert meta["offset"] == 4  # clamp 到 total-1
+    assert page == [4]
+    assert meta["has_more"] is False
+    # 空列表
+    page, meta = server_module._paginate([], 0, 10)
+    assert page == []
+    assert meta == {
+        "total": 0,
+        "offset": 0,
+        "limit": 10,
+        "has_more": False,
+        "next_offset": None,
+    }
+
+
+def test_truncate_text_no_truncation_and_truncation() -> None:
+    """_truncate_text：短文本原样返回，长文本按 max_length 截断并报全长。"""
+    text = "abcde"
+    sliced, truncated, full_len = server_module._truncate_text(text, 10)
+    assert (sliced, truncated, full_len) == ("abcde", False, 5)
+    sliced, truncated, full_len = server_module._truncate_text(text, 3)
+    assert sliced == "abc"
+    assert truncated is True
+    assert full_len == 5
+    # max_length<=0 视为不截断
+    sliced, truncated, full_len = server_module._truncate_text(text, 0)
+    assert (sliced, truncated, full_len) == ("abcde", False, 5)
+
+
+def test_truncate_result_strings_nested_paths() -> None:
+    """_truncate_result_strings 递归截断 dict/list 内的超长字符串并记录路径。"""
+    long_js = "x" * 30
+    obj = {
+        "analysis": {"deobfuscated": long_js, "confidence": 0.9},
+        "history": [{"js": long_js}, {"js": "short"}],
+        "plain": 123,
+    }
+    trimmed, truncations = server_module._truncate_result_strings(obj, 10)
+    assert len(trimmed["analysis"]["deobfuscated"]) == 10
+    assert trimmed["analysis"]["confidence"] == 0.9  # 非字符串叶子原样保留
+    assert len(trimmed["history"][0]["js"]) == 10
+    assert trimmed["history"][1]["js"] == "short"
+    assert trimmed["plain"] == 123
+    fields = {t["field"] for t in truncations}
+    assert fields == {"analysis.deobfuscated", "history[0].js"}
+    assert all(t["original_length"] == 30 for t in truncations)
+    # 输入对象不被修改
+    assert len(obj["analysis"]["deobfuscated"]) == 30
+
+
+def test_truncate_result_strings_root_string_and_no_truncation() -> None:
+    """根级字符串与无截断场景。"""
+    trimmed, truncations = server_module._truncate_result_strings("x" * 20, 5)
+    assert len(trimmed) == 5
+    assert truncations == [{"field": "<root>", "original_length": 20}]
+    # 全部短字符串 → 无截断记录
+    obj = {"a": "ok", "b": ["fine"]}
+    trimmed, truncations = server_module._truncate_result_strings(obj, 100)
+    assert trimmed == obj
+    assert truncations == []
+
+
+# -- 资源管理 ----------------------------------------------------------------
+
+
+def test_create_agent_returns_none_when_module_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_HAS_REVERSE_AGENT 为 False 时 _create_agent 返回 None。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", False)
+    monkeypatch.setattr(server_module, "ReverseAgent", None)
+    monkeypatch.setattr(server_module, "ReverseAgentConfig", None)
+    srv = _make_server()
+    assert srv._create_agent() is None
+
+
+def test_create_agent_returns_none_on_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ReverseAgent 构造抛异常时 _create_agent 返回 None（容错降级）。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    def _boom(**kwargs: Any) -> None:
+        raise RuntimeError("init failed")
+
+    monkeypatch.setattr(server_module, "ReverseAgent", _boom)
+    monkeypatch.setattr(server_module, "ReverseAgentConfig", lambda: MagicMock())
+    srv = _make_server()
+    assert srv._create_agent() is None
+
+
+def test_get_fetcher_lazy_creation() -> None:
+    """_get_fetcher 首次调用创建 CamoufoxFetcher，后续复用同一实例。"""
+    srv = _make_server()
+    fake_fetcher = MagicMock()
+    with patch.object(server_module, "CamoufoxFetcher", return_value=fake_fetcher):
+        first = srv._get_fetcher()
+        second = srv._get_fetcher()
+    assert first is fake_fetcher
+    assert second is fake_fetcher
+
+
+def test_close_clears_fetcher_and_marks_closed() -> None:
+    """close 关闭 fetcher 并标记 _closed。"""
+    srv = _make_server()
+    fake_fetcher = MagicMock()
+    srv._fetcher = fake_fetcher
+    srv.close()
+    fake_fetcher.close.assert_called_once()
+    assert srv._fetcher is None
+    assert srv._closed is True
+
+
+def test_close_swallows_fetcher_exception() -> None:
+    """fetcher.close 抛异常时 close 静默吞掉（best-effort 清理）。"""
+    srv = _make_server()
+    fake_fetcher = MagicMock()
+    fake_fetcher.close.side_effect = RuntimeError("boom")
+    srv._fetcher = fake_fetcher
+    srv.close()  # 不应抛
+    assert srv._fetcher is None
+    assert srv._closed is True
+
+
+def test_close_without_fetcher() -> None:
+    """无 fetcher 时 close 仅标记 _closed。"""
+    srv = _make_server()
+    srv.close()
+    assert srv._closed is True
+    assert srv._fetcher is None
+
+
+# -- 工具列表 / prompts / resources 元信息 ----------------------------------
+
+
+def test_get_tools_have_required_schema_fields() -> None:
+    """每个工具必须包含 name / description / inputSchema。"""
+    srv = _make_server()
+    tools = srv.get_tools()
+    assert len(tools) >= 10
+    for tool in tools:
+        assert "name" in tool
+        assert "description" in tool
+        assert "inputSchema" in tool
+        assert tool["inputSchema"]["type"] == "object"
+
+
+def test_get_tools_includes_all_handler_names() -> None:
+    """get_tools 返回的工具名应与 handle_tool 的分发表一致。"""
+    srv = _make_server()
+    names = {t["name"] for t in srv.get_tools()}
+    expected = {
+        "reverse_engineer_url",
+        "inject_hooks",
+        "analyze_js_code",
+        "extract_webpack_modules",
+        "deobfuscate_js",
+        "reimplement_algorithm",
+        "solve_captcha",
+        "solve_captcha_image",
+        "pentest_recon",
+        "capture_network_requests",
+        "get_page_scripts",
+    }
+    assert expected <= names
+
+
+def test_get_prompts_structure() -> None:
+    """prompts 列表结构正确，每个 prompt 含 name/description/arguments。"""
+    srv = _make_server()
+    prompts = srv.get_prompts()
+    assert len(prompts) == 3
+    for p in prompts:
+        assert "name" in p
+        assert "description" in p
+        assert "arguments" in p
+        for a in p["arguments"]:
+            assert "name" in a
+            assert "required" in a
+
+
+def test_get_resources_structure() -> None:
+    """resources 列表结构正确。"""
+    srv = _make_server()
+    resources = srv.get_resources()
+    assert len(resources) == 4
+    uris = {r["uri"] for r in resources}
+    assert "agent://state" in uris
+    assert "hooks://library" in uris
+
+
+# -- render_prompt ----------------------------------------------------------
+
+
+def test_render_prompt_reverse_engineer_url_no_params() -> None:
+    """reverse_engineer_url prompt 无目标参数时显示自动识别。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("reverse_engineer_url", {"url": "http://x"})
+    assert "http://x" in rendered
+    assert "(自动识别)" in rendered
+    assert "20" in rendered  # 默认 max_steps
+
+
+def test_render_prompt_reverse_engineer_url_with_params() -> None:
+    """reverse_engineer_url prompt 带目标参数时正确拼接。"""
+    srv = _make_server()
+    rendered = srv.render_prompt(
+        "reverse_engineer_url",
+        {"url": "http://x", "target_params": "Anti-Content,X-Bogus", "max_steps": "5"},
+    )
+    assert "Anti-Content、X-Bogus" in rendered
+    assert "- 最大步数: 5" in rendered
+
+
+def test_render_prompt_deobfuscate_js_without_focus() -> None:
+    """deobfuscate_js prompt 无 focus_param 时不输出重点关注行。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("deobfuscate_js", {"code": "var a=1"})
+    assert "var a=1" in rendered
+    assert "重点关注参数" not in rendered
+
+
+def test_render_prompt_deobfuscate_js_with_focus() -> None:
+    """deobfuscate_js prompt 带 focus_param 时输出重点关注行。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("deobfuscate_js", {"code": "var a=1", "focus_param": "sign"})
+    assert "重点关注参数：sign" in rendered
+
+
+def test_render_prompt_reimplement_algorithm_default_language() -> None:
+    """reimplement_algorithm prompt 默认语言为 python。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("reimplement_algorithm", {"code": "fn()"})
+    assert "python" in rendered
+    assert "fn()" in rendered
+
+
+def test_render_prompt_reimplement_algorithm_custom_language() -> None:
+    """reimplement_algorithm prompt 支持自定义语言。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("reimplement_algorithm", {"code": "fn()", "language": "go"})
+    assert "go" in rendered
+
+
+def test_render_prompt_unknown_returns_message() -> None:
+    """未知 prompt 名返回 unknown prompt 提示。"""
+    srv = _make_server()
+    rendered = srv.render_prompt("nope", {})
+    assert "unknown prompt" in rendered
+    assert "nope" in rendered
+
+
+# -- read_resource ----------------------------------------------------------
+
+
+def test_read_resource_agent_state() -> None:
+    """agent://state 返回 provider/model/状态信息。"""
+    provider = MagicMock()
+    provider.name = "deepseek"
+    provider.model = "m1"
+    srv = _make_server(provider=provider, agent=MagicMock())
+    parsed = json.loads(srv.read_resource("agent://state"))
+    assert parsed["has_reverse_agent"] is True
+    assert parsed["provider"] == "deepseek"
+    assert parsed["model"] == "m1"
+    assert parsed["browser_reused"] is False
+    assert parsed["closed"] is False
+
+
+def test_read_resource_agent_state_no_provider_attrs() -> None:
+    """provider 无 name/model 属性时回退到 str/provider。"""
+    provider = "plain-string"
+    srv = _make_server(provider=provider)
+    parsed = json.loads(srv.read_resource("agent://state"))
+    assert parsed["has_reverse_agent"] is False
+    assert parsed["provider"] == "plain-string"
+
+
+def test_read_resource_agent_history() -> None:
+    """agent://history 返回空历史占位。"""
+    srv = _make_server()
+    parsed = json.loads(srv.read_resource("agent://history"))
+    assert parsed["history"] == []
+    assert "note" in parsed
+
+
+def test_read_resource_hooks_library() -> None:
+    """hooks://library 返回 HookLibrary.names()。"""
+    srv = _make_server()
+    parsed = json.loads(srv.read_resource("hooks://library"))
+    assert "hooks" in parsed
+    assert isinstance(parsed["hooks"], list)
+
+
+def test_read_resource_extracted_params_schema_available() -> None:
+    """schema://extracted_params 在 pydantic 可用时返回 JSON Schema。"""
+    srv = _make_server()
+    result = srv.read_resource("schema://extracted_params")
+    parsed = json.loads(result)
+    # pydantic 已安装时返回 JSON Schema（含 properties/title）；否则返回 note
+    assert "properties" in parsed or "note" in parsed
+
+
+def test_read_resource_extracted_params_schema_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """schema 调用异常时返回错误 JSON。"""
+    srv = _make_server()
+    import web_crawler.ai.schema as schema_mod
+
+    # 让 ExtractedParams.model_json_schema() 抛异常，触发 except 分支
+    fake = MagicMock()
+    fake.model_json_schema.side_effect = RuntimeError("schema boom")
+    monkeypatch.setattr(schema_mod, "ExtractedParams", fake)
+    parsed = json.loads(srv.read_resource("schema://extracted_params"))
+    assert "error" in parsed
+    assert "schema unavailable" in parsed["error"]
+
+
+def test_read_resource_unknown_uri() -> None:
+    """未知 uri 返回错误响应。"""
+    srv = _make_server()
+    parsed = json.loads(srv.read_resource("bogus://nowhere"))
+    assert "error" in parsed
+    assert "bogus://nowhere" in parsed["error"]
+
+
+# -- progress ---------------------------------------------------------------
+
+
+def test_make_progress_token_format() -> None:
+    """progress token 包含 progressToken 与 total。"""
+    srv = _make_server()
+    token = srv.make_progress_token("reverse", total=5)
+    assert token["progressToken"].startswith("reverse-")
+    assert token["total"] == 5
+
+
+def test_report_progress_writes_to_stderr_without_mcp(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """_HAS_MCP 为 False 时 report_progress 写 stderr。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    srv.report_progress("tok-1", 2, 5, message="halfway")
+    captured = capsys.readouterr()
+    assert "[progress] tok-1: 2/5" in captured.err
+    assert "halfway" in captured.err
+
+
+def test_report_progress_writes_to_stderr_with_mcp(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """_HAS_MCP 为 True 时 report_progress 仍写 stderr（mcp 上下文外无真正推送）。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    srv = _make_server()
+    srv.report_progress("tok-2", 1, 3)
+    captured = capsys.readouterr()
+    assert "[progress] tok-2: 1/3" in captured.err
+
+
+# -- handle_tool 分发与错误处理 ----------------------------------------------
+
+
+def test_handle_tool_unknown_tool() -> None:
+    """未知工具名返回 unknown tool 错误。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("nope", {}))
+    assert "unknown tool" in parsed["error"]
+
+
+def test_handle_tool_passes_empty_args() -> None:
+    """handle_tool 在 args 为 None 时传空 dict 给 handler。"""
+    srv = _make_server()
+    # reverse_engineer_url 缺 url 会 KeyError，被兜底捕获
+    parsed = json.loads(srv.handle_tool("reverse_engineer_url", None))  # type: ignore[arg-type]
+    assert "error" in parsed
+
+
+def test_handle_tool_catches_timeout_error() -> None:
+    """handler 抛 TimeoutError 时返回 timeout 错误。"""
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise TimeoutError("too slow")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    assert parsed["error"] == "timeout"
+
+
+def test_handle_tool_catches_import_error() -> None:
+    """handler 抛 ImportError 时返回 dependency missing 错误。"""
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise ImportError("no module")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    assert parsed["error"] == "dependency missing"
+
+
+def test_handle_tool_catches_runtime_error() -> None:
+    """handler 抛 RuntimeError 时返回 runtime error 错误。"""
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise RuntimeError("llm down")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    assert parsed["error"] == "runtime error"
+
+
+def test_handle_tool_catches_generic_exception() -> None:
+    """handler 抛其他异常时返回脱敏的 internal error（traceback 只写 stderr）。"""
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise ValueError("bad value")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    assert parsed["error"] == "internal error"
+    assert parsed["error_type"] == "ValueError"
+    # 原始异常消息与内部 traceback 不外泄给客户端
+    assert "traceback" not in parsed
+    assert "bad value" not in parsed["error"]
+
+
+def test_handle_tool_logs_traceback_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """通用异常的完整 traceback 写入 stderr 日志（便于排查且不泄露给客户端）。"""
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise ValueError("secret detail")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    captured = capsys.readouterr()
+    assert "Traceback" in captured.err
+
+
+# -- _tool_reverse_engineer_url ---------------------------------------------
+
+
+@dataclass
+class _FakeAgentConfig:
+    """模拟 ReverseAgentConfig 的 dataclass 配置对象（支持 dataclasses.replace）。"""
+
+    max_steps: int = 20
+    hooks: list[str] | None = None
+    headless: bool = False
+    wait_after_navigate: float = 2.0
+    target_params: list[str] | None = None
+    proxy: str | None = None
+    os_name: str = "windows"
+    planner_interval: int | None = 5
+    enable_guard: bool = True
+
+
+class _FakeAgent:
+    """模拟 ReverseAgent：type() 返回 _FakeAgent 类本身，便于 type(self.agent)(...) 构造。"""
+
+    def __init__(
+        self,
+        *,
+        config: Any = None,
+        provider: Any = None,
+        analyzer: Any = None,
+        event_bus: Any = None,
+    ) -> None:
+        self.config = config or _FakeAgentConfig()
+        self.provider = provider
+        self.analyzer = analyzer
+        self.run_called = False
+        self.closed = False
+
+    def run(self, url: str, task: str = "") -> dict:
+        self.run_called = True
+        return {"success": True, "steps": 3}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeAgentCrash(_FakeAgent):
+    """run() 抛异常的 FakeAgent 变体。"""
+
+    def run(self, url: str, task: str = "") -> dict:
+        raise RuntimeError("agent crashed")
+
+
+class _FakeAgentBigResult(_FakeAgent):
+    """run() 返回含超长字符串的 result，用于验证递归截断。"""
+
+    def run(self, url: str, task: str = "") -> dict:
+        return {
+            "success": True,
+            "steps": 2,
+            "analysis": {"deobfuscated": "A" * 5000},
+            "hook_data": {"records": [{"body": "B" * 8000}]},
+        }
+
+
+def test_tool_reverse_engineer_url_with_agent_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent 可用时走完整 ReverseAgent 流程，返回 agent=True。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    base_agent = _FakeAgent(config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock())
+    srv = _make_server(agent=base_agent)
+
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
+    assert parsed["agent"] is True
+    assert parsed["result"]["success"] is True
+
+
+def test_tool_reverse_engineer_url_truncates_big_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent result 内超长文本被递归截断，顶层 truncations 标注字段与原始长度。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    base_agent = _FakeAgentBigResult(
+        config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock()
+    )
+    srv = _make_server(agent=base_agent)
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    parsed = json.loads(
+        srv._tool_reverse_engineer_url({"url": "http://x", "max_text_length": 1000})
+    )
+    assert parsed["agent"] is True
+    assert parsed["result"]["success"] is True
+    # 超长字段被截断到 max_text_length
+    assert len(parsed["result"]["analysis"]["deobfuscated"]) == 1000
+    assert len(parsed["result"]["hook_data"]["records"][0]["body"]) == 1000
+    # 顶层 truncations 记录被截断字段与原始长度
+    by_field = {t["field"]: t["original_length"] for t in parsed["truncations"]}
+    assert by_field == {
+        "analysis.deobfuscated": 5000,
+        "hook_data.records[0].body": 8000,
+    }
+
+
+def test_tool_reverse_engineer_url_fallback_truncates_collected() -> None:
+    """降级采集路径同样递归截断 hook_records 中的超长文本。"""
+    srv = _make_server(agent=None)
+    collected = {
+        "hook_records": [{"type": "fetch", "url": "http://x/api", "body": "C" * 3000}],
+        "hook_count": 1,
+        "scripts": ["http://x/a.js"],
+    }
+    with patch.object(srv, "_run_browser_task", return_value=collected):
+        parsed = json.loads(
+            srv._tool_reverse_engineer_url({"url": "http://x", "max_text_length": 500})
+        )
+    assert parsed["agent"] is False
+    assert len(parsed["hook_records"][0]["body"]) == 500
+    assert parsed["truncations"] == [{"field": "hook_records[0].body", "original_length": 3000}]
+    # hook_count 等数字字段不受影响
+    assert parsed["hook_count"] == 1
+
+
+def test_tool_reverse_engineer_url_agent_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent 执行抛异常时降级为基本采集。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    base_agent = _FakeAgentCrash(
+        config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock()
+    )
+    srv = _make_server(agent=base_agent)
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    # mock _run_browser_task 让降级路径成功
+    collected = {"hook_records": [], "hook_count": 0, "scripts": []}
+    with patch.object(srv, "_run_browser_task", return_value=collected):
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
+    assert parsed["agent"] is False
+    assert "降级" in parsed["note"]
+
+
+def test_tool_reverse_engineer_url_no_agent_basic_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent 为 None 时走基本采集路径。"""
+    srv = _make_server(agent=None)
+    collected = {
+        "hook_records": [{"type": "fetch", "url": "http://x/api"}],
+        "hook_count": 1,
+        "scripts": ["http://x/a.js"],
+    }
+    with patch.object(srv, "_run_browser_task", return_value=collected) as mock_run:
+        parsed = json.loads(
+            srv._tool_reverse_engineer_url({"url": "http://x", "target_params": ["Anti-Content"]})
+        )
+    assert parsed["agent"] is False
+    assert "不可用" in parsed["note"]
+    assert parsed["url"] == "http://x"
+    assert parsed["target_params"] == ["Anti-Content"]
+    assert parsed["hook_count"] == 1
+    mock_run.assert_called_once()
+
+
+def test_tool_reverse_engineer_url_browser_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无 agent 且浏览器任务失败时返回错误。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("browser dead")):
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
+    assert "error" in parsed
+    assert "浏览器操作失败" in parsed["error"]
+
+
+# -- _tool_inject_hooks -----------------------------------------------------
+
+
+def test_tool_inject_hooks_success() -> None:
+    """成功注入 Hook 时返回 injected/preview 信息。"""
+    srv = _make_server(agent=None)
+    preview = [{"type": "fetch", "url": "http://x/api"}]
+    with patch.object(srv, "_run_browser_task", return_value=preview):
+        parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]}))
+    assert parsed["injected"] == ["fetch_hook"]
+    assert parsed["invalid_hooks"] == []
+    assert parsed["preview_count"] == 1
+
+
+def test_tool_inject_hooks_filters_invalid_names() -> None:
+    """未知 hook 名称被剔除并记录到 invalid_hooks。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", return_value=[]):
+        parsed = json.loads(
+            srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook", "bogus"]})
+        )
+    assert "fetch_hook" in parsed["injected"]
+    assert "bogus" in parsed["invalid_hooks"]
+
+
+def test_tool_inject_hooks_no_valid_hooks() -> None:
+    """全部 hook 名称无效时返回错误。"""
+    srv = _make_server(agent=None)
+    parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["bogus1", "bogus2"]}))
+    assert "error" in parsed
+    assert "no valid hooks" in parsed["error"]
+
+
+def test_tool_inject_hooks_browser_error() -> None:
+    """浏览器任务失败时返回错误。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("boom")):
+        parsed = json.loads(srv._tool_inject_hooks({"url": "http://x"}))
+    assert "error" in parsed
+
+
+# -- _tool_analyze_js_code --------------------------------------------------
+
+
+def test_tool_analyze_js_code_success() -> None:
+    """成功分析 JS 代码时返回 algorithm/inputs 等字段。"""
+    analyzer = MagicMock()
+    analyzer.analyze_fragment.return_value = MagicMock(
+        algorithm="MD5",
+        inputs=["timestamp"],
+        output="hash",
+        code_flow="step1",
+        confidence=0.9,
+        deobfuscated="clean",
+    )
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "function() {}"}))
+    assert parsed["algorithm"] == "MD5"
+    assert parsed["inputs"] == ["timestamp"]
+    assert parsed["confidence"] == 0.9
+    assert "target_param" not in parsed
+
+
+def test_tool_analyze_js_code_with_target_param() -> None:
+    """带 target_param 时结果包含 target_param 字段。"""
+    analyzer = MagicMock()
+    analyzer.analyze_fragment.return_value = MagicMock(
+        algorithm="AES", inputs=[], output="", code_flow="", confidence=0.5, deobfuscated=""
+    )
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x", "target_param": "sign"}))
+    assert parsed["target_param"] == "sign"
+
+
+def test_tool_analyze_js_code_llm_error() -> None:
+    """analyzer.analyze_fragment 抛异常时返回 LLM call failed。"""
+    analyzer = MagicMock()
+    analyzer.analyze_fragment.side_effect = RuntimeError("llm down")
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x"}))
+    assert parsed["error"] == "LLM call failed"
+
+
+def test_tool_analyze_js_code_truncates_deobfuscated() -> None:
+    """max_length 截断 deobfuscated 字段并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.analyze_fragment.return_value = MagicMock(
+        algorithm="MD5",
+        inputs=[],
+        output="",
+        code_flow="",
+        confidence=0.9,
+        deobfuscated="x" * 300,
+    )
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x", "max_length": 100}))
+    assert len(parsed["deobfuscated"]) == 100
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 300
+    # 不传 max_length 且输出较短 → 不截断
+    analyzer.analyze_fragment.return_value.deobfuscated = "short"
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x"}))
+    assert parsed["truncated"] is False
+    assert parsed["full_length"] == 5
+
+
+# -- _tool_extract_webpack_modules ------------------------------------------
+
+
+def test_tool_extract_webpack_modules() -> None:
+    """提取 webpack 模块返回 modules/count/entry_point。"""
+    analyzer = MagicMock()
+    module = MagicMock(id=100, dependencies=[200], exports="sign", source="abc" * 200)
+    analyzer.extract_webpack_modules.return_value = [module]
+    analyzer.identify_entry_point.return_value = 100
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_extract_webpack_modules({"source": "bundle"}))
+    assert parsed["count"] == 1
+    assert parsed["entry_point"] == 100
+    assert parsed["modules"][0]["id"] == 100
+    assert parsed["modules"][0]["source_length"] == 600
+
+
+# -- _tool_deobfuscate_js ---------------------------------------------------
+
+
+def test_tool_deobfuscate_js_success() -> None:
+    """成功反混淆返回 deobfuscated 与 length。"""
+    analyzer = MagicMock()
+    analyzer.deobfuscate.return_value = "var x = 1;"
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_deobfuscate_js({"code": "var x=1"}))
+    assert parsed["deobfuscated"] == "var x = 1;"
+    assert parsed["length"] == 10
+
+
+def test_tool_deobfuscate_js_error() -> None:
+    """反混淆抛异常时返回 LLM call failed。"""
+    analyzer = MagicMock()
+    analyzer.deobfuscate.side_effect = RuntimeError("boom")
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_deobfuscate_js({"code": "x"}))
+    assert parsed["error"] == "LLM call failed"
+
+
+def test_tool_deobfuscate_js_truncates_output() -> None:
+    """max_length 截断反混淆输出并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.deobfuscate.return_value = "y" * 500
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_deobfuscate_js({"code": "x", "max_length": 200}))
+    assert len(parsed["deobfuscated"]) == 200
+    assert parsed["length"] == 200
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 500
+
+
+# -- _tool_reimplement_algorithm --------------------------------------------
+
+
+def test_tool_reimplement_algorithm_success() -> None:
+    """成功重写返回 language/code/length。"""
+    analyzer = MagicMock()
+    analyzer.suggest_reimplementation.return_value = "print('hi')"
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "fn()", "language": "go"}))
+    assert parsed["language"] == "go"
+    assert parsed["code"] == "print('hi')"
+    assert parsed["length"] == len("print('hi')")
+
+
+def test_tool_reimplement_algorithm_default_language() -> None:
+    """未指定 language 时默认 python。"""
+    analyzer = MagicMock()
+    analyzer.suggest_reimplementation.return_value = "print('hi')"
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "fn()"}))
+    assert parsed["language"] == "python"
+
+
+def test_tool_reimplement_algorithm_error() -> None:
+    """重写抛异常时返回 LLM call failed。"""
+    analyzer = MagicMock()
+    analyzer.suggest_reimplementation.side_effect = RuntimeError("boom")
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "x"}))
+    assert parsed["error"] == "LLM call failed"
+
+
+def test_tool_reimplement_algorithm_truncates_output() -> None:
+    """max_length 截断重写输出并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.suggest_reimplementation.return_value = "z" * 400
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "x", "max_length": 150}))
+    assert len(parsed["code"]) == 150
+    assert parsed["length"] == 150
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 400
+
+
+# -- _tool_solve_captcha ----------------------------------------------------
+
+
+def test_tool_solve_captcha_none_detected() -> None:
+    """未检测到验证码时返回 type=none/solved=True。"""
+    captcha_manager = MagicMock()
+    captcha_manager.detector.detect.return_value = None
+    srv = _make_server(captcha_manager=captcha_manager, agent=None)
+    with patch.object(srv, "_run_browser_task", return_value=None) as mock_run:
+        # _run_browser_task 把 task_fn 的返回值透传；task_fn 内部调用 detect
+        # 由于 task_fn 在 _run_browser_task 内执行，需让 mock 真正调用 task_fn
+        def _execute(url: str, task_fn: Any, **kw: Any) -> Any:
+            return task_fn(MagicMock())
+
+        mock_run.side_effect = _execute
+        parsed = json.loads(srv._tool_solve_captcha({"url": "http://x"}))
+    assert parsed["type"] == "none"
+    assert parsed["solved"] is True
+
+
+def test_tool_solve_captcha_detected_and_solved() -> None:
+    """检测到验证码并处理成功时返回 type/solved=True。"""
+    from web_crawler.ai.captcha import CaptchaInfo, CaptchaType
+
+    captcha_manager = MagicMock()
+    info = CaptchaInfo(type=CaptchaType.TURNSTILE, iframe_url="http://x", site_key="k")
+    captcha_manager.detector.detect.return_value = info
+    captcha_manager.solver.solve.return_value = True
+    srv = _make_server(captcha_manager=captcha_manager, agent=None)
+
+    def _execute(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(MagicMock())
+
+    with patch.object(srv, "_run_browser_task", side_effect=_execute):
+        parsed = json.loads(srv._tool_solve_captcha({"url": "http://x"}))
+    assert parsed["type"] == "turnstile"
+    assert parsed["solved"] is True
+    assert parsed["message"] == "已处理"
+
+
+def test_tool_solve_captcha_detected_not_solved() -> None:
+    """检测到验证码但处理失败时返回 solved=False/需要人工介入。"""
+    from web_crawler.ai.captcha import CaptchaInfo, CaptchaType
+
+    captcha_manager = MagicMock()
+    info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
+    captcha_manager.detector.detect.return_value = info
+    captcha_manager.solver.solve.return_value = False
+    srv = _make_server(captcha_manager=captcha_manager, agent=None)
+
+    def _execute(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(MagicMock())
+
+    with patch.object(srv, "_run_browser_task", side_effect=_execute):
+        parsed = json.loads(srv._tool_solve_captcha({"url": "http://x"}))
+    assert parsed["solved"] is False
+    assert parsed["message"] == "需要人工介入"
+
+
+def test_tool_solve_captcha_browser_error() -> None:
+    """浏览器任务失败时返回错误。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("boom")):
+        parsed = json.loads(srv._tool_solve_captcha({"url": "http://x"}))
+    assert "error" in parsed
+
+
+# -- _tool_solve_captcha_image ----------------------------------------------
+
+
+def _patch_image_captcha(monkeypatch: pytest.MonkeyPatch, solver: Any) -> None:
+    """patch image_captcha 模块的 ImageCaptchaSolver 与 ImageSolverConfig。"""
+    monkeypatch.setattr("web_crawler.ai.image_captcha.ImageCaptchaSolver", lambda **kw: solver)
+    monkeypatch.setattr("web_crawler.ai.image_captcha.ImageSolverConfig", lambda: MagicMock())
+
+
+def test_tool_solve_captcha_image_invalid_mode() -> None:
+    """非法 mode 返回错误。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "bogus"}))
+    assert "error" in parsed
+    assert "text / slider / click" in parsed["error"]
+
+
+def test_tool_solve_captcha_image_text_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """text 模式成功识别返回 text 字段。"""
+    solver = MagicMock()
+    solver.solve_text.return_value = "abc123"
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"}))
+    assert parsed["mode"] == "text"
+    assert parsed["text"] == "abc123"
+    assert parsed["ok"] is True
+
+
+def test_tool_solve_captcha_image_text_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """text 模式识别为空时 ok=False。"""
+    solver = MagicMock()
+    solver.solve_text.return_value = ""
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"}))
+    assert parsed["ok"] is False
+
+
+def test_tool_solve_captcha_image_text_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """text 模式缺 image 参数返回错误。"""
+    _patch_image_captcha(monkeypatch, MagicMock())
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text"}))
+    assert "error" in parsed
+    assert "image is required" in parsed["error"]
+
+
+def test_tool_solve_captcha_image_slider_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """slider 模式成功识别返回 x/y 坐标。"""
+    solver = MagicMock()
+    solver.solve_slider.return_value = MagicMock(x=120, y=0, method="llm", confidence=0.9)
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_solve_captcha_image({"mode": "slider", "bg": "b64", "slider": "s64"})
+    )
+    assert parsed["mode"] == "slider"
+    assert parsed["ok"] is True
+    assert parsed["x"] == 120
+    assert parsed["method"] == "llm"
+
+
+def test_tool_solve_captcha_image_slider_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """slider 模式识别失败返回 ok=False。"""
+    solver = MagicMock()
+    solver.solve_slider.return_value = None
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_solve_captcha_image({"mode": "slider", "bg": "b64", "slider": "s64"})
+    )
+    assert parsed["ok"] is False
+    assert parsed["message"] == "识别失败"
+
+
+def test_tool_solve_captcha_image_slider_missing_bg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """slider 模式缺 bg/slider 参数返回错误。"""
+    _patch_image_captcha(monkeypatch, MagicMock())
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "slider", "bg": ""}))
+    assert "error" in parsed
+    assert "bg and slider" in parsed["error"]
+
+
+def test_tool_solve_captcha_image_click_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """click 模式成功识别返回 points/labels。"""
+    solver = MagicMock()
+    solver.solve_click.return_value = MagicMock(
+        points=[(10, 20), (30, 40)], labels=["A", "B"], method="llm"
+    )
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_solve_captcha_image({"mode": "click", "image": "b64", "prompt": "点击红绿灯"})
+    )
+    assert parsed["mode"] == "click"
+    assert parsed["ok"] is True
+    assert parsed["points"] == [{"x": 10, "y": 20}, {"x": 30, "y": 40}]
+    assert parsed["labels"] == ["A", "B"]
+
+
+def test_tool_solve_captcha_image_click_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """click 模式识别失败返回 ok=False。"""
+    solver = MagicMock()
+    solver.solve_click.return_value = None
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_solve_captcha_image({"mode": "click", "image": "b64", "prompt": "x"})
+    )
+    assert parsed["ok"] is False
+
+
+def test_tool_solve_captcha_image_click_no_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """click 模式缺 image 参数返回错误。"""
+    _patch_image_captcha(monkeypatch, MagicMock())
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "click"}))
+    assert "error" in parsed
+    assert "image is required" in parsed["error"]
+
+
+def test_tool_solve_captcha_image_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """solver 内部抛异常时返回 captcha image solve failed。"""
+    solver = MagicMock()
+    solver.solve_text.side_effect = RuntimeError("vision down")
+    _patch_image_captcha(monkeypatch, solver)
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "b64"}))
+    assert parsed["error"] == "captcha image solve failed"
+
+
+# -- _tool_pentest_recon ----------------------------------------------------
+
+
+def _patch_pentest_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    port_scan: list | None = None,
+    dir_brute: list | None = None,
+    subdomains: list | None = None,
+    vulns: list | None = None,
+    headers: Any = None,
+) -> None:
+    """patch pentest 子模块，返回 mock 结果。headers 需为真实 dataclass 实例。"""
+    from web_crawler.pentest import HeaderCheckResult
+
+    fake_port_scanner = MagicMock()
+    fake_port_scanner.scan.return_value = port_scan or []
+    fake_dir_bruter = MagicMock()
+    fake_dir_bruter.__enter__ = MagicMock(return_value=fake_dir_bruter)
+    fake_dir_bruter.__exit__ = MagicMock(return_value=False)
+    fake_dir_bruter.brute.return_value = dir_brute or []
+    fake_subdomain = MagicMock()
+    fake_subdomain.enumerate.return_value = subdomains or []
+    fake_vuln = MagicMock()
+    fake_vuln.__enter__ = MagicMock(return_value=fake_vuln)
+    fake_vuln.__exit__ = MagicMock(return_value=False)
+    fake_vuln.scan_url.return_value = vulns or []
+    fake_header = MagicMock()
+    fake_header.__enter__ = MagicMock(return_value=fake_header)
+    fake_header.__exit__ = MagicMock(return_value=False)
+    fake_header.check.return_value = headers or HeaderCheckResult(
+        url="http://x", score=0, grade="F"
+    )
+
+    monkeypatch.setattr("web_crawler.pentest.PortScanner", fake_port_scanner)
+    monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
+    monkeypatch.setattr("web_crawler.pentest.SubdomainEnumerator", lambda: fake_subdomain)
+    monkeypatch.setattr("web_crawler.pentest.VulnScanner", lambda: fake_vuln)
+    monkeypatch.setattr(
+        "web_crawler.pentest.HeaderChecker",
+        lambda **_kwargs: fake_header,  # allow_private_hosts 等关键字参数被 mock 忽略
+    )
+
+
+def test_tool_pentest_recon_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """成功执行渗透侦察返回 to_dict 结果。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "example.com", "checks": ["ports"], "authorization_confirmed": True}
+        )
+    )
+    assert "target" in parsed
+    assert parsed["target"] == "example.com"
+
+
+def test_tool_pentest_recon_url_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """target 为 URL 时正确提取 host 与 base_url。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "https://example.com/",
+                "checks": ["headers"],
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "target" in parsed
+
+
+def test_tool_pentest_recon_no_target() -> None:
+    """target 为空时返回错误。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_pentest_recon({"target": ""}))
+    assert "error" in parsed
+    assert "target is required" in parsed["error"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["file:///etc/passwd", "ftp://example.com/", "gopher://127.0.0.1:70/"],
+)
+def test_tool_pentest_recon_rejects_non_http_scheme(target: str) -> None:
+    """scheme 非 http/https 的目标在解析层被拒绝（纵深防御）。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": target, "authorization_confirmed": True})
+    )
+    assert "error" in parsed
+    assert "unsupported target scheme" in parsed["error"]
+
+
+def test_tool_pentest_recon_unknown_checks() -> None:
+    """未知 check 名称返回错误。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "x", "checks": ["bogus"], "authorization_confirmed": True}
+        )
+    )
+    assert "error" in parsed
+    assert "unknown check names" in parsed["error"]
+
+
+def test_filter_private_egress_redacts_non_public_targets() -> None:
+    """捕获记录出口过滤：非公网目标整体打码并计数，公网记录原样保留。"""
+    from web_crawler.mcp._tools_pentest import _filter_private_egress
+
+    records = [
+        {"url": "https://example.com/api", "status": 200},
+        {"url": "http://169.254.169.254/latest/meta-data/", "status": 200, "body": "ami-123"},
+        {"url": "http://127.0.0.1:8080/admin", "status": 200},
+        {"url": "http://8.8.8.8/dns-query", "status": 200},
+        {"not": "a record"},
+    ]
+    out, redacted = _filter_private_egress(records)
+    assert redacted == 2
+    assert out[0] == records[0]
+    assert out[1] == {"url": "[redacted: non-public target]", "redacted": True}
+    assert out[2]["redacted"] is True
+    assert out[3] == records[3]
+    assert out[4] == records[4]  # 非 dict 记录原样透传
+    # 打码后不残留内网响应内容
+    assert "ami-123" not in json.dumps(out[1])
+
+
+def test_filter_private_egress_resolves_hostname_with_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主机名目标走解析判定且同一 host 只解析一次。"""
+    import web_crawler.mcp._tools_pentest as tp
+
+    calls = {"n": 0}
+
+    def fake_public(host: str) -> bool:
+        calls["n"] += 1
+        return False  # 一律非公网 → 打码
+
+    monkeypatch.setattr("web_crawler.mcp._ssrf_gate._host_is_public", fake_public)
+    records = [
+        {"url": "https://internal.example/x"},
+        {"url": "https://internal.example/y"},
+    ]
+    _out, redacted = tp._filter_private_egress(records)
+    assert redacted == 2
+    assert calls["n"] == 1  # 同 host 判定被缓存
+
+
+def test_tool_pentest_recon_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pentest 内部抛异常时返回 pentest recon failed。"""
+    fake_port_scanner = MagicMock()
+    fake_port_scanner.return_value.scan.side_effect = RuntimeError("network down")
+    monkeypatch.setattr("web_crawler.pentest.PortScanner", fake_port_scanner)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "x", "checks": ["ports"], "authorization_confirmed": True}
+        )
+    )
+    assert parsed["error"] == "pentest recon failed"
+
+
+def test_tool_pentest_recon_custom_ports(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自定义端口列表透传给 PortScanner.scan。"""
+    fake_port_scanner = MagicMock()
+    fake_port_scanner.return_value.scan.return_value = []
+    monkeypatch.setattr("web_crawler.pentest.PortScanner", fake_port_scanner)
+    srv = _make_server()
+    srv._tool_pentest_recon(
+        {
+            "target": "x",
+            "checks": ["ports"],
+            "ports": [22, 80],
+            "authorization_confirmed": True,
+        }
+    )
+    fake_port_scanner.return_value.scan.assert_called_once_with("x", [22, 80])
+
+
+def test_tool_pentest_recon_timeout_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """timeout 超出范围时被 clamp 到 [1, 300]。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    # 超大 timeout 不应报错（被 clamp 到 300）
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "x",
+                "checks": ["ports"],
+                "timeout": 999,
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "error" not in parsed
+
+
+# -- _tool_capture_network_requests ------------------------------------------
+
+
+def test_tool_capture_network_requests_success() -> None:
+    """成功捕获网络请求返回 requests/count。"""
+    srv = _make_server(agent=None)
+    records = [{"type": "fetch", "url": "http://x/api"}]
+    with patch.object(srv, "_run_browser_task", return_value=records):
+        parsed = json.loads(
+            srv._tool_capture_network_requests({"url": "http://x", "wait_time": 2.0})
+        )
+    assert parsed["count"] == 1
+    assert parsed["requests"] == records
+
+
+def test_tool_capture_network_requests_browser_error() -> None:
+    """浏览器任务失败时返回错误。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("boom")):
+        parsed = json.loads(srv._tool_capture_network_requests({"url": "http://x"}))
+    assert "error" in parsed
+
+
+def test_tool_capture_network_requests_pagination() -> None:
+    """offset/limit 分页：默认页大小、翻页元数据与下一页取数。"""
+    srv = _make_server(agent=None)
+    records = [{"type": "fetch", "url": f"http://x/api/{i}"} for i in range(120)]
+    with patch.object(srv, "_run_browser_task", return_value=records):
+        # 默认：前 50 条 + 翻页元数据
+        parsed = json.loads(
+            srv._tool_capture_network_requests({"url": "http://x", "wait_time": 1.0})
+        )
+    assert parsed["count"] == 50
+    assert parsed["total"] == 120
+    assert parsed["offset"] == 0
+    assert parsed["limit"] == 50
+    assert parsed["has_more"] is True
+    assert parsed["next_offset"] == 50
+    assert parsed["requests"][0]["url"] == "http://x/api/0"
+    # 用 next_offset 取下一页
+    with patch.object(srv, "_run_browser_task", return_value=records):
+        parsed = json.loads(
+            srv._tool_capture_network_requests(
+                {"url": "http://x", "wait_time": 1.0, "offset": 50, "limit": 100}
+            )
+        )
+    assert parsed["count"] == 70  # 50..119 共 70 条
+    assert parsed["has_more"] is False
+    assert parsed["next_offset"] is None
+    assert parsed["requests"][0]["url"] == "http://x/api/50"
+
+
+# -- _tool_get_page_scripts -------------------------------------------------
+
+
+def test_tool_get_page_scripts_success() -> None:
+    """成功获取脚本列表返回 scripts/count。"""
+    srv = _make_server(agent=None)
+    scripts = [{"src": "http://x/a.js", "type": "", "async": False, "defer": False}]
+    with patch.object(srv, "_run_browser_task", return_value=scripts):
+        parsed = json.loads(srv._tool_get_page_scripts({"url": "http://x"}))
+    assert parsed["count"] == 1
+    assert parsed["scripts"] == scripts
+
+
+def test_tool_get_page_scripts_browser_error() -> None:
+    """浏览器任务失败时返回错误。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("boom")):
+        parsed = json.loads(srv._tool_get_page_scripts({"url": "http://x"}))
+    assert "error" in parsed
+
+
+def test_tool_get_page_scripts_pagination() -> None:
+    """offset/limit 分页：脚本列表按页返回并带翻页元数据。"""
+    srv = _make_server(agent=None)
+    scripts = [
+        {"src": f"http://x/{i}.js", "type": "", "async": False, "defer": False} for i in range(7)
+    ]
+    with patch.object(srv, "_run_browser_task", return_value=scripts):
+        parsed = json.loads(
+            srv._tool_get_page_scripts({"url": "http://x", "offset": 3, "limit": 4})
+        )
+    assert parsed["count"] == 4
+    assert parsed["total"] == 7
+    assert parsed["offset"] == 3
+    assert parsed["has_more"] is False
+    assert parsed["scripts"][0]["src"] == "http://x/3.js"
+
+
+# -- _handle_jsonrpc 协议 ---------------------------------------------------
+
+
+def test_handle_jsonrpc_notification_returns_none() -> None:
+    """无 id 的通知返回 None（不回复）。"""
+    srv = _make_server()
+    assert srv._handle_jsonrpc("initialize", {}, None) is None
+
+
+def test_handle_jsonrpc_initialize() -> None:
+    """initialize 返回协议版本与 serverInfo。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("initialize", {}, 1)
+    assert resp["jsonrpc"] == "2.0"
+    assert resp["id"] == 1
+    assert resp["result"]["protocolVersion"] == server_module._PROTOCOL_VERSION
+    assert resp["result"]["serverInfo"]["name"] == server_module._SERVER_NAME
+
+
+def test_handle_jsonrpc_tools_list() -> None:
+    """tools/list 返回工具列表。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("tools/list", {}, 2)
+    assert "tools" in resp["result"]
+    assert len(resp["result"]["tools"]) >= 10
+
+
+def test_handle_jsonrpc_tools_call_success() -> None:
+    """tools/call 成功时返回 content 与 isError=False。"""
+    srv = _make_server()
+    analyzer = MagicMock()
+    analyzer.deobfuscate.return_value = "clean"
+    srv.analyzer = analyzer
+    resp = srv._handle_jsonrpc(
+        "tools/call",
+        {"name": "deobfuscate_js", "arguments": {"code": "x"}},
+        3,
+    )
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["content"][0]["type"] == "text"
+
+
+def test_handle_jsonrpc_tools_call_error_result() -> None:
+    """tools/call 返回错误 JSON 时 isError=True。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc(
+        "tools/call",
+        {"name": "deobfuscate_js", "arguments": {}},  # 缺 code，handler 抛异常
+        4,
+    )
+    assert resp["result"]["isError"] is True
+
+
+def test_handle_jsonrpc_tools_call_invalid_name_param() -> None:
+    """tools/call 缺 name 参数返回 -32602 错误。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("tools/call", {}, 5)
+    assert resp["error"]["code"] == -32602
+
+
+def test_handle_jsonrpc_tools_call_non_string_name() -> None:
+    """tools/call 的 name 非字符串返回 -32602 错误。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("tools/call", {"name": 123}, 6)
+    assert resp["error"]["code"] == -32602
+
+
+def test_handle_jsonrpc_prompts_list() -> None:
+    """prompts/list 返回 prompt 列表。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("prompts/list", {}, 7)
+    assert "prompts" in resp["result"]
+    assert len(resp["result"]["prompts"]) == 3
+
+
+def test_handle_jsonrpc_prompts_get_success() -> None:
+    """prompts/get 成功渲染返回 messages。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc(
+        "prompts/get", {"name": "deobfuscate_js", "arguments": {"code": "x"}}, 8
+    )
+    assert "messages" in resp["result"]
+    assert resp["result"]["messages"][0]["role"] == "user"
+
+
+def test_handle_jsonrpc_prompts_get_invalid_name() -> None:
+    """prompts/get 缺 name 返回 -32602 错误。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("prompts/get", {}, 9)
+    assert resp["error"]["code"] == -32602
+
+
+def test_handle_jsonrpc_resources_list() -> None:
+    """resources/list 返回资源列表。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("resources/list", {}, 10)
+    assert "resources" in resp["result"]
+    assert len(resp["result"]["resources"]) == 4
+
+
+def test_handle_jsonrpc_resources_read_success() -> None:
+    """resources/read 成功返回 contents。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("resources/read", {"uri": "agent://state"}, 11)
+    assert "contents" in resp["result"]
+    assert resp["result"]["contents"][0]["uri"] == "agent://state"
+
+
+def test_handle_jsonrpc_resources_read_invalid_uri() -> None:
+    """resources/read 缺 uri 返回 -32602 错误。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("resources/read", {}, 12)
+    assert resp["error"]["code"] == -32602
+
+
+def test_handle_jsonrpc_method_not_found() -> None:
+    """未知 method 返回 -32601 错误。"""
+    srv = _make_server()
+    resp = srv._handle_jsonrpc("bogus/method", {}, 13)
+    assert resp["error"]["code"] == -32601
+    assert "bogus/method" in resp["error"]["message"]
+
+
+# -- _run_stdio_manual ------------------------------------------------------
+
+
+def test_run_stdio_manual_handles_initialize(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """stdio 手动模式正确处理 initialize 请求并输出 JSON-RPC 响应。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(request + "\n"))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    resp = json.loads(captured.out.strip())
+    assert resp["id"] == 1
+    assert resp["result"]["serverInfo"]["name"] == server_module._SERVER_NAME
+
+
+def test_run_stdio_manual_parse_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """非法 JSON 返回 Parse error（id=null）。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json\n"))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    resp = json.loads(captured.out.strip())
+    assert resp["error"]["code"] == -32700
+    assert resp["id"] is None
+
+
+def test_run_stdio_manual_skips_empty_lines(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """空行被跳过，不产生输出。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    monkeypatch.setattr("sys.stdin", io.StringIO("\n   \n"))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_run_stdio_manual_skips_non_dict_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """JSON 解析为非 dict（如数组）时静默跳过。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]\n"))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_run_stdio_manual_notification_no_reply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """无 id 的通知不产生回复。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    request = json.dumps({"jsonrpc": "2.0", "method": "initialize"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(request + "\n"))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
+def test_run_stdio_manual_writes_warning_without_mcp(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """_HAS_MCP 为 False 时写 stderr 警告。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    srv._run_stdio_manual()
+    captured = capsys.readouterr()
+    assert "mcp SDK 未安装" in captured.err
+
+
+# -- run / serve / main -----------------------------------------------------
+
+
+def test_run_uses_mcp_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_HAS_MCP 为 True 时 run 走 asyncio _run_mcp 路径。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    srv = _make_server()
+    called = {"async_run": False}
+
+    async def _fake_run_mcp() -> None:
+        called["async_run"] = True
+
+    with patch.object(srv, "_run_mcp", _fake_run_mcp):
+        srv.run()
+    assert called["async_run"] is True
+
+
+def test_run_uses_manual_when_no_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_HAS_MCP 为 False 时 run 走 _run_stdio_manual 路径。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    called = {"manual": False}
+
+    def _fake_manual() -> None:
+        called["manual"] = True
+
+    with patch.object(srv, "_run_stdio_manual", _fake_manual):
+        srv.run()
+    assert called["manual"] is True
+
+
+def test_serve_is_alias_for_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """serve 方法是 run 的别名。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
+    srv = _make_server()
+    called = {"run": False}
+
+    def _fake_run() -> None:
+        called["run"] = True
+
+    with patch.object(srv, "run", _fake_run):
+        srv.serve()
+    assert called["run"] is True
+
+
+def test_main_warns_without_api_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """无 DEEPSEEK_API_KEY 时 main 写 stderr 警告并正常退出。"""
+    # 隔离 pytest 自身的 -q：新 CLI 的 -q/--quiet 不应被当成 MCP 进程参数。
+    monkeypatch.setattr(sys, "argv", ["web-crawler-mcp"])
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    fake_server = MagicMock()
+    fake_server.run = MagicMock()  # 不抛异常
+    with patch.object(server_module, "ReverseMCPServer", return_value=fake_server):
+        server_module.main()
+    captured = capsys.readouterr()
+    assert "DEEPSEEK_API_KEY" in captured.err
+    fake_server.close.assert_called_once()
+
+
+def test_main_handles_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run 抛 KeyboardInterrupt 时 main 静默退出并清理。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-key")
+    fake_server = MagicMock()
+    fake_server.run.side_effect = KeyboardInterrupt
+    with patch.object(server_module, "ReverseMCPServer", return_value=fake_server):
+        server_module.main()  # 不应抛
+    fake_server.close.assert_called_once()
+
+
+# -- _run_mcp（仅验证装饰器注册逻辑不报错） -----------------------------------
+
+
+def test_run_mcp_registers_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_run_mcp 在 mcp SDK 可用时注册 tools/prompts/resources handler。
+
+    通过 mock stdio_server 与 Server，验证 _run_mcp 能完整执行而不报错。
+    """
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+
+    # 构造 fake mcp SDK
+    fake_types = MagicMock()
+    fake_types.Tool = MagicMock()
+    fake_types.TextContent = MagicMock(return_value={"type": "text"})
+    fake_types.Prompt = MagicMock()
+    fake_types.PromptArgument = MagicMock()
+    fake_types.GetPromptResult = MagicMock()
+    fake_types.PromptMessage = MagicMock()
+    fake_types.Resource = MagicMock()
+    fake_types.CallToolResult = MagicMock()
+    monkeypatch.setattr(_transport, "types", fake_types)
+
+    fake_server_instance = MagicMock()
+
+    class _FakeServer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def list_tools(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def call_tool(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def list_prompts(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def get_prompt(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def list_resources(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def read_resource(self) -> Any:
+            def decorator(fn: Any) -> Any:
+                return fn
+
+            return decorator
+
+        def create_initialization_options(self) -> Any:
+            return MagicMock()
+
+        def request_context(self) -> Any:
+            # 无 _meta：_call_tool 应跳过 progress sender 注册
+            return MagicMock(meta=None)
+
+        async def run(self, *args: Any, **kwargs: Any) -> None:
+            fake_server_instance.run_called = True
+
+    monkeypatch.setattr(_transport, "Server", _FakeServer)
+
+    @asynccontextmanager
+    async def _fake_stdio_server() -> Any:
+        yield (MagicMock(), MagicMock())
+
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
+
+    srv = _make_server()
+    import asyncio
+
+    asyncio.run(srv._run_mcp())
+    assert fake_server_instance.run_called is True
+
+
+# -- __init__ 构造（通过 mock 依赖验证） --------------------------------------
+
+
+def test_server_init_with_mocked_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """通过 mock get_provider / JSAnalyzer / CaptchaManager 验证 __init__ 链路。"""
+    fake_provider = MagicMock(name="provider", model="m")
+    fake_analyzer = MagicMock(name="analyzer")
+    fake_captcha = MagicMock(name="captcha")
+
+    monkeypatch.setattr(server_module, "get_provider", lambda name, **kw: fake_provider)
+    monkeypatch.setattr(server_module, "JSAnalyzer", lambda provider, model: fake_analyzer)
+    monkeypatch.setattr(server_module, "CaptchaManager", lambda: fake_captcha)
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", False)
+    monkeypatch.setattr(server_module, "ReverseAgent", None)
+    monkeypatch.setattr(server_module, "ReverseAgentConfig", None)
+
+    srv = ReverseMCPServer(provider_name="deepseek", model="m")
+    assert srv.provider is fake_provider
+    assert srv.analyzer is fake_analyzer
+    assert srv.captcha_manager is fake_captcha
+    assert srv.agent is None
+    assert srv._fetcher is None
+    assert srv._closed is False
+    srv.close()
+
+
+# ===========================================================================
+# 扩展：未覆盖分支补齐
+# ===========================================================================
+
+
+def test_read_resource_schema_without_model_json_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ExtractedParams 无 model_json_schema 属性时返回 note。"""
+    srv = _make_server()
+    import web_crawler.ai.schema as schema_mod
+
+    # 构造一个无 model_json_schema 的类
+    fake_no_schema = MagicMock()
+    del fake_no_schema.model_json_schema  # 删除属性使 hasattr 返回 False
+    monkeypatch.setattr(schema_mod, "ExtractedParams", fake_no_schema)
+    parsed = json.loads(srv.read_resource("schema://extracted_params"))
+    assert "note" in parsed
+    assert "pydantic not available" in parsed["note"]
+
+
+def test_tool_pentest_recon_dirs_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """checks=['dirs'] 时执行 DirBruter.brute。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "example.com", "checks": ["dirs"], "authorization_confirmed": True}
+        )
+    )
+    assert "target" in parsed
+    assert "dir_brute" in parsed
+
+
+def test_tool_pentest_recon_subdomains_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """checks=['subdomains'] 时执行 SubdomainEnumerator.enumerate。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["subdomains"],
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "target" in parsed
+    assert "subdomains" in parsed
+
+
+def test_tool_pentest_recon_vulns_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """checks=['vulns'] 时执行 VulnScanner.scan_url。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "example.com", "checks": ["vulns"], "authorization_confirmed": True}
+        )
+    )
+    assert "target" in parsed
+    assert "vulns" in parsed
+
+
+def test_tool_pentest_recon_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """所有 checks 一起执行时不报错。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["ports", "dirs", "subdomains", "vulns", "headers"],
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "target" in parsed
+    assert "port_scan" in parsed
+    assert "dir_brute" in parsed
+    assert "subdomains" in parsed
+    assert "vulns" in parsed
+    assert "headers" in parsed
+
+
+def test_tool_pentest_recon_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pentest 超时时返回 pentest recon failed 错误。"""
+    # 让 DirBruter.brute 阻塞足够长时间以触发超时
+    fake_dir_bruter = MagicMock()
+    fake_dir_bruter.__enter__ = MagicMock(return_value=fake_dir_bruter)
+    fake_dir_bruter.__exit__ = MagicMock(return_value=False)
+
+    def _slow_brute(*args: Any, **kwargs: Any) -> list:
+        time.sleep(5)
+        return []
+
+    fake_dir_bruter.brute.side_effect = _slow_brute
+    monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "x", "checks": ["dirs"], "timeout": 1, "authorization_confirmed": True}
+        )
+    )
+    assert parsed["error"] == "pentest recon failed"
+
+
+def test_tool_pentest_recon_timeout_returns_promptly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows 路径下超时后立即返回，不等后台扫描线程跑完（回归：shutdown(wait=False)）。"""
+    fake_dir_bruter = MagicMock()
+    fake_dir_bruter.__enter__ = MagicMock(return_value=fake_dir_bruter)
+    fake_dir_bruter.__exit__ = MagicMock(return_value=False)
+
+    def _slow_brute(*args: Any, **kwargs: Any) -> list:
+        time.sleep(2.5)
+        return []
+
+    fake_dir_bruter.brute.side_effect = _slow_brute
+    monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
+    srv = _make_server()
+    start = time.monotonic()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["dirs"],
+                "timeout": 1,
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    elapsed = time.monotonic() - start
+    assert parsed["error"] == "pentest recon failed"
+    # 后台线程 sleep 2.5s；若超时失效（等线程跑完）总耗时将 ≥2.5s
+    assert elapsed < 2.0
+
+
+def test_handle_jsonrpc_tools_call_non_json_result() -> None:
+    """tools/call 结果非 JSON 时 is_error 保持 False（覆盖 JSONDecodeError 分支）。"""
+    srv = _make_server()
+    # mock handle_tool 返回非 JSON 字符串
+    with patch.object(srv, "handle_tool", return_value="plain text not json"):
+        resp = srv._handle_jsonrpc(
+            "tools/call",
+            {"name": "test_tool", "arguments": {}},
+            1,
+        )
+    assert resp["jsonrpc"] == "2.0"
+    assert resp["id"] == 1
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["content"][0]["text"] == "plain text not json"
+
+
+def test_handle_jsonrpc_tools_call_type_error_result() -> None:
+    """tools/call 结果非 str（TypeError）时 is_error 保持 False。"""
+    srv = _make_server()
+    # mock handle_tool 返回 None → json.loads(None) 抛 TypeError
+    with patch.object(srv, "handle_tool", return_value=None):
+        resp = srv._handle_jsonrpc(
+            "tools/call",
+            {"name": "test_tool", "arguments": {}},
+            1,
+        )
+    assert resp["result"]["isError"] is False
+
+
+# -- 内部 _collect / _capture / _get_scripts 函数体覆盖 --------------------
+
+
+def test_tool_reverse_engineer_url_collect_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_reverse_engineer_url 降级路径的 _collect 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+    fake_page.evaluate.return_value = ["http://x/a.js"]
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    hook_result = {"records": [{"type": "fetch"}], "count": 1}
+    monkeypatch.setattr(_tools_reverse, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
+    assert parsed["agent"] is False
+    assert parsed["hook_count"] == 1
+    assert parsed["scripts"] == ["http://x/a.js"]
+
+
+def test_tool_inject_hooks_collect_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_inject_hooks 的 _collect 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    records = [{"type": "fetch", "url": "http://x/api"}]
+    hook_result = {"records": records, "count": 1}
+    monkeypatch.setattr(_tools_reverse, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]}))
+    assert parsed["injected"] == ["fetch_hook"]
+    assert parsed["preview_count"] == 1
+
+
+def test_tool_capture_network_requests_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_capture_network_requests 的 _capture 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    records = [{"type": "fetch", "url": "http://x/api"}]
+    hook_result = {"records": records, "count": 1}
+    monkeypatch.setattr(_tools_pentest, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_capture_network_requests({"url": "http://x"}))
+    assert parsed["count"] == 1
+    assert parsed["requests"] == records
+
+
+def test_tool_get_page_scripts_inner_function() -> None:
+    """_tool_get_page_scripts 的 _get_scripts 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+    scripts = [{"src": "http://x/a.js", "type": "", "async": False, "defer": False}]
+    fake_page.evaluate.return_value = scripts
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_get_page_scripts({"url": "http://x"}))
+    assert parsed["count"] == 1
+    assert parsed["scripts"] == scripts
+
+
+# -- _on_step_end 回调覆盖 --------------------------------------------------
+
+
+def test_tool_reverse_engineer_url_step_end_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent 执行时 EventBus 回调 _on_step_end 被 event 触发（覆盖 668-669）。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    class _FakeAgentEmit:
+        """run() 时向 event_bus 发出 step.end 事件以覆盖 _on_step_end 回调。"""
+
+        config = _FakeAgentConfig()
+        provider = MagicMock()
+        analyzer = MagicMock()
+
+        def __init__(
+            self,
+            *,
+            config: Any = None,
+            provider: Any = None,
+            analyzer: Any = None,
+            event_bus: Any = None,
+        ) -> None:
+            self.config = config or _FakeAgentConfig()
+            self.provider = provider
+            self.analyzer = analyzer
+            self.event_bus = event_bus
+
+        def run(self, url: str, task: str = "") -> dict:
+            # 模拟 agent 发出 step.end 事件
+            evt = type("Evt", (), {"step": 1, "type": "step.end"})()
+            if self.event_bus is not None:
+                self.event_bus.emit(evt)
+            return {"success": True, "steps": 3}
+
+        def close(self) -> None:
+            pass
+
+    class _EventBusWithCallback:
+        """subscribe 时存储回调，emit 时逐一调用。"""
+
+        def __init__(self) -> None:
+            self._subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self._subscribers.append(fn)
+
+        def emit(self, evt: Any) -> None:
+            for fn in self._subscribers:
+                fn(evt)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _EventBusWithCallback)
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    # self.agent 必须是 _FakeAgentEmit 实例，使 type(self.agent)(...) 构造同类
+    base_agent = _FakeAgentEmit()
+    srv = _make_server(agent=base_agent)
+
+    progress_mock = MagicMock()
+    with patch.object(srv, "report_progress", progress_mock):
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
+    assert parsed["agent"] is True
+    progress_mock.assert_called()
+
+
+# ===========================================================================
+# 回归测试：安全门禁（pentest 授权确认 / URL scheme / 私网目标）
+# ===========================================================================
+
+
+def test_pentest_recon_requires_authorization() -> None:
+    """pentest_recon 未传 authorization_confirmed 时默认拒绝执行。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_pentest_recon({"target": "example.com", "checks": ["ports"]}))
+    assert "error" in parsed
+    assert "authorization" in parsed["error"]
+    assert parsed.get("code") == -32602
+
+
+def test_pentest_recon_authorization_false_rejected() -> None:
+    """authorization_confirmed=false 同样拒绝执行。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": "example.com", "authorization_confirmed": False})
+    )
+    assert "error" in parsed
+    assert "authorization" in parsed["error"]
+
+
+def test_handle_tool_pentest_requires_authorization_param() -> None:
+    """authorization_confirmed 为 schema 必需参数：handle_tool 层即拦截。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("pentest_recon", {"target": "example.com"}))
+    assert "invalid params" in parsed["error"]
+    assert "authorization_confirmed" in parsed["error"]
+
+
+def test_pentest_recon_rejects_private_literal_ip() -> None:
+    """字面私网/环回/链路本地 IP 目标被拒绝（ipaddress 判定，无需 DNS）。"""
+    srv = _make_server()
+    for ip in ("127.0.0.1", "10.1.2.3", "192.168.1.1", "169.254.169.254", "::1"):
+        parsed = json.loads(
+            srv._tool_pentest_recon({"target": ip, "authorization_confirmed": True})
+        )
+        assert "error" in parsed, f"{ip} 应被拒绝"
+        assert "target not allowed" in parsed["error"]
+
+
+def test_pentest_recon_rejects_private_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主机名解析到私网地址时被拒绝（覆盖 autouse 公网占位解析）。"""
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["10.0.0.5"])
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": "internal.example.com", "authorization_confirmed": True})
+    )
+    assert "error" in parsed
+    assert "target not allowed" in parsed["error"]
+
+
+def test_pentest_recon_allow_private_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """allow_private=true 显式放行私网目标（仍需授权确认）。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "127.0.0.1",
+                "checks": ["ports"],
+                "authorization_confirmed": True,
+                "allow_private": True,
+            }
+        )
+    )
+    assert "error" not in parsed
+
+
+def test_check_url_rejects_non_http_schemes() -> None:
+    """仅放行 http/https：file/ftp/data 等 scheme 被拒绝。"""
+    for url in ("file:///etc/passwd", "ftp://example.com/", "data:text/html,x"):
+        assert _check_url(url) is not None
+
+
+def test_check_url_rejects_userinfo() -> None:
+    """含 userinfo 的 URL 被拒绝。"""
+    assert _check_url("http://user:pass@example.com/") is not None
+
+
+def test_check_url_rejects_private_host() -> None:
+    """字面私网/环回主机被拒绝。"""
+    assert _check_url("http://127.0.0.1/") is not None
+    assert _check_url("http://10.0.0.1/x") is not None
+
+
+def test_check_url_rejects_private_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主机名解析到私网地址的 URL 被拒绝。"""
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["192.168.0.9"])
+    assert _check_url("http://internal.example.com/") is not None
+
+
+def test_check_url_accepts_public_https() -> None:
+    """公网 http/https URL 放行。"""
+    assert _check_url("https://example.com/path?q=1") is None
+    assert _check_url("http://example.com/") is None
+
+
+def test_tool_inject_hooks_rejects_file_url() -> None:
+    """file:// 等非法 URL 在工具入口即被拒绝，不启动浏览器。"""
+    srv = _make_server(agent=None)
+    parsed = json.loads(srv._tool_inject_hooks({"url": "file:///etc/passwd"}))
+    assert "error" in parsed
+    assert "scheme not allowed" in parsed["error"]
+
+
+def test_tool_reverse_engineer_url_rejects_file_url() -> None:
+    """reverse_engineer_url 的 agent 路径同样受 URL 门禁约束。"""
+    srv = _make_server(agent=MagicMock())
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "file:///etc/passwd"}))
+    assert "error" in parsed
+    assert "scheme not allowed" in parsed["error"]
+
+
+# ===========================================================================
+# 回归测试：并发（浏览器锁串行化 / _call_tool to_thread）
+# ===========================================================================
+
+
+def test_run_browser_task_serializes_concurrent_calls() -> None:
+    """并发 _run_browser_task 由 _browser_lock 串行化（Playwright sync 非线程安全）。"""
+    srv = _make_server()
+    fake_fetcher = MagicMock()
+    fake_browser = MagicMock()
+    fake_fetcher._ensure_browser.return_value = fake_browser
+    fake_context = MagicMock()
+    fake_browser.new_context.return_value = fake_context
+    fake_context.new_page.return_value = MagicMock()
+
+    events: list[tuple[str, float]] = []
+
+    def task_fn(page: Any) -> None:
+        events.append(("enter", time.monotonic()))
+        time.sleep(0.15)
+        events.append(("exit", time.monotonic()))
+
+    with patch.object(srv, "_get_fetcher", return_value=fake_fetcher):
+        threads = [
+            threading.Thread(target=srv._run_browser_task, args=("http://x", task_fn))
+            for _ in range(2)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    enters = sorted(ts for kind, ts in events if kind == "enter")
+    exits = sorted(ts for kind, ts in events if kind == "exit")
+    assert len(enters) == 2 and len(exits) == 2
+    # 第二个任务进入不得早于第一个任务退出（串行执行）
+    assert enters[1] >= exits[0] - 0.01
+
+
+def _make_handlers_fake_server(handlers: dict[str, Any], ctx: Any) -> type:
+    """构造捕获装饰器注册 handler 的 fake mcp Server 类（_run_mcp 测试用）。"""
+
+    class _FakeServer:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def _reg(self, key: str) -> Any:
+            def decorator(fn: Any) -> Any:
+                handlers[key] = fn
+                return fn
+
+            return decorator
+
+        def list_tools(self) -> Any:
+            return self._reg("list_tools")
+
+        def call_tool(self) -> Any:
+            return self._reg("call_tool")
+
+        def list_prompts(self) -> Any:
+            return self._reg("list_prompts")
+
+        def get_prompt(self) -> Any:
+            return self._reg("get_prompt")
+
+        def list_resources(self) -> Any:
+            return self._reg("list_resources")
+
+        def read_resource(self) -> Any:
+            return self._reg("read_resource")
+
+        def create_initialization_options(self) -> Any:
+            return MagicMock()
+
+        def request_context(self) -> Any:
+            return ctx
+
+        async def run(self, *args: Any, **kwargs: Any) -> None:
+            await asyncio.Event().wait()  # 保持事件循环存活
+
+    return _FakeServer
+
+
+def test_run_mcp_call_tool_runs_in_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_call_tool 经 to_thread 在线程执行 handle_tool，并发调用不串行阻塞事件循环。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    fake_types = MagicMock()
+    fake_types.TextContent = MagicMock(
+        side_effect=lambda **kw: {"type": "text", "text": kw["text"]}
+    )
+    fake_types.CallToolResult = MagicMock(
+        side_effect=lambda **kw: {
+            "content": kw["content"],
+            "isError": kw.get("isError", False),
+        }
+    )
+    monkeypatch.setattr(_transport, "types", fake_types)
+
+    handlers: dict[str, Any] = {}
+    monkeypatch.setattr(
+        _transport, "Server", _make_handlers_fake_server(handlers, MagicMock(meta=None))
+    )
+
+    @asynccontextmanager
+    async def _fake_stdio_server() -> Any:
+        yield (MagicMock(), MagicMock())
+
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
+
+    srv = _make_server()
+
+    def _slow_handle(name: str, args: dict) -> str:
+        time.sleep(0.25)
+        return json.dumps({"ok": name})
+
+    srv.handle_tool = _slow_handle  # type: ignore[method-assign]
+
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(srv._run_mcp())
+        loop.run_until_complete(asyncio.sleep(0.05))
+
+        async def _run_two() -> list[Any]:
+            return await asyncio.gather(
+                handlers["call_tool"]("analyze_js_code", {"code": "a"}),
+                handlers["call_tool"]("deobfuscate_js", {"code": "b"}),
+            )
+
+        start = time.monotonic()
+        out = loop.run_until_complete(_run_two())
+        elapsed = time.monotonic() - start
+        # 两个 0.25s 任务并行执行：若串行阻塞事件循环总耗时 ≈0.5s
+        assert elapsed < 0.45
+        assert len(out) == 2
+    finally:
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+
+def test_run_mcp_call_tool_registers_progress_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_call_tool 从 request_context.meta.progressToken 注册并在调用后注销 progress sender。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    fake_types = MagicMock()
+    fake_types.TextContent = MagicMock(
+        side_effect=lambda **kw: {"type": "text", "text": kw["text"]}
+    )
+    monkeypatch.setattr(_transport, "types", fake_types)
+
+    class _FakeCtx:
+        meta = type("Meta", (), {"progressToken": "pt-1"})()
+        session = MagicMock()
+
+    handlers: dict[str, Any] = {}
+    monkeypatch.setattr(_transport, "Server", _make_handlers_fake_server(handlers, _FakeCtx()))
+
+    @asynccontextmanager
+    async def _fake_stdio_server() -> Any:
+        yield (MagicMock(), MagicMock())
+
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
+
+    srv = _make_server()
+    observed: dict[str, Any] = {}
+
+    def _handle(name: str, args: dict) -> str:
+        with srv._progress_lock:
+            observed["sender_registered"] = srv._progress_sender is not None
+        return json.dumps({"ok": True})
+
+    srv.handle_tool = _handle  # type: ignore[method-assign]
+
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(srv._run_mcp())
+        loop.run_until_complete(asyncio.sleep(0.05))
+        loop.run_until_complete(handlers["call_tool"]("deobfuscate_js", {"code": "x"}))
+        with srv._progress_lock:
+            observed["sender_cleared"] = srv._progress_sender is None
+    finally:
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+    assert observed["sender_registered"] is True
+    assert observed["sender_cleared"] is True
+
+
+def test_report_progress_dispatches_to_sender() -> None:
+    """注册 progress sender 后 report_progress 走 sender 而非 stderr。"""
+    srv = _make_server()
+    calls: list[tuple[int, int, str]] = []
+    srv._progress_sender = lambda cur, tot, msg: calls.append((cur, tot, msg))
+    srv.report_progress("tok", 2, 5, message="half")
+    assert calls == [(2, 5, "half")]
+
+
+# ===========================================================================
+# 回归测试：工具参数校验与输入上限
+# ===========================================================================
+
+
+def test_handle_tool_missing_required_param() -> None:
+    """缺必需参数时返回 -32602 风格 invalid params 错误。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("reverse_engineer_url", {}))
+    assert parsed["error"].startswith("invalid params")
+    assert "'url'" in parsed["error"]
+    assert parsed.get("code") == -32602
+
+
+def test_handle_tool_wrong_type_rejected() -> None:
+    """参数类型错误时返回 invalid params。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": 123}))
+    assert "invalid params" in parsed["error"]
+    assert "must be string" in parsed["error"]
+
+
+def test_handle_tool_enum_violation_rejected() -> None:
+    """枚举参数越界时返回 invalid params。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("solve_captcha_image", {"mode": "bogus"}))
+    assert "invalid params" in parsed["error"]
+    assert "must be one of" in parsed["error"]
+
+
+def test_handle_tool_non_dict_arguments() -> None:
+    """arguments 非 dict（如 list）时按空参数处理并报缺参。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("reverse_engineer_url", ["x"]))  # type: ignore[arg-type]
+    assert "invalid params" in parsed["error"]
+
+
+def test_handle_tool_code_size_limit() -> None:
+    """LLM 输入 code 超过大小上限时被拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(srv.handle_tool("analyze_js_code", {"code": "x" * 2_000_001}))
+    assert "invalid params" in parsed["error"]
+    assert "size limit" in parsed["error"]
+
+
+def test_tool_pentest_recon_ports_too_many() -> None:
+    """ports 数量超过 100 被拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["ports"],
+                "ports": list(range(1, 102)),
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "error" in parsed
+    assert "too many ports" in parsed["error"]
+
+
+def test_tool_pentest_recon_ports_out_of_range() -> None:
+    """ports 取值越界（0/70000/-1）被拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["ports"],
+                "ports": [0, 70000, -1],
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "error" in parsed
+    assert "1-65535" in parsed["error"]
+
+
+def test_tool_capture_wait_time_capped() -> None:
+    """wait_time 超过 60s 被截断到 60s。"""
+    srv = _make_server(agent=None)
+    with patch.object(srv, "_run_browser_task", return_value=[]) as mock_run:
+        json.loads(srv._tool_capture_network_requests({"url": "http://x", "wait_time": 3600}))
+    assert mock_run.call_args.kwargs["wait_time"] == 60.0
+
+
+def test_tool_reverse_engineer_url_max_steps_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """max_steps 超过 100 被截断到 100。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+    recorded: dict[str, Any] = {}
+
+    class _RecordingAgent(_FakeAgent):
+        def __init__(
+            self,
+            *,
+            config: Any = None,
+            provider: Any = None,
+            analyzer: Any = None,
+            event_bus: Any = None,
+        ) -> None:
+            super().__init__(
+                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+            )
+            recorded["config"] = config
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+    srv = _make_server(
+        agent=_RecordingAgent(config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock())
+    )
+    json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 500}))
+    assert recorded["config"].max_steps == 100
+
+
+# ===========================================================================
+# 回归测试：run_config 继承（dataclasses.replace）与报告脱敏
+# ===========================================================================
+
+
+def test_tool_reverse_engineer_url_run_config_preserves_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_config 继承 base 全部配置（planner_interval 等）且显式 headless=True。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+    recorded: dict[str, Any] = {}
+
+    class _RecordingAgent(_FakeAgent):
+        def __init__(
+            self,
+            *,
+            config: Any = None,
+            provider: Any = None,
+            analyzer: Any = None,
+            event_bus: Any = None,
+        ) -> None:
+            super().__init__(
+                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+            )
+            recorded["config"] = config
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    base = _FakeAgentConfig()
+    base.planner_interval = 7
+    srv = _make_server(
+        agent=_RecordingAgent(config=base, provider=MagicMock(), analyzer=MagicMock())
+    )
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
+    assert parsed["agent"] is True
+    cfg = recorded["config"]
+    assert cfg.headless is True  # MCP 路径显式无头
+    assert cfg.max_steps == 5
+    assert cfg.planner_interval == 7  # 未覆盖字段继承自 base
+    assert cfg.os_name == base.os_name
+
+
+def test_tool_pentest_recon_strips_userinfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """target 含 userinfo 时 base_url 与报告 target 剥离凭据。"""
+    fake_dir_bruter = MagicMock()
+    fake_dir_bruter.__enter__ = MagicMock(return_value=fake_dir_bruter)
+    fake_dir_bruter.__exit__ = MagicMock(return_value=False)
+    fake_dir_bruter.brute.return_value = []
+    monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "http://user:pass@example.com/",
+                "checks": ["dirs"],
+                "authorization_confirmed": True,
+            }
+        )
+    )
+    assert "user:pass" not in json.dumps(parsed)
+    assert parsed["target"] == "http://example.com/"
+    assert fake_dir_bruter.brute.call_args.args[0] == "http://example.com/"
+
+
+# ===========================================================================
+# 扩展：_resolve_host_ips / _host_is_public / _check_url / _type_ok 分支
+# ===========================================================================
+
+
+def test_resolve_host_ips_dedups_and_skips_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_resolve_host_ips 去重 IP 并跳过空 sockaddr。"""
+    import socket as _socket
+
+    # autouse fixture 会替换 _resolve_host_ips，这里恢复真实实现后只 mock DNS
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
+    infos = [
+        (2, 1, 6, "", ("93.184.216.34", 0)),
+        (2, 1, 6, "", ("93.184.216.34", 0)),
+        (10, 1, 6, "", ("2001:db8::1", 0)),
+        (2, 1, 6, "", ()),
+    ]
+    monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: infos)
+    assert server_module._resolve_host_ips("example.com") == [
+        "93.184.216.34",
+        "2001:db8::1",
+    ]
+
+
+def test_resolve_host_ips_empty_result_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """getaddrinfo 返回空列表时 _resolve_host_ips 返回 None。"""
+    import socket as _socket
+
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
+    monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: [])
+    assert server_module._resolve_host_ips("example.com") is None
+
+
+def test_resolve_host_ips_gaierror_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS 解析失败（gaierror/OSError）时 _resolve_host_ips 返回 None。"""
+    import socket as _socket
+
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
+
+    def _fail(*a: object, **k: object) -> list:
+        raise _socket.gaierror("nxdomain")
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _fail)
+    assert server_module._resolve_host_ips("nonexistent.invalid") is None
+
+
+def test_host_is_public_resolve_none_returns_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """解析失败/无结果时 _host_is_public 返回 False（保守拒绝）。"""
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: None)
+    assert server_module._host_is_public("internal.example.com") is False
+
+
+def test_check_url_invalid_syntax_returns_error() -> None:
+    """urlsplit 抛 ValueError（非法 URL 语法）时返回 invalid url。"""
+    err = _check_url("http://[::1")
+    assert err is not None
+    assert "invalid url" in err
+
+
+def test_check_url_missing_host_returns_error() -> None:
+    """URL 无 host（如 https:///path）时返回 invalid url。"""
+    err = _check_url("https:///path")
+    assert err is not None
+    assert "missing host" in err
+
+
+def test_type_ok_boolean_integer_number_array_and_unknown() -> None:
+    """_type_ok 各类型分支：bool 不算 int、array 需 list、未知类型放行。"""
+    from web_crawler.mcp.server import _type_ok
+
+    assert _type_ok("boolean", True) is True
+    assert _type_ok("boolean", 1) is False
+    assert _type_ok("integer", 5) is True
+    assert _type_ok("integer", True) is False  # bool 不算 int
+    assert _type_ok("number", 1.5) is True
+    assert _type_ok("array", ["a"]) is True
+    assert _type_ok("array", "abc") is False
+    assert _type_ok("object", {"a": 1}) is True  # 未知类型放行
+
+
+def test_validate_tool_args_unknown_tool_returns_none() -> None:
+    """未知工具无 schema 时不校验（返回 None）。"""
+    srv = _make_server()
+    assert srv._validate_tool_args("nope", {"url": "x"}) is None
+
+
+def test_validate_tool_args_unknown_key_ignored() -> None:
+    """schema 外的多余参数被忽略。"""
+    srv = _make_server()
+    assert (
+        srv._validate_tool_args("reverse_engineer_url", {"url": "https://example.com/", "bogus": 1})
+        is None
+    )
+
+
+def test_validate_tool_args_none_value_skipped() -> None:
+    """值为 None 的可选参数跳过类型校验。"""
+    srv = _make_server()
+    assert srv._validate_tool_args("solve_captcha_image", {"mode": "text", "bg": None}) is None
+
+
+def test_handle_tool_array_items_type_rejected() -> None:
+    """array 参数元素类型不符时返回 invalid params。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv.handle_tool(
+            "reverse_engineer_url",
+            {"url": "https://example.com/", "target_params": [1, 2]},
+        )
+    )
+    assert "invalid params" in parsed["error"]
+    assert "items must be string" in parsed["error"]
+
+
+def test_handle_tool_boolean_type_rejected() -> None:
+    """pentest_recon 的 authorization_confirmed 传非 bool 被拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv.handle_tool(
+            "pentest_recon", {"target": "example.com", "authorization_confirmed": "yes"}
+        )
+    )
+    assert "must be boolean" in parsed["error"]
+
+
+def test_handle_tool_integer_and_array_type_rejected() -> None:
+    """max_steps 传字符串、target_params 传字符串分别触发类型校验错误。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv.handle_tool("reverse_engineer_url", {"url": "https://example.com/", "max_steps": "20"})
+    )
+    assert "must be integer" in parsed["error"]
+    parsed = json.loads(
+        srv.handle_tool(
+            "reverse_engineer_url", {"url": "https://example.com/", "target_params": "abc"}
+        )
+    )
+    assert "must be array" in parsed["error"]
+
+
+# ===========================================================================
+# 扩展：report_progress sender 异常降级 / 三个工具 URL 门禁拒绝分支
+# ===========================================================================
+
+
+def test_report_progress_sender_exception_falls_back_to_stderr(capsys: Any) -> None:
+    """progress sender 抛异常时降级写 stderr 日志。"""
+    srv = _make_server()
+
+    def _boom(cur: int, tot: int, msg: str) -> None:
+        raise RuntimeError("sender crashed")
+
+    srv._progress_sender = _boom
+    srv.report_progress("tok-x", 1, 3, message="half")
+    err = capsys.readouterr().err
+    assert "[progress] tok-x: 1/3 half" in err
+
+
+def test_tool_solve_captcha_rejects_private_target() -> None:
+    """solve_captcha 对非公网 URL 在浏览器启动前即拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_solve_captcha({"url": "http://127.0.0.1/"}))
+    assert "target host not allowed" in parsed["error"]
+
+
+def test_tool_capture_network_requests_rejects_private_target() -> None:
+    """capture_network_requests 对非公网 URL 直接拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_capture_network_requests({"url": "http://127.0.0.1/"}))
+    assert "target host not allowed" in parsed["error"]
+
+
+def test_tool_get_page_scripts_rejects_private_target() -> None:
+    """get_page_scripts 对非公网 URL 直接拒绝。"""
+    srv = _make_server()
+    parsed = json.loads(srv._tool_get_page_scripts({"url": "http://127.0.0.1/"}))
+    assert "target host not allowed" in parsed["error"]
+
+
+# ===========================================================================
+# 回归：mcp 2.x（回调式 Server）兼容路径 —— 上游 2.x 移除了装饰器 API
+# ===========================================================================
+
+
+def _make_v2_fake_server(captured: dict[str, Any]) -> type:
+    """构造 mcp 2.x 形态的 fake Server：handler 由构造参数传入，**没有**装饰器方法。"""
+
+    class _FakeServerV2:
+        def __init__(self, name: str, **kwargs: Any) -> None:
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+
+        def create_initialization_options(self) -> Any:
+            return MagicMock()
+
+        async def run(self, *args: Any, **kwargs: Any) -> None:
+            await asyncio.Event().wait()  # 保持事件循环存活
+
+    return _FakeServerV2
+
+
+def _make_v2_fake_types() -> MagicMock:
+    """假 types 模块：结果类按关键字原样回显，便于断言 2.x 路径究竟传了什么。"""
+    fake = MagicMock()
+    for cls in (
+        "Tool",
+        "Prompt",
+        "PromptArgument",
+        "Resource",
+        "ListToolsResult",
+        "ListPromptsResult",
+        "GetPromptResult",
+        "PromptMessage",
+        "ListResourcesResult",
+        "ReadResourceResult",
+        "TextResourceContents",
+    ):
+        setattr(fake, cls, MagicMock(side_effect=lambda **kw: dict(kw)))
+    fake.TextContent = MagicMock(side_effect=lambda **kw: {"type": "text", **kw})
+    fake.CallToolResult = MagicMock(
+        side_effect=lambda **kw: {"content": kw["content"], "isError": kw.get("isError", False)}
+    )
+    return fake
+
+
+def _with_v2_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    srv: Any,
+    captured: dict[str, Any],
+    body: Any,
+) -> Any:
+    """在事件循环里跑 _run_mcp（2.x 分支），把注册的回调交给 body 使用。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "types", _make_v2_fake_types())
+    monkeypatch.setattr(_transport, "Server", _make_v2_fake_server(captured))
+
+    @asynccontextmanager
+    async def _fake_stdio_server() -> Any:
+        yield (MagicMock(), MagicMock())
+
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
+
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(srv._run_mcp())
+        loop.run_until_complete(asyncio.sleep(0.05))
+        return loop.run_until_complete(body(captured["kwargs"]))
+    finally:
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+
+class _V2Params:
+    """2.x 回调第二个参数（params）的替身：属性式 name / arguments / uri。"""
+
+    def __init__(self, **kw: Any) -> None:
+        self.__dict__.update(kw)
+
+
+class _V2Session:
+    """记录 send_progress_notification 调用的假 session。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, int, int]] = []
+
+    async def send_progress_notification(self, token: Any, current: int, total: int) -> None:
+        self.calls.append((token, current, total))
+
+
+def test_run_mcp_v2_registers_callback_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无装饰器 API 的 Server（mcp 2.x）改走构造回调，名称与版本与 1.x 一致。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    expected = (
+        "on_list_tools",
+        "on_call_tool",
+        "on_list_prompts",
+        "on_get_prompt",
+        "on_list_resources",
+        "on_read_resource",
+    )
+
+    async def _body(handlers: dict[str, Any]) -> dict[str, Any]:
+        return handlers
+
+    handlers = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert captured["name"] == _transport._SERVER_NAME
+    assert captured["kwargs"]["version"] == _transport._SERVER_VERSION
+    assert all(k in handlers and callable(handlers[k]) for k in expected)
+
+
+def test_run_mcp_v2_tools_roundtrip_and_iserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2.x 回调：tools/list 与 1.x 同源；tools/call 成功置 isError=False、错误置 True。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    srv.handle_tool = lambda name, args: json.dumps({"ok": name})  # type: ignore[method-assign]
+
+    ctx = MagicMock(meta=None, session=None)
+    params = _V2Params(name="deobfuscate_js", arguments={"code": "x"})
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any, Any]:
+        listed = await handlers["on_list_tools"](ctx, None)
+        ok = await handlers["on_call_tool"](ctx, params)
+        srv.handle_tool = lambda name, args: json.dumps(  # type: ignore[method-assign]
+            {"error": "boom"}
+        )
+        bad = await handlers["on_call_tool"](ctx, params)
+        return listed, ok, bad
+
+    listed, ok, bad = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert [t["name"] for t in listed["tools"]] == [t["name"] for t in srv.get_tools()]
+    assert ok["isError"] is False
+    assert json.loads(ok["content"][0]["text"]) == {"ok": "deobfuscate_js"}
+    assert bad["isError"] is True
+    assert "error" in bad["content"][0]["text"]
+
+
+def test_run_mcp_v2_prompts_and_resources_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2.x 回调：prompts/get、resources/read 必须返回完整结果对象。
+
+    1.x 里「回调返回裸字符串」的写法在 2.x 会被 SDK 判为非法结果，这里按结果对象断言。
+    """
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    prompt = srv.get_prompts()[0]
+    resource = srv.get_resources()[0]
+    ctx = MagicMock(meta=None, session=None)
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+        prompts = await handlers["on_list_prompts"](ctx, None)
+        got = await handlers["on_get_prompt"](ctx, _V2Params(name=prompt["name"], arguments={}))
+        resources = await handlers["on_list_resources"](ctx, None)
+        read = await handlers["on_read_resource"](ctx, _V2Params(uri=resource["uri"]))
+        return prompts, got, resources, read
+
+    prompts, got, resources, read = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert [p["name"] for p in prompts["prompts"]] == [p["name"] for p in srv.get_prompts()]
+    assert got["messages"][0]["content"]["text"] == srv.render_prompt(prompt["name"], {})
+    assert [r["uri"] for r in resources["resources"]] == [r["uri"] for r in srv.get_resources()]
+    assert read["contents"][0]["text"] == srv.read_resource(resource["uri"])
+    assert read["contents"][0]["uri"] == resource["uri"]
+
+
+def test_run_mcp_v2_call_tool_registers_progress_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2.x 的 meta 是 dict（TypedDict）—— 进度订阅照样注册，并在调用后注销。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    session = _V2Session()
+    ctx = MagicMock(meta={"progressToken": "pt-2"}, session=session)
+    observed: dict[str, Any] = {}
+
+    def _handle(name: str, args: dict) -> str:
+        with srv._progress_lock:
+            observed["sender_registered"] = srv._progress_sender is not None
+        return json.dumps({"ok": True})
+
+    srv.handle_tool = _handle  # type: ignore[method-assign]
+
+    async def _body(handlers: dict[str, Any]) -> Any:
+        return await handlers["on_call_tool"](
+            ctx, _V2Params(name="deobfuscate_js", arguments={"code": "x"})
+        )
+
+    out = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    with srv._progress_lock:
+        observed["sender_cleared"] = srv._progress_sender is None
+    assert observed["sender_registered"] is True
+    assert observed["sender_cleared"] is True
+    assert out["isError"] is False
+
+
+def test_make_progress_sender_meta_shape_variants() -> None:
+    """1.x 属性式 meta 与 2.x 字典式 meta 都能取到 token；缺 token / session 时为 None。"""
+    srv = _make_server()
+    session = _V2Session()
+    metas = [
+        {"progressToken": "pt-dict"},
+        {"progress_token": "pt-snake"},
+        _V2Params(progressToken="pt-obj"),
+        _V2Params(progress_token="pt-obj-snake"),
+    ]
+
+    async def _subscribe() -> None:
+        for meta in metas:
+            sender = srv._make_progress_sender(MagicMock(meta=meta, session=session))
+            assert sender is not None
+            sender(1, 2, "half")
+        await asyncio.sleep(0.05)  # 让 run_coroutine_threadsafe 排入的任务真正执行
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_subscribe())
+    finally:
+        loop.close()
+
+    assert [token for token, _, _ in session.calls] == [
+        "pt-dict",
+        "pt-snake",
+        "pt-obj",
+        "pt-obj-snake",
+    ]
+    assert session.calls[0] == ("pt-dict", 1, 2)
+
+    no_sender = [
+        MagicMock(meta=None, session=session),
+        MagicMock(meta={}, session=session),
+        MagicMock(meta={"progressToken": "pt"}, session=None),
+        MagicMock(meta={"progressToken": "pt"}, session=object()),
+    ]
+    for ctx in no_sender:
+        assert srv._make_progress_sender(ctx) is None
+
+
+def test_make_progress_sender_swallows_push_errors() -> None:
+    """进度推送失败不许外泄：工具调用不能被进度推送拖垮。"""
+    srv = _make_server()
+
+    class _SyncBoom:
+        """同步抛错的替身（run_coroutine_threadsafe 包装协程时就炸）。"""
+
+        def send_progress_notification(self, *args: Any) -> Any:
+            raise RuntimeError("boom-sync")
+
+    class _AsyncBoom:
+        """异步抛错的替身（异常挂在 future 上，由 done 回调取走）。"""
+
+        async def send_progress_notification(self, *args: Any) -> None:
+            raise RuntimeError("boom-async")
+
+    async def _body() -> None:
+        for session in (_SyncBoom(), _AsyncBoom()):
+            sender = srv._make_progress_sender(
+                MagicMock(meta={"progressToken": "pt"}, session=session)
+            )
+            assert sender is not None
+            sender(1, 2, "half")  # 不得抛异常
+        await asyncio.sleep(0.05)  # 让异步异常落到 future 上并被回调取走
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_body())
+    finally:
+        loop.close()
+
+
+def test_run_mcp_v2_call_tool_plain_text_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2.x 回调：handle_tool 返回非 JSON（纯文本 / 非字符串）时不抛错，isError 仍为 False。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    ctx = MagicMock(meta=None, session=None)
+    params = _V2Params(name="deobfuscate_js", arguments={})
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any]:
+        srv.handle_tool = lambda name, args: "plain text"  # type: ignore[method-assign]
+        text = await handlers["on_call_tool"](ctx, params)
+        srv.handle_tool = lambda name, args: None  # type: ignore[method-assign]
+        none = await handlers["on_call_tool"](ctx, params)
+        return text, none
+
+    text, none = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert text["isError"] is False
+    assert text["content"][0]["text"] == "plain text"
+    assert none["isError"] is False
+    assert none["content"][0]["text"] is None

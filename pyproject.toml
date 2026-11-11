@@ -1,0 +1,177 @@
+[project]
+name = "stealth-web-crawler"
+version = "0.9.0"
+description = "A Scrapling-aligned stealth web scraping library: adaptive selectors, TLS-fingerprint HTTP, JS rendering, and a spider framework."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "web-crawler contributors" }]
+keywords = [
+    "web-scraping",
+    "scraping",
+    "automation",
+    "browser-automation",
+    "data-extraction",
+    "html-parsing",
+    "undetectable",
+    "playwright",
+    "web-crawler",
+    "crawling",
+    "headless",
+    "scraper",
+    "chrome",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Typing :: Typed",
+]
+dependencies = [
+    "httpx[http2]>=0.28.1,<1",
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5.2,<7",
+    "cssselect>=1.6.0,<2; python_version >= '3.11'",
+    # 1.6.0 起要求 Python >=3.11；CI 矩阵含 3.10，故按解释器分流声明
+    "cssselect>=1.5.0,<2; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/xiaomaozjj666/web-crawler"
+Repository = "https://github.com/xiaomaozjj666/web-crawler"
+Documentation = "https://xiaomaozjj666.github.io/web-crawler/"
+Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md"
+Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
+
+[project.scripts]
+web-crawler = "web_crawler.app.crawler:main"
+crawler-ui = "web_crawler.app.ui:main"
+web-crawler-mcp = "web_crawler.mcp.server:main"
+web-crawler-reverse = "web_crawler.mcp.cli:main"
+web-crawler-startproject = "web_crawler.app.startproject:main"
+web-crawler-shell = "web_crawler.app.shell:main"
+
+[project.optional-dependencies]
+visual = ["Pillow>=12.3.0,<13"]
+all = [
+    "curl_cffi>=0.9,<1",
+    # 上限保持宽松：camoufox（<1.61）与 all 组合安装时由 pip 自动选兼容版本；
+    # 不要把下限提到 >=1.61，否则 all+camoufox 交集为空（Dependabot 提升会被 CI 拒绝）
+    "playwright>=1.60.0,<2",
+    "pydantic>=2.14.1,<3",
+]
+camoufox = ["camoufox[geoip]>=0.5.8,<1"]
+captcha = ["ddddocr>=1.6.1,<2", "numpy>=2.2.6,<3"]
+crypto = ["pycryptodome>=4.0.1,<5"]
+mcp = ["mcp>=2.3.0,<3", "camoufox[geoip]>=0.5.8,<1", "pydantic>=2.14.1,<3"]
+dev = [
+    "pytest>=9.1.1,<10",
+    "pytest-cov>=7.1.0,<8",
+    "pytest-asyncio>=1.4.0,<2",
+    "ruff>=0.17.1,<0.18",
+    "mypy>=2.4.0,<3",
+    "types-beautifulsoup4>=4.12.0.20250516,<5",
+    "pydantic>=2.14.1,<3",
+]
+docs = [
+    "mkdocs>=1.6.1,<2",
+    "mkdocs-material>=9.7.7,<10",
+    "mkdocstrings[python]>=1.0.8,<2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B"]
+ignore = [
+    "S110",   # try-except-pass 是 best-effort 清理的合理模式
+    "S112",   # try-except-continue 同上
+    "BLE001", # blind except 已有模式
+    "RUF012", # mutable class default 是 dataclass 风格的合理用法
+    "PYI034", # __enter__ 返回 Self 不兼容 3.10
+    "PYI046", # 未使用的 Protocol 不影响功能
+    "SIM102", # 嵌套 if 可读性更好
+]
+
+[tool.ruff.lint.per-file-ignores]
+# facade 薄壳:re-export 段必须位于 sys.dont_write_bytecode / 常量定义之后
+#(导入时序是行为的一部分),E402 为结构性豁免;crawler 的星号转发
+#(F403/F405)是有意的全量 re-export 设计。
+"src/web_crawler/app/crawler.py" = ["E402", "F403", "F405"]
+"src/web_crawler/app/ui.py" = ["E402"]
+"src/web_crawler/mcp/server.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# pytest-asyncio 对未显式设置 fixture 循环作用域会发 PytestDeprecationWarning，
+# 而该警告在其 pytest_configure 阶段抛出，被上方 filterwarnings=error 升级成
+# 异常后整个 pytest 以 INTERNALERROR 退出（2026-10-27 Nightly e2e 实测）。
+# 显式声明为 function（pytest-asyncio 未来版本的默认值），一次性消除该告警。
+asyncio_default_fixture_loop_scope = "function"
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+filterwarnings = [
+    # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
+    # 下方的 ignore 条目在其之前插入过滤器栈，优先级更高，即"先豁免后严格"
+    "error",
+    # 最小依赖环境的 test job 故意覆盖 httpx 降级路径：此警告是设计内的
+    # 运行时提示（用户装齐依赖后不会出现），不是测试要抓的缺陷。
+    # 注意不加模块限定：警告以 stacklevel=2 抛出，来源模块是调用方
+    "ignore:curl_cffi is not installed; falling back to httpx:RuntimeWarning",
+    # close() 同步路径用临时事件循环清理 async 句柄时，AsyncMock 协程
+    # 未被完整 await 触发的告警，属于 mock 限制而非源码问题
+    "ignore::RuntimeWarning:web_crawler.fetchers.dynamic",
+    # reverse_agent 的 page.on()/page.close() 同步路径：测试用 AsyncMock
+    # 模拟 page 时协程未被 await，属于 mock 限制而非源码问题
+    "ignore::RuntimeWarning:web_crawler.ai.reverse_agent",
+    # AsyncMock 返回的协程对象在 GC finalize 时报 never-awaited：unittest.mock
+    # 无法为同步路径补 await，属于 mock 限制（与上面两条 RuntimeWarning 同源）
+    "ignore:Exception ignored while finalizing coroutine:pytest.PytestUnraisableExceptionWarning",
+    # CPython 3.14 起 HTTPError(fp=None) 会经 addbase(tempfile._TemporaryFileWrapper)
+    # 构造 _TemporaryFileCloser，对象回收时偶发 unraisable 告警：标准库行为，
+    # 与项目资源管理无关（项目自身的句柄泄漏已修复并被严格模式持续守护）
+    "ignore:Exception ignored while calling deallocator <function _TemporaryFileCloser:pytest.PytestUnraisableExceptionWarning",
+]
+
+[tool.coverage.run]
+source = ["web_crawler"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# 门禁值略低于实测（默认依赖档 ~94%；全量依赖档另由 CI 以 97 卡口），为平台分支差异留余量；只升不降
+fail_under = 92
+
+[tool.mypy]
+# 类型检查目标 Python 3.12（CI 镜像与本地均 >=3.12，且现代 stub 如 numpy 2.5
+# 已使用 PEP 695 type 语句，python_version<3.12 会触发 syntax 错误）。
+# requires-python 仍保持 ">=3.10"，运行期兼容性由测试套件保障。
+python_version = "3.12"
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["web_crawler*"]
+
+[tool.setuptools.package-data]
+web_crawler = ["py.typed"]
+"web_crawler.app" = ["py.typed", "static/*.html"]

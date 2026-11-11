@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # 只开 PR 不自动合并；版本上界由 pyproject.toml 的区间声明控制
+    open-pull-requests-limit: 5
+    # camoufox 0.5.5 要求 playwright<1.61，更高的 playwright 会让
+    # all+camoufox 交集为空、test-extras 必红——升级前先等 camoufox 放开
+    ignore:
+      - dependency-name: playwright
+        versions: [">=1.61"]
+      # Pillow 13 是跨大版本：pyproject 已钉 <13，Dependabot 反复尝试推 13 时
+      # 会在容器里丢 unknown_error（2026-10-20 实测）。挡掉 >=13 不影响 12.x
+      # 的安全更新照常提 PR。
+      - dependency-name: pillow
+        versions: [">=13"]
+    commit-message:
+      prefix: "chore(deps)"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(ci)"

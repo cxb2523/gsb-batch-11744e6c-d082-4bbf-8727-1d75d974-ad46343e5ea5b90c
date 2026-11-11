@@ -1,0 +1,115 @@
+"""Tests for ProxyPool rotation, failure tracking and cooldown."""
+
+from __future__ import annotations
+
+import time
+
+from web_crawler.fetchers.proxy import ProxyPool
+
+
+def test_empty_pool_returns_none() -> None:
+    """空代理池返回 None。"""
+    assert ProxyPool().get() is None
+    assert len(ProxyPool()) == 0
+
+
+def test_round_robin_cycles_in_order() -> None:
+    """轮询策略按顺序轮转。"""
+    pool = ProxyPool(["a", "b", "c"], strategy="round_robin")
+    assert [pool.get() for _ in range(5)] == ["a", "b", "c", "a", "b"]
+
+
+def test_random_strategy_returns_member() -> None:
+    """随机策略返回池中成员。"""
+    pool = ProxyPool(["a", "b", "c"], strategy="random")
+    for _ in range(20):
+        assert pool.get() in {"a", "b", "c"}
+
+
+def test_invalid_strategy_raises() -> None:
+    """无效策略抛出异常。"""
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown strategy"):
+        ProxyPool(["a"], strategy="bogus")
+
+
+def test_mark_failed_cools_down_after_threshold() -> None:
+    """mark_failed 在超过阈值后冷却。"""
+    pool = ProxyPool(["a", "b"], max_failures=3, cooldown=10.0)
+    pool.mark_failed("a")
+    pool.mark_failed("a")
+    # Still available before reaching max_failures
+    assert "a" in {pool.get(), pool.get()}
+    pool.mark_failed("a")  # 3rd failure -> cooldown
+    # Now only "b" should be served
+    for _ in range(5):
+        assert pool.get() == "b"
+
+
+def test_mark_success_resets_failures() -> None:
+    """mark_success 重置失败计数。"""
+    pool = ProxyPool(["a", "b"], max_failures=2)
+    pool.mark_failed("a")
+    pool.mark_failed("a")  # cooled down
+    pool.mark_success("a")  # reset
+    served = {pool.get() for _ in range(6)}
+    assert "a" in served
+
+
+def test_add_and_remove() -> None:
+    """add/remove 添加与移除代理。"""
+    pool = ProxyPool(["a"])
+    assert len(pool) == 1
+    pool.add("b")
+    assert len(pool) == 2
+    pool.add("a")  # duplicate no-op
+    assert len(pool) == 2
+    pool.remove("a")
+    assert len(pool) == 1
+    pool.remove("zzz")  # absent no-op
+    assert len(pool) == 1
+
+
+def test_cooldown_expires() -> None:
+    """冷却到期后恢复可用。"""
+    pool = ProxyPool(["a", "b"], max_failures=1, cooldown=0.05)
+    pool.mark_failed("a")  # immediately cooled down for 0.05s
+    assert pool.get() == "b"
+    # 3 倍冷却时长的余量：CI 机器时钟/调度抖动下 10ms 级余量会偶发不足
+    time.sleep(0.15)
+    # After cooldown, "a" is available again (round_robin will reach it).
+    served = {pool.get() for _ in range(6)}
+    assert "a" in served
+
+
+def test_cooldown_expiry_resets_failure_count() -> None:
+    """冷却到期后失败计数清零：之后的一次失败不会立刻再次触发冷却。"""
+    pool = ProxyPool(["a", "b"], max_failures=2, cooldown=0.05)
+    pool.mark_failed("a")
+    pool.mark_failed("a")  # 2 次失败 → 进入冷却
+    assert pool.get() == "b"
+    # 3 倍冷却时长的余量：CI Windows 机器的时钟/调度抖动下 10ms 级余量会偶发不足
+    time.sleep(0.15)
+    # 冷却到期：计数被清零，a 只需再失败 1 次（< max_failures）也不会再冷却
+    pool.mark_failed("a")
+    assert pool._failures["a"] == 1
+    assert pool._cooldowns["a"] == 0.0
+    served = {pool.get() for _ in range(6)}
+    assert "a" in served
+
+
+def test_repr_contains_strategy() -> None:
+    """repr 包含策略信息。"""
+    pool = ProxyPool(["a"], strategy="round_robin")
+    assert "round_robin" in repr(pool)
+
+
+def test_available_count() -> None:
+    """available_count 返回未冷却的代理数。"""
+    pool = ProxyPool(["a", "b", "c"], strategy="round_robin", max_failures=1, cooldown=60.0)
+    assert pool.available_count() == 3
+    pool.mark_failed("a")
+    assert pool.available_count() == 2
+    pool.mark_success("a")
+    assert pool.available_count() == 3

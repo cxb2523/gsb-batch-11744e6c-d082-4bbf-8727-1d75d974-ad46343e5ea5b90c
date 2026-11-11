@@ -1,0 +1,1181 @@
+"""JS 逆向 Agent 主循环模块。
+
+编排浏览器、Hook、AI 分析器、验证码处理，形成"观察-思考-行动"的自主循环，
+用于定位网页前端动态生成的加密参数（如 ``Anti-Content``、``X-Bogus``、
+``_signature`` 等）。
+
+工作流程
+--------
+1. 启动 CamoufoxFetcher（默认 headless=False，便于人工介入）；
+2. 创建新的浏览器上下文，在导航前通过 ``add_init_script`` 注入 Hook 脚本；
+3. 进入循环：
+   - 观察：收集 Hook 捕获数据、网络请求、页面脚本、验证码检测；
+   - 思考：把观察结果交给 DeepSeek-V4.1-Flash 决定下一步动作；
+   - 行动：执行 AI 决定的动作（注入新 Hook / 分析 JS / 等待 /
+     提取参数 / 处理验证码 / 完成）；
+4. 达到 ``max_steps`` 或 AI 返回 ``done`` 时停止；
+5. 返回包含 ``success``、``target_params_found``、``analysis``、
+   ``hook_data``、``steps``、``history`` 的结果字典。
+
+错误处理
+--------
+- 浏览器崩溃：尝试重启一次；
+- Hook 注入失败：记录到 history 后继续；
+- AI 分析失败：降级为纯 Hook 模式（仅靠 Hook 数据推进循环）；
+- 所有异常都写入 history，便于事后审计。
+
+模块结构
+--------
+低耦合纯函数层已抽出，便于独立单测（本模块 re-export 全部历史名字，
+``from web_crawler.ai.reverse_agent import ...`` 的路径不变）：
+
+- ``_reverse_prompt``：think 阶段 prompt 模板、观察摘要格式化与
+  思考 prompt 组装；
+- ``_reverse_support``：数据结构（``Observation`` / ``Action`` /
+  ``ReverseAgentConfig``）、SSRF 校验、hook 记录参数搜索、JS 抓取
+  与最优 fragment 评分等纯助手；
+- ``_reverse_actions``：动作执行层（``ActionExecutor`` mixin），承载
+  动作分发器 ``_act_async``、降级动作 ``_fallback_action`` 与全部浏览器
+  交互动作（click / type / scroll / press / hover / select_option /
+  new_tab / switch_tab / close_tab 及 humanize 变体），纯移动自本模块、
+  行为零变化。
+
+本模块保留 Agent 编排层（对标 browser-use 的编排/执行分层）：主循环
+（``run`` / ``arun``）、观察、思考、Hook 注入、页面创建/恢复/监听、
+截图、checkpoint 与资源清理；``ReverseAgent`` 继承 ``ActionExecutor``
+获得动作执行能力，公开签名与历史导入路径保持不变。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+from typing_extensions import Self
+
+from ..fetchers.camoufox import CamoufoxFetcher
+from ._jsonutil import extract_json as _extract_json
+from ._reverse_actions import ActionExecutor
+from ._reverse_prompt import (
+    THINK_SYSTEM_PROMPT as _THINK_SYSTEM_PROMPT,
+)
+from ._reverse_prompt import (
+    THINK_USER_TEMPLATE,
+    build_think_prompt,
+    format_history_summary,
+    format_hook_summary,
+    format_network_summary,
+    format_script_summary,
+)
+from ._reverse_support import (
+    MAX_SCREENSHOTS_PER_TASK,
+    Action,
+    Observation,
+    ReverseAgentConfig,
+    fetch_script_fragments,
+    is_safe_script_url,
+    js_str,
+    list_checkpoint_snapshots,
+    merge_hook_data,
+    pick_best_fragment,
+    rotate_screenshots,
+    safe_page_url,
+    sanitize_filename_component,
+    search_param_in_records,
+)
+from .analyzer import AnalysisResult, JSAnalyzer, JSFragment
+from .captcha import CaptchaManager, CaptchaType
+from .checkpoint import Checkpoint, CheckpointManager, CheckpointStore
+from .confidence import ConfidenceResult, ConfidenceScorer
+from .dom_pruner import DomPruner, PrunedDom
+from .guardrails import ActionGuard, GuardrailResult
+from .hooks import generate_combined_script
+from .judge import JudgeResult, TaskJudge
+from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider
+from .loop import ContextCompressor, LoopDetector
+from .planner import Plan, Planner
+from .recorder import RunRecorder
+from .schema import SchemaValidator
+from .watchdog import (
+    EVENT_ACTION,
+    EVENT_DONE,
+    EVENT_OBSERVATION,
+    EVENT_OBSERVE_ERROR,
+    EVENT_STEP_END,
+    EVENT_STEP_START,
+    EVENT_THINK_ERROR,
+    CrashRecovery,
+    EventBus,
+    Heartbeat,
+)
+
+# ---------------------------------------------------------------------------
+# 历史兼容 re-export
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+# _THINK_USER_TEMPLATE 被 tests 与外部代码直接
+# `from web_crawler.ai.reverse_agent import _THINK_USER_TEMPLATE` 引用；
+# prompt 实现已迁至 _reverse_prompt（纯函数层），这里保留可导入的历史别名。
+_THINK_USER_TEMPLATE = THINK_USER_TEMPLATE
+
+# _js_str 同样被测试与外部代码 `from web_crawler.ai.reverse_agent import _js_str`
+# 直接引用；其唯一使用方（_do_scroll_async）已随动作执行层迁至
+# _reverse_actions，这里保留可导入的历史别名（与 _THINK_USER_TEMPLATE 同模式）。
+_js_str = js_str
+
+
+# ---------------------------------------------------------------------------
+# 主 Agent
+# ---------------------------------------------------------------------------
+
+
+class ReverseAgent(ActionExecutor):
+    """JS 逆向 Agent 主循环。
+
+    编排浏览器、Hook、AI 分析器、验证码处理，形成"观察-思考-行动"的自主循环。
+    同步入口 :meth:`run` 与异步入口 :meth:`arun` 共享同一套配置与分析器，
+    适用于定位前端动态生成的加密参数（Anti-Content / X-Bogus / _signature 等）。
+
+    动作执行能力（``_act_async`` / ``_do_*_async`` 等）来自
+    :class:`~web_crawler.ai._reverse_actions.ActionExecutor` mixin
+    （纯移动拆分，行为与异常消息零变化）。
+    """
+
+    # ------------------------------------------------------------------
+    # 纯函数层绑定（实现迁至 _reverse_prompt / _reverse_support）
+    # ------------------------------------------------------------------
+    # 以下名字历史上是本类的 staticmethod；实现抽到纯函数模块后以
+    # staticmethod 重新绑定，保持 ReverseAgent._xxx(...) 的类属性访问
+    # 方式不变（历史测试与外部代码按类直接调用）。
+
+    _format_hook_summary = staticmethod(format_hook_summary)
+    _format_network_summary = staticmethod(format_network_summary)
+    _format_script_summary = staticmethod(format_script_summary)
+    _format_history_summary = staticmethod(format_history_summary)
+    _safe_page_url = staticmethod(safe_page_url)
+    _search_param_in_records = staticmethod(search_param_in_records)
+    _sanitize_filename_component = staticmethod(sanitize_filename_component)
+
+    def __init__(
+        self,
+        config: ReverseAgentConfig | None = None,
+        provider: LLMProvider | None = None,
+        analyzer: JSAnalyzer | None = None,
+        *,
+        event_bus: EventBus | None = None,
+    ) -> None:
+        self.config = config or ReverseAgentConfig()
+        self.provider = provider or DeepSeekProvider(model=DEFAULT_MODEL)
+        self.analyzer = analyzer or JSAnalyzer(provider=self.provider)
+        # 验证码管理器：若启用 image_captcha，注入 ImageCaptchaSolver，
+        # 让图片挑战出现时自动用 LLM Vision / 本地 OCR 识别
+        if self.config.enable_image_captcha:
+            from .image_captcha import ImageCaptchaSolver
+
+            image_solver = ImageCaptchaSolver(provider=self.provider)
+        else:
+            image_solver = None
+        self.captcha_manager = CaptchaManager(image_solver=image_solver)
+        self.fetcher: CamoufoxFetcher | None = None
+        self._context: Any = None
+        self._page: Any = None
+        # 多标签页管理：name → page 对象（主页面以 "main" 为键）
+        self._tabs: dict[str, Any] = {}
+        # 网络请求监听日志（由 page.on("request") 写入）
+        self._network_log: list[dict] = []
+        # 最近一次观察的 hook 数据缓存，供 _try_extract_param 复用
+        self._hook_data_cache: dict = {"records": [], "count": 0}
+
+        # -- 双脑分离组件 ----------------------------------------------------
+        # Planner 用与 Actor 相同 provider；外部可注入更强模型做 planner。
+        self.planner: Planner | None = (
+            Planner(self.provider, planner_interval=self.config.planner_interval)
+            if self.config.planner_interval
+            else None
+        )
+        self._current_plan: Plan | None = None
+
+        # -- 循环检测 + 上下文压缩 -------------------------------------------
+        self.loop_detector = LoopDetector(threshold=self.config.loop_threshold)
+        self.context_compressor = ContextCompressor(
+            self.provider,
+            max_history=self.config.max_history,
+        )
+
+        # -- 任务完成二次验证 ------------------------------------------------
+        self.judge: TaskJudge | None = (
+            TaskJudge(self.provider, strict=self.config.judge_strict)
+            if self.config.enable_judge
+            else None
+        )
+        self._last_judge_result: JudgeResult | None = None
+
+        # -- 成功路径编译 ----------------------------------------------------
+        self.recorder: RunRecorder | None = RunRecorder() if self.config.enable_recorder else None
+        # 最近一次编译产出的脚本源码（run 结束后可用）
+        self._compiled_script: str = ""
+
+        # -- 事件总线 + 心跳 + 崩溃恢复 -------------------------------------
+        self.event_bus = event_bus or EventBus()
+        self.heartbeat = Heartbeat(
+            max_interval=self.config.heartbeat_timeout,
+            on_stall=self._on_stall,
+        )
+        self.crash_recovery = CrashRecovery(
+            max_retries=self.config.max_retries,
+            bus=self.event_bus,
+        )
+
+        # -- 结构化抽取 schema 验证 -----------------------------------------
+        # 默认 schema 为目标参数表（dict[str, str]），可在 extract 时启用
+        self.schema_validator: SchemaValidator | None = None
+
+        # -- DOM 焦点裁剪（Skyvern/browser-use 风格） ----------------------
+        # 仅当 dom_prune_max_chars > 0 时启用
+        self.dom_pruner: DomPruner | None = (
+            DomPruner(
+                max_chars=self.config.dom_prune_max_chars,
+                enable_llm_rank=self.config.dom_prune_llm_rank,
+                provider=self.provider,
+            )
+            if self.config.dom_prune_max_chars > 0
+            else None
+        )
+        # 最近一次裁剪结果（便于上游调试与事件订阅）
+        self._last_pruned_dom: PrunedDom | None = None
+
+        # -- 断点续跑 --------------------------------------------------------
+        self.checkpoint_manager: CheckpointManager = CheckpointManager(
+            enable=self.config.enable_checkpoint,
+            save_interval=self.config.checkpoint_interval,
+            store=CheckpointStore(keep=self.config.checkpoint_keep),
+        )
+        # 最近一次 resume 加载的 checkpoint（None 表示非 resume 启动）
+        self._resume_from: Checkpoint | None = None
+
+        # -- 动作置信度评分 -------------------------------------------------
+        self.confidence_scorer: ConfidenceScorer = ConfidenceScorer(
+            min_confidence=self.config.min_confidence,
+            enable_llm_score=self.config.confidence_llm_score,
+            provider=self.provider,
+        )
+        self._last_confidence: ConfidenceResult | None = None
+
+        # -- 危险动作护栏 ---------------------------------------------------
+        self.guard: ActionGuard | None = (
+            ActionGuard(allowed_domains=self.config.allowed_domains)
+            if self.config.enable_guard
+            else None
+        )
+        self._last_guard_result: GuardrailResult | None = None
+
+        # -- Confidence 共享的 LLM 调用缓存 ---------------------
+        # _think 内部更新这两个字段，主循环用它们做 token 估算
+        self._last_think_prompt: str = ""
+        self._last_think_completion: str = ""
+        # provider 返回的真实 usage dict（若有）
+        self._last_llm_usage: dict[str, Any] | None = None
+
+        # -- 截图缓存（每步截图路径收集，run/arun 结束后写入 result dict）---
+        self._screenshots: list[dict[str, Any]] = []
+        # 最近一次错误截图路径（供 UI 高亮展示）
+        self._last_error_screenshot: str = ""
+
+    # ------------------------------------------------------------------
+    # 事件总线便捷方法
+    # ------------------------------------------------------------------
+
+    def _emit(self, type_: str, *, step: int = 0, **payload: Any) -> None:
+        """便捷：通过事件总线发布事件。"""
+        self.event_bus.emit(type_, step=step, **payload)
+
+    def _on_stall(self, step: int, elapsed: float) -> None:
+        """Heartbeat 触发卡死时的回调。"""
+        self._emit(
+            "stall",
+            step=step,
+            elapsed=elapsed,
+            message=f"no step progress for {elapsed:.1f}s",
+        )
+
+    # ------------------------------------------------------------------
+    # 主入口（同步）
+    # ------------------------------------------------------------------
+
+    def _reset_run_state(self, url: str) -> None:
+        """重置所有有状态组件与运行期缓存（run/arun 共用，支持重复调用）。"""
+        self.loop_detector.reset()
+        self.context_compressor.reset()
+        self.heartbeat.reset()
+        self.crash_recovery.reset()
+        if self.recorder is not None:
+            self.recorder.reset()
+            self.recorder.set_target(url)
+        self._current_plan = None
+        self._last_judge_result = None
+        self._compiled_script = ""
+        # 重置新组件
+        self._last_pruned_dom = None
+        self._last_confidence = None
+        self._last_guard_result = None
+        self._last_think_prompt = ""
+        self._last_think_completion = ""
+        self._last_llm_usage = None
+        # 重置截图缓存
+        self._screenshots = []
+        self._last_error_screenshot = ""
+        # 重置多标签页管理
+        self._tabs = {}
+        # 重置断点续跑（避免复用上一次 run 的 checkpoint）
+        self._resume_from = None
+
+    def _load_checkpoint_state(self, url: str, task: str) -> tuple[list[dict], dict[str, str]]:
+        """加载断点续跑状态；未启用或无 checkpoint 时返回空集合。"""
+        if not self.config.enable_checkpoint:
+            return [], {}
+        # 用稳定标识（url+task 哈希，不含时间戳）确保跨进程/跨 run 可续跑
+        self.checkpoint_manager.ensure_task_id(url, task)
+        self._resume_from = self.checkpoint_manager.load_latest()
+        if self._resume_from is None:
+            return [], {}
+        cp = self._resume_from
+        # 还原累积摘要（直接写内部字段，因为 property 是只读的）
+        self.context_compressor._cumulative_summary = cp.cumulative_summary
+        self._emit(
+            "checkpoint.resume",
+            step=cp.step,
+            url=cp.url,
+            target_params_found=list(cp.target_params_found.keys()),
+        )
+        return list(cp.history), dict(cp.target_params_found)
+
+    def _merge_final_hook_data(self, final_hook_data: dict[str, Any]) -> dict[str, Any]:
+        """合并最后一次观察的缓存，避免结果 hook_data 几乎为空。"""
+        return merge_hook_data(self._hook_data_cache.get("records", []), final_hook_data)
+
+    def _build_run_result(
+        self,
+        *,
+        stopped: bool,
+        target_params_found: dict[str, str],
+        analysis: AnalysisResult | None,
+        history: list[dict],
+        final_hook_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """构造 run/arun 的结果字典（含成功判定与成功路径录制编译）。"""
+        success = bool(target_params_found)
+        if self.config.target_params:
+            success = all(p in target_params_found for p in self.config.target_params)
+        # Judge 验证过的成功才是真成功
+        if self.judge is not None and self._last_judge_result is not None:
+            success = success and self._last_judge_result.verified
+
+        # -- Recorder：编译成功路径为脚本 -----------------------------
+        if self.recorder is not None and success:
+            try:
+                self._compiled_script = self.recorder.compile_script()
+            except Exception as exc:
+                self._emit("recorder.compile_error", step=0, error=str(exc))
+                self._compiled_script = ""
+
+        return {
+            "success": success,
+            "status": "stopped" if stopped else "completed",
+            "target_params_found": target_params_found,
+            "analysis": analysis,
+            "hook_data": final_hook_data,
+            "steps": len(history),
+            "history": history,
+            "plan": self._current_plan.to_dict() if self._current_plan else None,
+            "judge_result": (
+                self._last_judge_result.to_dict() if self._last_judge_result else None
+            ),
+            "compiled_script": self._compiled_script or None,
+            "last_confidence": (
+                {
+                    "score": self._last_confidence.score,
+                    "reasons": list(self._last_confidence.reasons),
+                    "action_type": getattr(self._last_confidence, "action_type", ""),
+                }
+                if self._last_confidence is not None
+                else None
+            ),
+            "checkpoints": list(self.checkpoints_snapshot()),
+            "screenshots": list(self._screenshots),
+            "error_screenshot": self._last_error_screenshot or None,
+        }
+
+    def run(self, url: str, task: str = "") -> dict:
+        """同步入口：在临时事件循环中驱动 :meth:`arun`（async 为唯一实现）。
+
+        不能在已运行的事件循环内调用（asyncio.run 不可嵌套）；
+        async 上下文请直接 ``await agent.arun(...)``。
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.arun(url, task))
+        raise RuntimeError(
+            "ReverseAgent.run() 不能在事件循环内调用（asyncio.run 不可嵌套），"
+            "async 上下文请使用 await agent.arun(...)"
+        )
+
+    # 主入口（异步）
+    # ------------------------------------------------------------------
+
+    async def arun(self, url: str, task: str = "") -> dict:
+        """异步版本的主循环。与 :meth:`run` 行为一致，但所有 IO 都走 async。"""
+        self.fetcher = CamoufoxFetcher(
+            headless=self.config.headless,
+            os=self.config.os_name,
+            proxy=self.config.proxy,
+            network_idle=False,
+        )
+        self._reset_run_state(url)
+
+        analysis: AnalysisResult | None = None
+        last_observation: Observation | None = None
+        history, target_params_found = self._load_checkpoint_state(url, task)
+
+        try:
+            context, page = await self._create_page_async(self.config.hooks)
+            self._context = context
+            self._page = page
+
+            # resume 时导航回上次 URL，否则导航到入口 url
+            nav_url = self._resume_from.url if self._resume_from and self._resume_from.url else url
+            try:
+                await page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                history.append({"step": 0, "event": "navigate_error", "error": str(exc)})
+            await asyncio.sleep(self.config.wait_after_navigate)
+
+            # resume 时重新注入已记录的 hooks
+            if self._resume_from and self._resume_from.hooks:
+                await self._inject_hooks_async(page, self._resume_from.hooks)
+
+            # resume 时跳过已完成的步号
+            start_step = (self._resume_from.step + 1) if self._resume_from else 1
+            stopped = False
+            if start_step > self.config.max_steps:
+                self._emit(EVENT_DONE, step=0, success=True, reason="resume已完成所有步骤")
+            for step in range(start_step, self.config.max_steps + 1):
+                # 统一从 self._page 取当前页：new_tab/switch_tab/崩溃恢复后循环使用新页
+                page = self._page if self._page is not None else page
+                # 外部停止回调：返回 True 时中断循环，结果状态标为 stopped
+                if self.config.should_stop is not None and self.config.should_stop():
+                    self._emit("agent.stopped", step=step, reason="should_stop callback")
+                    stopped = True
+                    break
+                self._emit(EVENT_STEP_START, step=step)
+                try:
+                    observation = await self._observe_async(page, step=step)
+                    last_observation = observation
+                    self._emit(
+                        EVENT_OBSERVATION,
+                        step=step,
+                        url=observation.url,
+                        hook_count=observation.hook_data.get("count", 0),
+                        network_count=len(observation.network_requests),
+                        script_count=len(observation.scripts),
+                        screenshot_path=observation.screenshot_path,
+                    )
+                except Exception as exc:
+                    history.append({"step": step, "event": "observe_error", "error": str(exc)})
+                    self._emit(EVENT_OBSERVE_ERROR, step=step, error=str(exc))
+                    # 异步崩溃恢复：CrashRecovery 同步控制器，但调用异步恢复函数
+                    # 已 await 完成恢复；用默认参数绑定避免 B023 闭包陷阱。
+                    # _try_recover_page_async 返回 (是否成功, 新 page)，成功后循环重新绑定
+                    recovered, new_page = await self._try_recover_page_async(url)
+
+                    def _recovered_fn(_r: bool = recovered) -> bool:
+                        return _r
+
+                    should_continue = self.crash_recovery.attempt(
+                        _recovered_fn,
+                        step=step,
+                        error=exc,
+                    )
+                    if should_continue:
+                        if recovered and new_page is not None:
+                            # 同时更新 self._page 与循环局部引用，二者保持一致
+                            page = new_page
+                            self._page = new_page
+                        continue
+                    break
+
+                # -- 循环检测 ------------------------------------------
+                loop_result = self.loop_detector.observe(observation, step=step)
+                if loop_result.detected:
+                    self._emit(
+                        "loop.detected",
+                        step=step,
+                        repeated_count=loop_result.repeated_count,
+                    )
+                    if self.planner is not None:
+                        self._current_plan = await self.planner.make_plan_async(
+                            task,
+                            observation,
+                            step=step,
+                            history_summary=self.context_compressor.cumulative_summary,
+                            target_params=self.config.target_params,
+                        )
+                        self._emit(
+                            "plan",
+                            step=step,
+                            trigger="loop",
+                            subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                        )
+                        self.loop_detector.reset()
+
+                # -- 周期重规划 ----------------------------------------
+                if self.planner is not None and (
+                    self._current_plan is None
+                    or self._current_plan.is_complete
+                    or (step - (self._current_plan.created_at_step or 0))
+                    >= self.planner.planner_interval
+                ):
+                    self._current_plan = await self.planner.make_plan_async(
+                        task,
+                        observation,
+                        step=step,
+                        history_summary=self.context_compressor.cumulative_summary,
+                        target_params=self.config.target_params,
+                    )
+                    self._emit(
+                        "plan",
+                        step=step,
+                        trigger="interval",
+                        subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                    )
+
+                # -- 上下文压缩（异步） --------------------------------
+                history, compressed = await self.context_compressor.maybe_compress_async(history)
+                if compressed:
+                    self._emit("context.compressed", step=step)
+
+                # -- 心跳：think 前后检测 AI 卡死（LLM 长时间不返回）----
+                self.heartbeat.check_stall(step=step)
+                try:
+                    action = await self._think_async(
+                        observation, task, history, plan=self._current_plan
+                    )
+                    self._emit(
+                        EVENT_ACTION,
+                        step=step,
+                        action_type=action.action_type,
+                        reasoning=action.reasoning,
+                    )
+                except Exception as exc:
+                    history.append({"step": step, "event": "think_error", "error": str(exc)})
+                    self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    await self._take_screenshot_async(page, step, error=True)
+                    action = self._fallback_action(observation)
+                self.heartbeat.check_stall(step=step)
+
+                # -- Confidence 评分：低分动作触发 fallback ----------------
+                conf_result = await self.confidence_scorer.score_async(
+                    action,
+                    task=task,
+                    target_params=self.config.target_params,
+                    history=history,
+                )
+                self._last_confidence = conf_result
+                if conf_result.score < self.config.min_confidence:
+                    self._emit(
+                        "confidence.low",
+                        step=step,
+                        score=conf_result.score,
+                        reasons=conf_result.reasons,
+                    )
+                    action = self._fallback_action(observation)
+
+                history.append(
+                    {
+                        "step": step,
+                        "action": action.action_type,
+                        "params": action.params,
+                        "reasoning": action.reasoning,
+                        "observation": {
+                            "url": observation.url,
+                            "hook_count": observation.hook_data.get("count", 0),
+                            "network_count": len(observation.network_requests),
+                            "script_count": len(observation.scripts),
+                            "captcha_type": observation.captcha_type.value,
+                        },
+                        "current_subgoal": (
+                            self._current_plan.current_subgoal.description
+                            if self._current_plan and self._current_plan.current_subgoal
+                            else None
+                        ),
+                        "confidence": conf_result.score,
+                    }
+                )
+
+                self.heartbeat.tick(step)
+
+                # -- 危险动作护栏：DENY 时跳过执行 ----------------------
+                guard_result: GuardrailResult | None = None
+                if self.guard is not None:
+                    guard_result = await self.guard.check_async(
+                        action,
+                        context={"url": observation.url, "task": task, "step": step},
+                    )
+                    self._last_guard_result = guard_result
+                    if guard_result.denied:
+                        self._emit(
+                            "guard.deny",
+                            step=step,
+                            matched_rules=guard_result.matched_rules,
+                            details=guard_result.details,
+                        )
+                        history.append(
+                            {
+                                "step": step,
+                                "event": "guard_denied",
+                                "matched_rules": guard_result.matched_rules,
+                                "details": guard_result.details,
+                            }
+                        )
+                        self._emit(EVENT_STEP_END, step=step)
+                        continue
+
+                if action.action_type == "done":
+                    if self.judge is not None and last_observation is not None:
+                        judge_result = await self.judge.validate_async(
+                            action=action,
+                            observation=last_observation,
+                            target_params_found=target_params_found,
+                            task=task,
+                            target_params=self.config.target_params,
+                        )
+                        self._last_judge_result = judge_result
+                        self._emit(
+                            "judge.result",
+                            step=step,
+                            verified=judge_result.verified,
+                            missing=judge_result.missing,
+                        )
+                        if not judge_result.verified:
+                            history.append(
+                                {
+                                    "step": step,
+                                    "event": "judge_failed",
+                                    "missing": judge_result.missing,
+                                    "reasoning": judge_result.reasoning,
+                                }
+                            )
+                            action = self._fallback_action(observation)
+                        else:
+                            # 验证通过：当前子目标完成，推进 Planner
+                            if self._current_plan is not None:
+                                self._current_plan.advance()
+                            self._emit(EVENT_DONE, step=step, success=True)
+                            break
+                    else:
+                        self._emit(EVENT_DONE, step=step)
+                        break
+
+                # -- Recorder：先记录占位（执行后按结果更新），避免异常时误标上一步 ---
+                if self.recorder is not None:
+                    self.recorder.record(
+                        step=step,
+                        action_type=action.action_type,
+                        params=action.params,
+                    )
+                try:
+                    result = await self._act_async(page, action, step=step)
+                    # -- Recorder：更新本步结果 -------------------------
+                    if self.recorder is not None:
+                        self.recorder.update_last(
+                            result_value=(
+                                str(result) if action.action_type == "extract" and result else None
+                            )
+                        )
+                    if action.action_type == "inject_hook" and result is False:
+                        history.append({"step": step, "event": "inject_hook_failed"})
+                        if self.recorder is not None:
+                            self.recorder.update_last(success=False)
+                    elif action.action_type == "extract" and result:
+                        param_name = action.params.get("param_name", "")
+                        if param_name:
+                            target_params_found[param_name] = result
+                            # 提取成功 → 推进 Planner 子目标
+                            if self._current_plan is not None:
+                                self._current_plan.advance()
+                    elif action.action_type == "analyze_js" and isinstance(result, AnalysisResult):
+                        analysis = result
+                except Exception as exc:
+                    history.append({"step": step, "event": "act_error", "error": str(exc)})
+                    self._emit("act.error", step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    await self._take_screenshot_async(page, step, error=True)
+                    if self.recorder is not None:
+                        self.recorder.update_last(success=False)
+
+                self._emit(EVENT_STEP_END, step=step)
+
+                # -- Checkpoint：步末保存断点 ----------------------------------
+                if self.config.enable_checkpoint:
+                    cp = self.checkpoint_manager.build_checkpoint(
+                        step=step,
+                        url=last_observation.url if last_observation else "",
+                        task=task,
+                        target_params_found=target_params_found,
+                        target_params=self.config.target_params,
+                        hooks=self.config.hooks,
+                        history=history,
+                        cumulative_summary=self.context_compressor.cumulative_summary,
+                        metadata={
+                            "confidence": conf_result.score,
+                            "guard_denied": bool(guard_result and guard_result.denied),
+                        },
+                    )
+                    self.checkpoint_manager.save(cp)
+
+            # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
+            final_hook_data = self._merge_final_hook_data(await self._read_hook_data_async(page))
+            return self._build_run_result(
+                stopped=stopped,
+                target_params_found=target_params_found,
+                analysis=analysis,
+                history=history,
+                final_hook_data=final_hook_data,
+            )
+        finally:
+            await self._cleanup_async()
+
+    # ------------------------------------------------------------------
+    # 观察
+    # ------------------------------------------------------------------
+
+    async def _observe_async(self, page: Any, *, step: int = 0) -> Observation:
+        """异步收集页面状态。"""
+        url = self._safe_page_url(page)
+        # 异步版 collect_hook_data：内联 evaluate 以支持 await
+        records = (
+            await page.evaluate(
+                """() => {
+                const data = window.__hook_data__ || [];
+                const snapshot = data.slice();
+                try { window.__hook_data__ = []; } catch (e) {}
+                return snapshot;
+            }"""
+            )
+            or []
+        )
+        hook_data = {"records": list(records), "count": len(records)}
+        self._hook_data_cache = hook_data
+        # 每步只取增量请求并清空，避免跨步累积导致内存增长与重复上报
+        network_requests = list(self._network_log)
+        self._network_log.clear()
+        scripts = await self._collect_scripts_async(page)
+        # 异步 page 必须走 await 版探测器：同步版拿到的是协程，
+        # el.get_attribute(...) 会抛 AttributeError 让整步 observe 失败。
+        captcha_info = await self.captcha_manager.detector.detect_async(page)
+        captcha_type = captcha_info.type if captcha_info else CaptchaType.NONE
+        try:
+            page_title = await page.title()
+        except Exception:
+            page_title = ""
+        try:
+            dom_raw = await page.content()
+        except Exception:
+            dom_raw = ""
+        if self.dom_pruner is not None and dom_raw:
+            pruned = await self.dom_pruner.prune_async(dom_raw)
+            self._last_pruned_dom = pruned
+            dom_summary = pruned.text or dom_raw[:2000]
+        else:
+            dom_summary = dom_raw[:2000]
+        # 步末截图：失败不抛异常，仅留空路径
+        screenshot_path = await self._take_screenshot_async(page, step)
+        return Observation(
+            url=url,
+            hook_data=hook_data,
+            network_requests=network_requests,
+            scripts=scripts,
+            captcha_type=captcha_type,
+            page_title=page_title,
+            dom_summary=dom_summary,
+            screenshot_path=screenshot_path,
+        )
+
+    # ------------------------------------------------------------------
+    # 思考
+    # ------------------------------------------------------------------
+
+    async def _think_async(
+        self,
+        observation: Observation,
+        task: str,
+        history: list,
+        *,
+        plan: Plan | None = None,
+    ) -> Action:
+        """异步调 DeepSeek 分析当前状态。"""
+        prompt = self._build_think_prompt(observation, task, history, plan=plan)
+        self._last_think_prompt = prompt
+        self._last_think_completion = ""
+        messages = [LLMMessage("system", _THINK_SYSTEM_PROMPT), LLMMessage("user", prompt)]
+        if hasattr(self.provider, "achat"):
+            resp = await self.provider.achat(messages, temperature=0.0)
+        else:
+            # 无异步入口时丢到线程池，避免阻塞事件循环
+            resp = await asyncio.to_thread(self.provider.chat, messages, temperature=0.0)
+        self._last_think_completion = resp.content or ""
+        self._last_llm_usage = getattr(resp, "usage", None)
+        return self._parse_action(resp.content or "")
+
+    def _parse_action(self, content: str) -> Action:
+        """解析 LLM 返回的动作为 Action 对象，解析失败时降级为 wait。"""
+        data = _extract_json(content)
+        if not data:
+            return Action(
+                action_type="wait",
+                params={"seconds": 1.0},
+                reasoning="LLM 返回无法解析，默认等待",
+            )
+        return Action.from_dict(data)
+
+    # ------------------------------------------------------------------
+    # 行动：动作分发与浏览器交互执行已迁至 _reverse_actions.ActionExecutor
+    # （_act_async / _fallback_action / _do_*_async / _humanize_*_async /
+    # _resolve_tab / _INTERACTION_TIMEOUT 纯移动迁出，行为零变化）
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Hook 注入
+    # ------------------------------------------------------------------
+
+    async def _inject_hooks_async(self, page: Any, hook_names: list[str] | None) -> bool:
+        """异步注入 Hook 脚本。"""
+        try:
+            script = generate_combined_script(hook_names)
+            await page.evaluate(script)
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # 脚本收集
+    # ------------------------------------------------------------------
+
+    async def _collect_scripts_async(self, page: Any) -> list[str]:
+        """异步收集页面所有 JS URL。"""
+        try:
+            return (
+                await page.evaluate("""
+                () => {
+                    const scripts = document.querySelectorAll('script[src]');
+                    return Array.from(scripts).map(s => s.src).filter(Boolean);
+                }
+            """)
+                or []
+            )
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
+    # JS 分析
+    # ------------------------------------------------------------------
+
+    # 拉取单个 JS 脚本的内容大小上限（超出视为异常，跳过）
+    _MAX_JS_FETCH_BYTES = 2 * 1024 * 1024
+
+    def _is_safe_script_url(self, url: str) -> bool:
+        """判断脚本 URL 是否允许服务端拉取（防 SSRF，实现见 _reverse_support）。"""
+        return is_safe_script_url(url, self.config.allowed_domains)
+
+    async def _analyze_captured_js_async(
+        self,
+        scripts: list[str],
+        target_params: list[str],
+    ) -> AnalysisResult | None:
+        """异步拉取并分析捕获的 JS（抓取实现见 _reverse_support.fetch_script_fragments）。"""
+        fragments = await fetch_script_fragments(
+            scripts,
+            self.config.allowed_domains,
+            max_bytes=self._MAX_JS_FETCH_BYTES,
+        )
+
+        # JSAnalyzer 的 LLM 分析是同步调用，丢到线程池避免阻塞事件循环
+        return await asyncio.to_thread(self._pick_best_fragment, fragments, target_params)
+
+    def _pick_best_fragment(
+        self,
+        fragments: list[JSFragment],
+        target_params: list[str],
+    ) -> AnalysisResult | None:
+        """按置信度与目标参数命中率选最优分析结果。"""
+        return pick_best_fragment(self.analyzer, fragments, target_params)
+
+    # ------------------------------------------------------------------
+    # 参数提取
+    # ------------------------------------------------------------------
+
+    async def _try_extract_param_async(self, page: Any, param_name: str) -> str | None:
+        """异步尝试从 Hook 数据中提取目标参数。"""
+        records = await self._read_hook_records_async(page)
+        return self._search_param_in_records(records, param_name)
+
+    # ------------------------------------------------------------------
+    # 页面创建与恢复
+    # ------------------------------------------------------------------
+
+    async def _create_page_async(self, hook_names: list[str] | None) -> tuple[Any, Any]:
+        """异步创建带 Hook 注入的 (context, page)。"""
+        assert self.fetcher is not None
+        browser = await self.fetcher._ensure_async_browser()
+        context = await browser.new_context(
+            extra_http_headers=self.fetcher.extra_headers or None,
+            ignore_https_errors=not self.fetcher.verify,
+        )
+        combined = generate_combined_script(hook_names or self.config.hooks)
+        try:
+            await context.add_init_script(combined)
+        except Exception as exc:
+            # 不再静默：注入失败会让整轮 Hook 捕获失效（hook_count 恒为 0），
+            # 而症状与「页面确实没发请求」一模一样，排查成本极高。
+            logger.warning("context.add_init_script 失败，Hook 未注入: %s", exc)
+        page = await context.new_page()
+        try:
+            await self.fetcher._setup_page_async(page)
+        except Exception:
+            pass
+        self._setup_page_listeners(page)
+        return context, page
+
+    def _setup_page_listeners(self, page: Any) -> None:
+        """设置页面事件监听器，收集网络请求到 ``self._network_log``。"""
+        self._network_log.clear()
+
+        def on_request(req: Any) -> None:
+            try:
+                self._network_log.append(
+                    {
+                        "url": req.url,
+                        "method": req.method,
+                        "resource_type": req.resource_type,
+                        "headers": dict(req.headers),
+                        "post_data": req.post_data,
+                    }
+                )
+            except Exception:
+                pass
+
+        try:
+            page.on("request", on_request)
+        except Exception:
+            pass
+
+    async def _try_recover_page_async(self, url: str) -> tuple[bool, Any | None]:
+        """异步浏览器崩溃恢复。返回 ``(是否成功, 新 page)``。"""
+        try:
+            await self._cleanup_page_async()
+            context, page = await self._create_page_async(self.config.hooks)
+            self._context = context
+            self._page = page
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(self.config.wait_after_navigate)
+            return True, page
+        except Exception:
+            return False, None
+
+    # ------------------------------------------------------------------
+    # Hook 数据读取
+    # ------------------------------------------------------------------
+
+    async def _read_hook_data_async(self, page: Any) -> dict:
+        """异步非破坏性读取 Hook 数据。"""
+        try:
+            records = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
+            return {"records": list(records), "count": len(records)}
+        except Exception:
+            return {"records": [], "count": 0}
+
+    async def _read_hook_records_async(self, page: Any) -> list[dict]:
+        """异步读取 Hook 记录列表。"""
+        records: list[dict] = []
+        try:
+            fresh = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
+            records.extend(fresh)
+        except Exception:
+            pass
+        cached = self._hook_data_cache.get("records", [])
+        records.extend(cached)
+        return records
+
+    # ------------------------------------------------------------------
+    # Prompt 构建
+    # ------------------------------------------------------------------
+
+    def _build_think_prompt(
+        self,
+        observation: Observation,
+        task: str,
+        history: list,
+        *,
+        plan: Plan | None = None,
+    ) -> str:
+        """构建喂给 DeepSeek 的思考 prompt（实现见 _reverse_prompt.build_think_prompt）。"""
+        return build_think_prompt(
+            observation,
+            task,
+            history,
+            target_params=self.config.target_params,
+            cumulative_summary=self.context_compressor.cumulative_summary,
+            plan=plan,
+        )
+
+    # ------------------------------------------------------------------
+    # 截图
+    # ------------------------------------------------------------------
+
+    def _screenshot_dir(self) -> Path:
+        """截图保存目录：``$CWD/reverse_screenshots``。"""
+        return Path.cwd() / "reverse_screenshots"
+
+    def _screenshot_task_id(self) -> str:
+        """获取当前任务 ID（checkpoint_manager 未设置时回退为 default）。"""
+        try:
+            tid = getattr(self.checkpoint_manager, "task_id", "") or ""
+            return tid or "default"
+        except Exception:
+            return "default"
+
+    # 每个任务最多保留的截图数量（超出按文件名清理最旧的）。
+    # 常量本体与滚动逻辑在 _reverse_support，这里保留历史类属性别名
+    # （tests 直接读取 agent._MAX_SCREENSHOTS_PER_TASK）。
+    _MAX_SCREENSHOTS_PER_TASK = MAX_SCREENSHOTS_PER_TASK
+
+    def _rotate_screenshots(self, out_dir: Path, task_prefix: str) -> None:
+        """按任务前缀滚动保留最近 N 张截图，防止磁盘无限增长。"""
+        rotate_screenshots(out_dir, task_prefix, max_keep=MAX_SCREENSHOTS_PER_TASK)
+
+    async def _take_screenshot_async(self, page: Any, step: int, *, error: bool = False) -> str:
+        """异步截图：失败返回空字符串，绝不抛异常。"""
+        if not self.config.enable_screenshot or page is None:
+            return ""
+        try:
+            task_id = self._sanitize_filename_component(self._screenshot_task_id())
+            suffix = "_error" if error else ""
+            filename = f"{task_id}_step{step}{suffix}.png"
+            out_dir = self._screenshot_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / filename
+            await page.screenshot(path=str(path))
+            self._emit("screenshot", step=step, path=str(path), error=error)
+            entry = {"step": step, "path": str(path), "error": error, "ts": time.time()}
+            self._screenshots.append(entry)
+            if error:
+                self._last_error_screenshot = str(path)
+            self._rotate_screenshots(out_dir, task_id)
+            return str(path)
+        except Exception:
+            return ""
+
+    def checkpoints_snapshot(self) -> list[dict[str, Any]]:
+        """读取已保存的 checkpoint 列表（step + path），供结果汇总使用。"""
+        return list_checkpoint_snapshots(
+            enabled=self.config.enable_checkpoint,
+            task_id=self.checkpoint_manager.task_id,
+            store=self.checkpoint_manager.store,
+        )
+
+    # ------------------------------------------------------------------
+    # 资源清理
+    # ------------------------------------------------------------------
+
+    def _cleanup_page_sync(self) -> None:
+        """关闭当前 page 与 context（同步）。"""
+        if self._page is not None:
+            try:
+                self._page.close()
+            except Exception:
+                pass
+            self._page = None
+        if self._context is not None:
+            try:
+                self._context.close()
+            except Exception:
+                pass
+            self._context = None
+
+    async def _cleanup_page_async(self) -> None:
+        """关闭当前 page 与 context（异步）。"""
+        if self._page is not None:
+            try:
+                await self._page.close()
+            except Exception:
+                pass
+            self._page = None
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+
+    def _cleanup_sync(self) -> None:
+        """同步清理全部资源。"""
+        self._cleanup_page_sync()
+        if self.fetcher is not None:
+            try:
+                self.fetcher.close()
+            except Exception:
+                pass
+            self.fetcher = None
+
+    async def _cleanup_async(self) -> None:
+        """异步清理全部资源。"""
+        await self._cleanup_page_async()
+        if self.fetcher is not None:
+            try:
+                await self.fetcher.aclose()
+            except Exception:
+                pass
+            self.fetcher = None
+
+    def close(self) -> None:
+        """清理资源。"""
+        self._cleanup_sync()
+
+    async def aclose(self) -> None:
+        """异步清理资源。"""
+        await self._cleanup_async()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
+
+
+__all__ = [
+    "Action",
+    "Observation",
+    "ReverseAgent",
+    "ReverseAgentConfig",
+]
+
+# 运行后可通过 ReverseAgent 实例访问的扩展属性：
+# - agent.event_bus: EventBus — 订阅事件做日志/指标
+# - agent.planner: Planner | None
+# - agent.judge: TaskJudge | None
+# - agent.recorder: RunRecorder | None
+# - agent._current_plan: Plan | None
+# - agent._last_judge_result: JudgeResult | None
+# - agent._compiled_script: str (成功路径编译产物)
