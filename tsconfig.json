@@ -1,0 +1,77 @@
+{
+    "compilerOptions": {
+        "target": "ES2015",
+        "module": "ES2015",
+        "lib": ["ESNext","DOM"],
+        "experimentalDecorators": true,
+        "allowJs": false,
+        "sourceMap": true,
+        "inlineSources": true,
+        "removeComments": true,
+        "strict": true,
+        "noImplicitAny": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noImplicitReturns": true,
+        "strictNullChecks": false,
+        "allowSyntheticDefaultImports": true,
+        "moduleResolution": "node",
+        "resolveJsonModule": true,
+        "baseUrl": "./",
+        "outDir": "dist",
+        "paths": {
+            "leafer": ["src/leafer/src"],
+            "@leafer/*": [
+                "src/leafer/packages/core/*/src",
+                "src/leafer/packages/platform/*/src",
+                "src/leafer/packages/display-module/*/src",
+                "src/leafer/packages/canvas/*/src",
+                "src/leafer/packages/image/*/src",
+                "src/leafer/packages/partner/*/src",
+                "src/leafer/packages/*/src",
+            ],
+            "leafer-ui": ["src/ui/src"],
+            "@leafer-ui/*": [
+                "src/ui/packages/core/*/src", 
+                "src/ui/packages/platform/*/src", 
+                "src/ui/packages/display-module/*/src", 
+                "src/ui/packages/interaction/*/src",
+                "src/ui/packages/partner/*/src", 
+                "src/ui/packages/*/src", 
+            ],
+            "leafer-in": ["src/in/src"],
+            "@leafer-in/*": [
+                "src/in/packages/*/src", 
+            ],
+            "leafer-draw": ["src/draw/src"],
+            "@leafer-draw/*": [
+                "src/draw/packages/platform/*/src", 
+                "src/draw/packages/*/src", 
+            ],
+            "leafer-editor": ["src/editor/src"],
+            "@leafer-editor/*": [
+                "src/editor/packages/platform/*/src", 
+                "src/editor/packages/*/src", 
+            ],
+            "leafer-game": ["src/game/src"],
+            "@leafer-game/*": [
+                "src/game/packages/platform/*/src", 
+                "src/game/packages/*/src", 
+            ]
+        },
+    },
+    "exclude": [
+        "node_modules",
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/lib/**",
+        "**/scripts/**",
+        "**/types/**"
+    ],
+    "ts-node": {
+        "files": true,
+        "compilerOptions": {
+            "esModuleInterop": true
+        }
+    }
+}

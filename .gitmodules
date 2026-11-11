@@ -1,0 +1,18 @@
+[submodule "src/leafer"]
+	path = src/leafer
+	url = https://github.com/leaferjs/leafer.git
+[submodule "src/ui"]
+	path = src/ui
+	url = https://github.com/leaferjs/leafer-ui.git
+[submodule "src/in"]
+	path = src/in
+	url = https://github.com/leaferjs/leafer-in.git
+[submodule "src/draw"]
+	path = src/draw
+	url = https://github.com/leaferjs/leafer-draw.git
+[submodule "src/editor"]
+	path = src/editor
+	url = https://github.com/leaferjs/leafer-editor.git
+[submodule "src/game"]
+	path = src/game
+	url = https://github.com/leaferjs/leafer-game.git
