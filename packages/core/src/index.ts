@@ -16,6 +16,14 @@ export * from '@npm-safe/core'
 export type { PackageCheckOptions as CheckPackageOptions } from '@npm-safe/core'
 export type { ProjectDependency as Dependency } from '@npm-safe/core'
 export { SECURITY_LEVEL_RANK as LEVEL_RANK } from '@npm-safe/core'
+export { auditCiReport } from './ci-audit.js'
+export type {
+  CiAudit,
+  CiAuditOptions,
+  CiAuditPackage,
+  CiAuditReason,
+  CiAuditReasonCode,
+} from './ci-audit.js'
 
 export function readDependencies(dir: string, includeDev: boolean) {
   return readProjectDependencies(dir, { prod: !includeDev })
