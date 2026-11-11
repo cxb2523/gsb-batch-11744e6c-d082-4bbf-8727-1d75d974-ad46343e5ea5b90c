@@ -1,0 +1,77 @@
+// Starting an analysis: check the parent table has the data the test needs
+// (otherwise a native warning, Prism-style), then open the test's wizard or run
+// it. Shared by the New Analysis picker, the sidebar and the Analysis menu so
+// every entry point behaves the same.
+import { alert } from "../../native";
+import { useProjectActions } from "../../store/use-project-store";
+import { ANALYSES } from "../../stats";
+import type { AnalysisParams, AnalysisPickerValue, AnalysisType } from "../../stats/types";
+import { countDataColumns, countDataGroups } from ".";
+import { WIZARDS } from "./wizards";
+import { readTable } from "../../lib/dataset";
+
+/** Checks the table has at least `need` data columns; warns (naming `label`) otherwise. */
+function useColumnsPrecheck() {
+  const { get } = useProjectActions();
+  return (tableId: string, need: number, label: string) => {
+    const table = get().nodes[tableId];
+    if (!table || table.type !== "table") return false;
+    const have = countDataColumns(table.data);
+    if (have >= need) return true;
+    alert(
+      `${label} needs at least ${need} columns with data.`,
+      `“${table.name}” currently has ${have}. Enter data into more columns and try again.`,
+    );
+    return false;
+  };
+}
+
+function useAnalysisPrecheck() {
+  const { get } = useProjectActions();
+  const columnsPrecheck = useColumnsPrecheck();
+  return (tableId: string, testType: AnalysisType) => {
+    const { label, minColumns } = ANALYSES[testType];
+    if (!columnsPrecheck(tableId, minColumns, label)) return false;
+    // Multiple t tests compares 2 column groups per row. Count the groups that hold
+    // data, not the table's structural group count.
+    if (testType === "multiple-t-tests" && countDataGroups(get().nodes[tableId]?.data) < 2) {
+      alert(`${label} needs at least 2 column groups with data.`, "Enter data into 2 groups and try again.");
+      return false;
+    }
+    return true;
+  };
+}
+
+/** Creates the analysis node once its params are known (wizards call this). */
+export function useAnalysisLauncher() {
+  const { createAnalysis } = useProjectActions();
+  const precheck = useAnalysisPrecheck();
+  return (tableId: string, testType: AnalysisType, params?: AnalysisParams) => {
+    if (precheck(tableId, testType)) createAnalysis(tableId, testType, params);
+  };
+}
+
+/** Starts a test picked from the picker or the Analysis menu: opens its wizard,
+ *  or runs it directly when it has nothing to ask. Returns true if a wizard opened. */
+export function useStartAnalysis() {
+  const { get, openSelector, createAnalysis } = useProjectActions();
+  const columnsPrecheck = useColumnsPrecheck();
+  const precheck = useAnalysisPrecheck();
+  return (tableId: string, picked: AnalysisPickerValue): boolean => {
+    const ready =
+      picked === "compare-many-groups"
+        ? columnsPrecheck(tableId, ANALYSES.anova.minColumns, "Compare more than two groups")
+        : precheck(tableId, picked === "interpolate" ? "nonlinear-regression" : picked);
+    if (!ready) return false;
+    // A wizard with nothing to ask of this table (one data set, say) runs at once.
+    const wizard = WIZARDS[picked];
+    const table = readTable(get().nodes[tableId]!.data!);
+    if (!wizard?.questions({}, table).some(Boolean)) {
+      const { type, params } = wizard?.finish({}, table) ?? { type: picked as AnalysisType };
+      createAnalysis(tableId, type, params);
+      return false;
+    }
+    openSelector({ kind: "analysis-params", tableId, testType: picked });
+    return true;
+  };
+}

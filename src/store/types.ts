@@ -1,0 +1,383 @@
+// Shared project-tree types — kept light so both the store and the table-type
+// modules can depend on it without creating a cycle.
+
+import type { AnalysisParams, AnalysisType } from "../stats/types";
+
+export type NodeType = "table" | "analysis" | "graph";
+/** What an item is, as menus name it ("Delete Graph…"). */
+export const NODE_NAMES: Record<NodeType, string> = { table: "Table", analysis: "Analysis", graph: "Graph" };
+export type TableType = "column" | "xy" | "grouped" | "multiple" | "contingency" | "survival";
+/** Tables whose first data column is X (a Survival table's is the time). */
+export const hasXColumn = (type: TableType) => type === "xy" || type === "survival";
+// Every graph type; views/graphs/index.ts says what each draws and for which tables.
+export type GraphType =
+  | "individual"
+  | "box-violin"
+  | "mean-error"
+  | "xy-scatter"
+  | "xy-bar"
+  | "xy-area"
+  | "grouped-bars"
+  | "grouped-scatter"
+  | "grouped-box"
+  | "grouped-lines"
+  | "grouped-stacked"
+  | "grouped-hbars"
+  | "pie"
+  | "donut"
+  | "heatmap"
+  | "survival"
+  | "volcano";
+
+/** The choices of a graph's options, one list each: the types come from them, and a
+ *  file's value outside them is read as the option's default. */
+export const GRAPH_CHOICES = {
+  center: ["mean", "median"],
+  error: ["none", "sd", "sem"],
+  shape: ["bar", "point", "line"],
+  kind: ["box", "violin"],
+  xyStyle: ["points", "line", "points+line"],
+  pieValue: ["sum", "mean"],
+  groupLayout: ["interleaved", "separated"],
+  sigDisplay: ["stars", "pvalue"],
+  survivalMode: ["codes", "counts"],
+  volcanoEffect: ["log2ratio", "difference"],
+  volcanoSignificance: ["pvalue", "fdr"],
+  pointShape: ["circle", "square", "diamond", "triangle-up", "triangle-down"],
+  lineDash: ["solid", "dash", "dot", "dashdot"],
+  errorDirection: ["both", "above"],
+  background: ["white", "transparent"],
+} as const;
+type Choice<K extends keyof typeof GRAPH_CHOICES> = (typeof GRAPH_CHOICES)[K][number];
+
+/** A number's range. */
+export type Limits = { min: number; max: number };
+
+/** `n` brought within `limits`. */
+export const clamp = (n: number, { min, max }: Limits) => Math.min(max, Math.max(min, n));
+
+/** The range of a graph's numbers, for the Format panel's steppers and a file's values
+ *  alike (a point styled on its own too). Its size (px) too: dragging an axis, typing it. */
+export const GRAPH_LIMITS = {
+  width: { min: 150, max: 2400 },
+  height: { min: 120, max: 1800 },
+  fill: { min: 0, max: 1 },
+  pointFill: { min: 0, max: 1 },
+  barGap: { min: 0, max: 0.5 },
+  pointSize: { min: 2, max: 20 },
+  outline: { min: 0, max: 6 },
+  pointOutline: { min: 0, max: 6 },
+  lineWidth: { min: 0.5, max: 6 },
+  errorWidth: { min: 0.5, max: 6 },
+  axisWidth: { min: 0.5, max: 6 },
+  errorCaps: { min: 0, max: 20 },
+  xTitleGap: { min: 0, max: 40 },
+  yTitleGap: { min: 0, max: 40 },
+  fontSize: { min: 8, max: 28 },
+  volcanoLabelCount: { min: 0, max: 50 },
+  volcanoFcThreshold: { min: 0, max: Infinity },
+  volcanoPThreshold: { min: 0, max: Infinity },
+} as const;
+
+/**
+ * Display options for a graph node. A superset across the families — each graph
+ * module reads only the fields it needs (keeps the store flat + easy to extend).
+ */
+export interface GraphOptions {
+  // Individual values
+  bars: boolean; // draw a faint bar at the mean behind the points
+  // Shared (individual + mean-error)
+  center: Choice<"center">;
+  error: Choice<"error">;
+  // Mean/median & error
+  shape: Choice<"shape">;
+  // Box & violin
+  kind: Choice<"kind">;
+  showPoints: boolean; // overlay individual points on box/violin
+  // XY scatter: markers only, connecting line only, or both
+  xyStyle: Choice<"xyStyle">;
+  // Pie/donut (axis-less proportion charts): each column is one slice, sized by the
+  // column's total (sum) or mean; percentages vs. raw values on the slice labels.
+  pieValue: Choice<"pieValue">;
+  pieShowPercent: boolean;
+  // Grouped bars/scatter (interleaved bars, horizontal bars, interleaved scatter):
+  // interleave groups within each row, or give each group its own block of
+  // categories (Prism's "Separated" arrangement). Not offered for connected
+  // lines (groups must share the same X axis to show interaction) or stacked
+  // bars (stacking already combines groups per category).
+  groupLayout: Choice<"groupLayout">;
+  // Titles
+  title: string;
+  xLabel: string;
+  yLabel: string;
+  // Y-axis scale (Prism-style). All optional — blank = auto. Manual min+max set
+  // the range; yStep sets the tick interval (every 1, 10, …).
+  yMin?: number;
+  yMax?: number;
+  yStep?: number;
+  // X-axis scale (XY family only — Column family's X is categorical). Same semantics as Y.
+  xMin?: number;
+  xMax?: number;
+  xStep?: number;
+  // Significance annotations (Column family only): read a sibling analysis's
+  // pairwise comparisons and draw brackets. `sigAnalysisId` is the source analysis
+  // node; `sigPairs` are the comparison keys (see significance-overlay) to draw;
+  // `sigDisplay` toggles star marks vs. raw P values.
+  sigAnalysisId?: string;
+  sigPairs?: string[];
+  sigDisplay: Choice<"sigDisplay">;
+  // A regression of the table drawn on an XY scatter: a linear one's line and 95% band,
+  // computed from the plotted pairs (regression-overlay.ts, checked against R's), or a
+  // nonlinear one's curve from its result (fitted-curve.ts); and its note.
+  regAnalysisId?: string;
+  regShowLine: boolean;
+  regShowBand: boolean;
+  regShowEquation: boolean;
+  // A Multiple Variables table's scatter: its X and Y variables (column names); omitted,
+  // the first two holding numbers.
+  xVariable?: string;
+  yVariable?: string;
+  // Heatmap: each cell's value colored along the graph's gradient palette (a Grouped
+  // table's cells, each group's center on its row).
+  heatmapShowValues: boolean;
+  heatmapShowScale: boolean;
+  // Survival curve (Survival and XY tables) — see survival.ts. Two data entry modes:
+  // "codes" = one row per subject, cell is an event code (1 = event, 0 = censored)
+  // at the paired X (time); computed via Kaplan-Meier. "counts" = cell is the
+  // number of survivors remaining in that group at the paired X; plotted directly
+  // as percent-of-initial, no censoring concept. Censoring ticks (codes mode only)
+  // mark subjects removed from a group without an event.
+  survivalMode: Choice<"survivalMode">;
+  survivalShowCensors: boolean;
+  survivalShowBand: boolean; // each Kaplan-Meier curve's 95% confidence band (event codes)
+  // Volcano plot of a Multiple Variables or XY table: it plots columns the user already
+  // has. `volcanoX`/`volcanoY`/`volcanoLabel` are column names:
+  // X = effect size (e.g. log2 fold change; an XY table's X column), Y = a significance
+  // value (raw p, adjusted p, FDR, …), label = optional gene-name column (else the row
+  // titles name the genes). `volcanoYIsPValue`:
+  // Y holds P values (or FDR…), plotted as their -log10; off, values that are -log10
+  // already, plotted as they are. Higher is more significant either way. Thresholds color points up/down/NS + draw dashed guides;
+  // `volcanoLabelCount` annotates that many of the most significant genes.
+  volcanoX?: string;
+  volcanoY?: string;
+  volcanoLabel?: string;
+  volcanoYIsPValue: boolean;
+  volcanoFcThreshold: number; // |X| cutoff (log2FC scale)
+  volcanoPThreshold: number; // cutoff on the plotted (−log10) scale: 1.3 is P = 0.05
+  volcanoShowThresholds: boolean;
+  volcanoLabelCount: number;
+  // Grouped-table volcano (Helix computes the DEGs): compare two groups (by column
+  // prefix, e.g. "A"/"B") row by row. `volcanoEffect` picks the X value — log2 of the
+  // ratio of group means (raw data) or the plain difference of means (data already
+  // on a log scale). `volcanoSignificance` picks the Y source — the per-row Welch
+  // t-test p value or its Benjamini-Hochberg FDR adjustment (−log10 via volcanoYIsPValue).
+  volcanoGroupA?: string;
+  volcanoGroupB?: string;
+  volcanoEffect: Choice<"volcanoEffect">;
+  volcanoSignificance: Choice<"volcanoSignificance">;
+  // Colors. `palette`: its name and colors, saved with the graph so a figure keeps
+  // them whatever becomes of Helix's catalog (lib/palettes.ts). `series`: the series
+  // colored by hand, by name (a column, a group, a volcano's "up" and "down"); the
+  // others take the palette's color for their place.
+  palette?: GraphPalette;
+  series?: Record<string, SeriesStyle>;
+  // Points styled one by one, by `"<column>#<row>"` (see `pointKeyOf`): over their series'.
+  points?: Record<string, PointStyle>;
+  // How opaque fills are (0–1): `fill` of bars, boxes, violins and areas, `pointFill` of points.
+  fill: number;
+  pointFill: number;
+  // Every point's size (px), shape and outline thickness (px); a series' shape wins.
+  pointSize: number;
+  pointShape: PointShape;
+  pointOutline: number;
+  // Outlines: of bars, boxes, violins, areas and slices, their thickness (px) and color;
+  // the points' color. No color: the color of what they outline.
+  outline: number;
+  outlineColor?: string;
+  pointOutlineColor?: string;
+  // The gap between the bars of a row on interleaved grouped bars, as a fraction of the row.
+  barGap: number;
+  // Every series line's thickness (px) and dashes; a series' dashes win.
+  lineWidth: number;
+  lineDash: LineDash;
+  // Texts moved by hand: the legend (or a heatmap's color legend), as a fraction of
+  // the plot area; the note (a fit's equation), in px from its corner. None: in place.
+  legend?: Place;
+  note?: Place;
+  // The space (px) between each axis title and its tick labels.
+  xTitleGap: number;
+  yTitleGap: number;
+  // Error bars, and the mean or median line drawn with them: thickness and cap width (px),
+  // color (none: the series'), and whether they go both ways or only above (right).
+  errorWidth: number;
+  errorCaps: number;
+  errorColor?: string;
+  errorDirection: Choice<"errorDirection">;
+  // Appearance: thickness of every axis spine + its tick marks (px), and the base
+  // font size (px) for tick labels, axis titles, and the chart title.
+  axisWidth: number;
+  fontSize: number;
+  // The sheet behind the graph: white, or none (a PNG or SVG with a transparent background;
+  // JPEG has no transparency and stays on white).
+  background: Choice<"background">;
+  // Prism-style resizable drawing area (px).
+  width: number;
+  height: number;
+}
+
+export const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
+  bars: false,
+  center: "mean",
+  error: "sem",
+  shape: "bar",
+  kind: "box",
+  showPoints: false,
+  xyStyle: "points",
+  pieValue: "sum",
+  pieShowPercent: true,
+  groupLayout: "interleaved",
+  sigDisplay: "stars",
+  regShowLine: true,
+  regShowBand: true,
+  regShowEquation: true,
+  heatmapShowValues: false,
+  heatmapShowScale: true,
+  survivalMode: "codes",
+  survivalShowCensors: true,
+  survivalShowBand: false,
+  volcanoYIsPValue: true,
+  volcanoFcThreshold: 1,
+  volcanoPThreshold: 1.3,
+  volcanoShowThresholds: true,
+  volcanoLabelCount: 10,
+  volcanoEffect: "log2ratio",
+  volcanoSignificance: "pvalue",
+  title: "",
+  xLabel: "",
+  yLabel: "",
+  axisWidth: 1,
+  fontSize: 13,
+  fill: 1,
+  pointFill: 1,
+  pointSize: 7,
+  pointShape: "circle",
+  pointOutline: 1.5,
+  outline: 1.5,
+  barGap: 0.1,
+  lineWidth: 2,
+  lineDash: "solid",
+  xTitleGap: 12,
+  yTitleGap: 2,
+  errorWidth: 1.5,
+  errorCaps: 6,
+  errorDirection: "both",
+  background: "white",
+  width: 640,
+  height: 460,
+};
+
+export const PALETTE_KINDS = ["categorical", "sequential", "diverging"] as const;
+export type PaletteKind = (typeof PALETTE_KINDS)[number];
+
+/** A graph's palette as saved: which one, and its colors. */
+export interface GraphPalette {
+  name: string;
+  kind: PaletteKind;
+  colors: string[];
+  /** Its colors taken from the last. */
+  reversed?: boolean;
+}
+
+/** A point's shape (Plotly's symbol of the same name). */
+export type PointShape = Choice<"pointShape">;
+
+/** A line's dashes (Plotly's dash of the same name). */
+export type LineDash = Choice<"lineDash">;
+
+/** What covers a fill: lines one way or the other, both, horizontal, vertical, a grid, dots. */
+export const FILL_PATTERNS = [
+  "diagonal",
+  "back-diagonal",
+  "crosshatch",
+  "horizontal",
+  "vertical",
+  "grid",
+  "dots",
+] as const;
+export type FillPattern = (typeof FILL_PATTERNS)[number];
+
+/** How one series is drawn: its color (#RRGGBB), its points' shape, its line's dashes,
+ *  and the pattern over its bars, areas or slices. */
+export interface SeriesStyle {
+  color?: string;
+  shape?: PointShape;
+  dash?: LineDash;
+  pattern?: FillPattern;
+}
+
+/** How one point is drawn, over its series' and the graph's style; `label`: it shows
+ *  its name (its row's title) beside it. */
+export interface PointStyle {
+  color?: string;
+  size?: number;
+  shape?: PointShape;
+  /** How opaque its fill is (0–1). */
+  fill?: number;
+  outline?: number;
+  /** "#RRGGBB", or `SAME_AS_FILL` (whatever the graph's points take). */
+  outlineColor?: string;
+  label?: boolean;
+  /** Where its name was moved, in px from the point. */
+  labelOffset?: Place;
+}
+
+/** A position: of a text on the graph, or of a name from its point. */
+export interface Place {
+  x: number;
+  y: number;
+}
+
+/** An outline color that is the color of what it outlines. */
+export const SAME_AS_FILL = "fill";
+
+/** Helix 1.0's named colors (see `NAMED_COLORS`), as its files may hold them. */
+export type PaletteColor = "blue" | "red" | "green" | "purple" | "orange" | "black";
+
+/** How many groups and sub-columns a grouped table has: its Groups panel and a file alike. */
+export const GROUPED_LIMITS = { groups: { min: 1, max: 200 }, replicates: { min: 1, max: 20 } };
+
+export interface TableData {
+  columns: string[];
+  rows: (string | null)[][];
+  /** Grouped tables only: number of top-level group headers (Group A, B, …). */
+  groups?: number;
+  /** Grouped tables only: replicate sub-columns per group. */
+  replicates?: number;
+  /**
+   * Prism-style excluded cells: `"row,col"` keys in full-grid coords (col 0 holds
+   * the row titles and is never excluded). Excluded values stay in the table + the
+   * `.hlx` file and are shown blue-italic with a trailing `*`, but are dropped from
+   * every analysis and graph via `readTable()`. Omitted when nothing is excluded.
+   */
+  excluded?: string[];
+  /** Column widths (px) the user set, keyed by column name; others fit their content. */
+  widths?: Record<string, number>;
+  /** Keep column 0 (the row titles) visible while scrolling right. */
+  freezeTitle?: boolean;
+}
+
+export interface ProjectNode {
+  id: string;
+  type: NodeType;
+  name: string;
+  parentId: string | null;
+  tableType?: TableType;
+  data?: TableData;
+  /** Analysis nodes only: which statistical test this node runs. */
+  analysisType?: AnalysisType;
+  /** Analysis nodes only: wizard-chosen params for the test, when it has any. */
+  analysisParams?: AnalysisParams;
+  /** Graph nodes only: which chart this node draws + its display options. */
+  graphType?: GraphType;
+  graphOptions?: GraphOptions;
+}
