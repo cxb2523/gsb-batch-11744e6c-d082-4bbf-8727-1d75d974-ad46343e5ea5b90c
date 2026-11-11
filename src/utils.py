@@ -8,6 +8,10 @@ import pandas as pd
 import requests
 
 
+class UrlFetchError(RuntimeError):
+    """Raised when a URL cannot be fetched with a successful (2xx) response."""
+
+
 def parse_date(url) -> datetime:
     """Parse the date from a source URL."""
     s = re.split(r"fomcprojtabl", url)[1]
@@ -16,9 +20,22 @@ def parse_date(url) -> datetime:
 
 
 def get_url(url) -> str:
-    """Get the provided URL."""
+    """Get the provided URL.
+
+    Args:
+        url (str): The URL to fetch.
+
+    Returns:
+        str: The response body text.
+
+    Raises:
+        UrlFetchError: If the server responds with a non-2xx status code.
+    """
     r = requests.get(url)
-    assert r.ok
+    if not r.ok:
+        raise UrlFetchError(
+            f"Failed to fetch {url}: HTTP {r.status_code} {r.reason}".rstrip()
+        )
     return r.text
 
 
