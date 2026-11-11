@@ -1,0 +1,67 @@
+# Publishes the site to GitHub Pages on every push to main.
+# Turn it on: Settings → Pages → Source: GitHub Actions, then
+# Settings → Secrets and variables → Actions → Variables: DEPLOY_PAGES = true.
+# (Or run it by hand from the Actions tab.)
+#
+# The main Homecraft repository also sets HOMECRAFT_DIRECTORY = true: its site
+# then carries worlds.json, the shared directory every Homecraft portal reads,
+# rebuilt from directory/ on each push and re-checked every Monday so worlds
+# that stopped answering drop out (docs/worlds.md). Forks never need it.
+name: Pages
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  issues: write
+  pull-requests: read
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.DEPLOY_PAGES == 'true') || (github.event_name == 'schedule' && vars.HOMECRAFT_DIRECTORY == 'true')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: bash tools/build.sh
+      - name: The shared directory (main repository only)
+        if: vars.HOMECRAFT_DIRECTORY == 'true'
+        run: node tools/directory.mjs build dist/worlds.json --online
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify published directory
+        id: verify
+        if: vars.HOMECRAFT_DIRECTORY == 'true'
+        run: node tools/verify-publication.mjs dist/worlds.json "${PAGE_URL}worlds.json"
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+      - name: Update listing status
+        if: always() && !cancelled() && vars.HOMECRAFT_DIRECTORY == 'true'
+        uses: actions/github-script@v9
+        env:
+          DIRECTORY_VERIFIED: ${{ steps.verify.outputs.verified }}
+        with:
+          script: |
+            const { readFileSync, existsSync } = await import('node:fs');
+            const { notifyPublication } = await import(`${process.env.GITHUB_WORKSPACE}/tools/listing-github.mjs`);
+            const path = `${process.env.GITHUB_WORKSPACE}/dist/worlds.json`;
+            await notifyPublication({ github, repo: context.repo, successful: process.env.DIRECTORY_VERIFIED === 'true',
+              directory: existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null });

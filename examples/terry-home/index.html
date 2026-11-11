@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#7fb2e8">
+<!-- The world draws its own day and night. -->
+<meta name="color-scheme" content="only light">
+<meta name="darkreader-lock">
+<meta name="description" content="Homecraft 样板间。">
+<title>Terry's Home</title>
+<meta property="og:type" content="website">
+<meta property="og:title" content="Terry's Home">
+<meta property="og:description" content="Homecraft 样板间。">
+<meta property="og:image" content="assets/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png?v=pixel-v2">
+<link rel="stylesheet" href="../../engine/style.css">
+<script type="importmap">{"imports":{
+  "three":"../../vendor/three/three.module.min.js",
+  "@engine/":"../../engine/",
+  "@world/":"./world/",
+  "@config":"./home.config.js"
+}}</script>
+</head>
+<body>
+<main id="world" aria-label="Terry's Home"></main>
+
+<div id="loading"><div class="bar"><i></i></div></div>
+
+<section id="pages">
+  <h1 class="plain-title">Terry's Home</h1>
+
+  <article class="page" data-station="blog" data-icon="blog" data-embed="../../assets/demo-site.html">
+    <h2 data-en="Website">个人主页</h2>
+    <p><a href="../../assets/demo-site.html" data-en="Open my website">打开个人主页</a></p>
+  </article>
+
+  <article class="page" data-station="about">
+    <h2 data-en="About">关于</h2>
+    <div class="about">
+      <div class="about-text" lang="zh-CN">
+        <p>本样板间示例基于 <a href="https://terryhu.cn" target="_blank" rel="noopener">Terry's Home</a>。</p>
+        <div class="about-foot"><a class="mc-button" href="#contact" data-open="phone">关注</a><a class="mc-button" href="#mailbox" data-open="mailbox">留言</a></div>
+      </div>
+      <div class="about-text" lang="en">
+        <p>This example is based on <a href="https://terryhu.cn" target="_blank" rel="noopener">Terry's Home</a>.</p>
+        <div class="about-foot"><a class="mc-button" href="#contact" data-open="phone">Follow</a><a class="mc-button" href="#mailbox" data-open="mailbox">Mailbox</a></div>
+      </div>
+    </div>
+  </article>
+
+  <article class="page" data-station="works">
+    <h2 data-en="Workbench">工作台</h2>
+    <ul class="store">
+      <li data-work="homecraft">
+        <div class="listing">
+          <img src="assets/works/homecraft.webp" alt="" width="64" height="64">
+          <div>
+            <h3>Homecraft</h3>
+            <p data-en="Homecraft example">Homecraft 示例</p>
+          </div>
+          <a class="mc-button get" href="https://github.com/terryHu7/homecraft" target="_blank" rel="noopener" data-en="Open">打开</a>
+        </div>
+        <div class="shots">
+          <img src="assets/works/homecraft-1.webp" alt="一座草地小岛，中间有营火、告示牌、工作台、书架、信箱和一道传送门" data-en-alt="A grass island with a campfire, a sign, a crafting table, a bookshelf, a mailbox and a portal" width="400" height="869" loading="lazy">
+        </div>
+      </li>
+    </ul>
+  </article>
+
+  <article class="page" id="contact" data-station="contact">
+    <h2 data-en="Follow">关注</h2>
+    <ul class="contact">
+      <li data-app="github"><span>GitHub</span><a href="https://github.com/" target="_blank" rel="noopener">your-name</a><p data-en="Code and side projects">代码和小项目</p></li>
+      <li data-app="mail"><span data-en="Email">邮件</span><a href="mailto:you@example.com">you@example.com</a><p data-en="Say hi">打个招呼</p></li>
+    </ul>
+  </article>
+
+  <article class="page" id="mailbox" data-station="mailbox">
+    <h2 data-en="Mailbox">留言</h2>
+    <form class="mailbox" action="mailto:you@example.com" method="post" enctype="text/plain">
+      <input name="subject" maxlength="80" required placeholder="主题" aria-label="主题，必填" data-en-placeholder="Subject" data-en-label="Subject (required)">
+      <textarea name="message" rows="6" maxlength="1000" required placeholder="输入文字" aria-label="输入文字" data-en-placeholder="Write something" data-en-label="Write something"></textarea>
+      <input name="contact" maxlength="120" required autocomplete="email" placeholder="联系方式（必填，邮箱或微信等）" aria-label="联系方式，必填" data-en-placeholder="Email or other contact (required)" data-en-label="How to reach you (required)">
+      <input class="trap" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <div class="mailbox-foot"><button class="mc-button" type="submit" data-en="Send">发送</button></div>
+      <p class="mailbox-status" role="status" aria-live="polite"></p>
+    </form>
+  </article>
+
+</section>
+
+
+<!-- file:// cannot load the world modules. -->
+<script>
+if (location.protocol === 'file:') {
+  const zh = /^zh/i.test(navigator.language), note = document.createElement('aside');
+  note.id = 'startupNotice';
+  note.innerHTML = zh
+    ? '<h2>请用本地服务器打开</h2><p>直接双击打开时，浏览器不会加载 3D 世界。在仓库最外层的文件夹里运行 <code>python3 tools/serve.py</code>（Windows 用 <code>python tools/serve.py</code>），它会找一个空闲端口并自动打开首页。样板间在同一地址的 <code>examples/terry-home/</code>。</p>'
+    : '<h2>Open it through a local server</h2><p>Browsers don’t load the 3D world from a double-clicked file. In the repository’s top folder, run <code>python3 tools/serve.py</code> (on Windows, <code>python tools/serve.py</code>). It picks a free port and opens the home page. This example is at <code>examples/terry-home/</code> on that same address.</p>';
+  document.getElementById('pages').before(note);
+  document.getElementById('loading')?.remove();
+  document.body.classList.add('plain');
+}
+</script>
+<noscript><style>#world,#hud,#loading{display:none}#pages{display:block}</style></noscript>
+<script type="module" src="../../engine/main.js"></script>
+</body>
+</html>

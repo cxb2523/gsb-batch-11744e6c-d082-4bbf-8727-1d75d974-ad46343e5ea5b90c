@@ -1,0 +1,95 @@
+name: Join
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled, reopened, closed]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+concurrency:
+  group: >-
+    join-${{ github.event.issue.number }}-${{
+    (github.event_name != 'issue_comment' || (github.event.sender.type != 'Bot' &&
+    (github.event.comment.user.login == github.event.issue.user.login ||
+    contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))))
+    && 'request' || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  prepare:
+    if: >-
+      vars.HOMECRAFT_DIRECTORY == 'true' && !github.event.issue.pull_request &&
+      (contains(github.event.issue.labels.*.name, 'join') || github.event.label.name == 'join') &&
+      (github.event_name != 'issue_comment' || (github.event.sender.type != 'Bot' &&
+      (github.event.comment.user.login == github.event.issue.user.login ||
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      statuses: write
+    outputs:
+      event: ${{ steps.prepare.outputs.event }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v9
+        id: prepare
+        with:
+          script: |
+            const { prepareRequest } = await import(`${process.env.GITHUB_WORKSPACE}/tools/listing-github.mjs`);
+            await prepareRequest({ github, context, core });
+  inspect:
+    needs: prepare
+    if: needs.prepare.outputs.event != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      report: ${{ steps.inspect.outputs.report }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: node -e "require('node:fs').writeFileSync(process.env.RUNNER_TEMP + '/listing-event.json', process.env.LISTING_EVENT)"
+        env:
+          LISTING_EVENT: ${{ needs.prepare.outputs.event }}
+      - run: node tools/check-listing.mjs --issue "$RUNNER_TEMP/listing-event.json"
+        id: inspect
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: listing-${{ github.event.issue.number }}
+          path: tools/.check/listing/
+          retention-days: 7
+  propose:
+    needs: [prepare, inspect]
+    if: always() && !cancelled() && needs.prepare.outputs.event != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@v9
+        env:
+          LISTING_REPORT: ${{ needs.inspect.outputs.report }}
+          LISTING_EVENT: ${{ needs.prepare.outputs.event }}
+        with:
+          script: |
+            const { applyRequest } = await import(`${process.env.GITHUB_WORKSPACE}/tools/listing-github.mjs`);
+            await applyRequest({ github, context, core,
+              expected: JSON.parse(process.env.LISTING_EVENT), report: JSON.parse(process.env.LISTING_REPORT || 'null') });

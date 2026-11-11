@@ -1,0 +1,2 @@
+# LF everywhere, so engine/ hashes the same on every checkout (tools/engine-manifest.mjs).
+* text=auto eol=lf

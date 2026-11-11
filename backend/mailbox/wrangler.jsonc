@@ -1,0 +1,30 @@
+// The mailbox Worker: emails each note from your site to you through Cloudflare
+// Email Routing and keeps nothing. Set up (once):
+//   1. In Cloudflare, turn on Email Routing for your domain and verify the
+//      address that should receive the notes.
+//   2. Fill in the values marked ← below.
+//   3. npx wrangler kv namespace create LIMITS   (paste the id below)
+//   4. npx wrangler secret put SALT              (any long random string)
+//   5. npx wrangler secret put TURNSTILE_SECRET_KEY
+//   6. npx wrangler deploy
+// Then put https://mailbox.example.com/send in home.config.js `mailbox.endpoint`.
+// Set mailbox.turnstileSitekey to your Turnstile public sitekey (see README.md).
+{
+  "name": "homecraft-mailbox",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-15",
+  "workers_dev": false,
+  "routes": [{ "pattern": "mailbox.example.com", "custom_domain": true }],          // ← your mailbox address
+  "vars": {
+    "SITE": "https://example.com,https://www.example.com,http://127.0.0.1:4192",     // ← pages allowed to post
+    "FROM": "mailbox@example.com",                                                  // ← an address on your domain
+    "TO": "you@example.com",                                                        // ← must match send_email below
+    "NAME": "My Home",                                                              // ← your site's name
+    "HOME": "https://example.com/"                                                  // ← where "back" goes
+  },
+  // Email Routing only sends to verified destinations.
+  "send_email": [{ "name": "MAIL", "destination_address": "you@example.com" }],    // ← the verified address
+  // Day counters only (one per sender, one for the day's total); never notes.
+  "kv_namespaces": [{ "binding": "LIMITS", "id": "<kv-namespace-id>" }],           // ← from step 3
+  "observability": { "enabled": true }
+}

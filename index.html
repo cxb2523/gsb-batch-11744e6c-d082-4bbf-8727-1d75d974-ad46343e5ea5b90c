@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#7fb2e8">
+<!-- The world draws its own day and night. -->
+<meta name="color-scheme" content="only light">
+<meta name="darkreader-lock">
+<title>My Home</title>
+<meta name="description" content="">
+<meta property="og:type" content="website">
+<meta property="og:title" content="My Home">
+<meta property="og:description" content="">
+<meta property="og:image" content="assets/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/favicon.png">
+<link rel="stylesheet" href="engine/style.css">
+<script type="importmap">{"imports":{
+  "three":"./vendor/three/three.module.min.js",
+  "@engine/":"./engine/",
+  "@world/":"./world/",
+  "@config":"./home.config.js"
+}}</script>
+</head>
+<body>
+<main id="world" aria-label="My Home"></main>
+<div id="loading"><div class="bar"><i></i></div></div>
+
+<section id="pages">
+  <h1 class="plain-title">My Home</h1>
+
+  <article class="page" data-station="about">
+    <h2 data-zh="关于我">About me</h2>
+    <div class="about">
+      <div class="about-text" lang="en">
+        <p>Add your introduction</p>
+        <div class="about-foot"><a class="mc-button" href="#contact" data-open="phone">Follow</a><a class="mc-button" href="#mailbox" data-open="mailbox">Mailbox</a></div>
+      </div>
+      <div class="about-text" lang="zh-CN">
+        <p>填写你的介绍</p>
+        <div class="about-foot"><a class="mc-button" href="#contact" data-open="phone">关注</a><a class="mc-button" href="#mailbox" data-open="mailbox">留言</a></div>
+      </div>
+    </div>
+  </article>
+
+  <article class="page" data-station="blog" data-icon="blog">
+    <h2 data-zh="个人主页">Website</h2>
+    <div class="placeholder-card"><p data-zh="填写你的个人主页链接">Add your website link</p></div>
+  </article>
+
+  <article class="page" id="contact" data-station="contact">
+    <h2 data-zh="关注">Follow</h2>
+    <p data-zh="填写你的联系方式">Add your contact details</p>
+    <ul class="contact">
+      <li data-app="github"><span>GitHub</span><a data-zh="填写 GitHub 链接">Add your GitHub link</a><p></p></li>
+    </ul>
+  </article>
+
+  <article class="page" id="mailbox" data-station="mailbox">
+    <h2 data-zh="留言">Mailbox</h2>
+    <form class="mailbox" method="post" enctype="text/plain">
+      <input name="subject" maxlength="80" required placeholder="Subject" aria-label="Subject (required)" data-zh-placeholder="主题" data-zh-label="主题，必填">
+      <textarea name="message" rows="6" maxlength="1000" required placeholder="Write something" aria-label="Write something" data-zh-placeholder="输入文字" data-zh-label="输入文字"></textarea>
+      <input name="contact" maxlength="120" required autocomplete="email" placeholder="Email or other contact (required)" aria-label="How to reach you (required)" data-zh-placeholder="联系方式（必填，邮箱或微信等）" data-zh-label="联系方式，必填">
+      <input class="trap" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <div class="mailbox-foot"><button class="mc-button" type="submit" data-zh="发送" disabled>Send</button></div>
+      <p class="mailbox-status" role="status" aria-live="polite"></p>
+    </form>
+  </article>
+
+</section>
+
+<!-- file:// cannot load the world modules. -->
+<script>
+if (location.protocol === 'file:') {
+  const zh = /^zh/i.test(navigator.language), note = document.createElement('aside');
+  note.id = 'startupNotice';
+  note.innerHTML = zh
+    ? '<h2>请用本地服务器打开</h2><p>直接双击打开时，浏览器不会加载 3D 世界。在这个文件夹里运行 <code>python3 tools/serve.py</code>（Windows 用 <code>python tools/serve.py</code>），它会找一个空闲端口并自动打开页面。地址也会打印在终端里。</p>'
+    : '<h2>Open it through a local server</h2><p>Browsers don’t load the 3D world from a double-clicked file. In this folder, run <code>python3 tools/serve.py</code> (on Windows, <code>python tools/serve.py</code>). It picks a free port and opens the page. The address is also printed in the terminal.</p>';
+  document.getElementById('pages').before(note);
+  document.getElementById('loading')?.remove();
+  document.body.classList.add('plain');
+}
+</script>
+<noscript><style>#world,#hud,#loading{display:none}#pages{display:block}</style></noscript>
+<script type="module" src="engine/main.js"></script>
+</body>
+</html>
