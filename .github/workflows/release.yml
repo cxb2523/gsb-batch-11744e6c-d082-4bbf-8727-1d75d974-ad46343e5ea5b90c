@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies and browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Verify and build release
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          test "v${PACKAGE_VERSION}" = "${GITHUB_REF_NAME}"
+          npm run qa
+      - name: Package portable assets
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_DIR="release/bead-grid-studio-v${VERSION}"
+          mkdir -p "$PACKAGE_DIR"
+          cp "release/bead-grid-studio-v${VERSION}.html" "$PACKAGE_DIR/"
+          cp README.md README.en.md README.zh-CN.md LICENSE NOTICE TRADEMARKS.md SECURITY.md CONTRIBUTING.md ROADMAP.md "$PACKAGE_DIR/"
+          cp -R docs "$PACKAGE_DIR/docs"
+          (cd release && zip -r "bead-grid-studio-v${VERSION}.zip" "bead-grid-studio-v${VERSION}")
+          (cd release && sha256sum "bead-grid-studio-v${VERSION}.html" "bead-grid-studio-v${VERSION}.zip" > SHA256SUMS.txt)
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="docs/release-notes-${GITHUB_REF_NAME}.md"
+          test -f "$NOTES" || { echo "Missing $NOTES"; exit 1; }
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists (e.g. published manually); leaving it untouched."
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            release/bead-grid-studio-v*.html \
+            release/bead-grid-studio-v*.zip \
+            release/SHA256SUMS.txt \
+            --title "Bead Grid Studio $GITHUB_REF_NAME" \
+            --notes-file "$NOTES"

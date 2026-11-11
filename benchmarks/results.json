@@ -1,0 +1,77 @@
+{
+  "timestamp": "2026-09-19T06:21:24.402Z",
+  "environment": {
+    "nodeVersion": "v24.15.0",
+    "os": "Windows_NT 10.0.26200 (x64)",
+    "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+    "cpuCores": 12,
+    "runtime": "Node.js V8",
+    "fixture": "tests/fixtures/rocket-badge.png (1024x1024 RGBA)",
+    "palette": "mard-compatible-base-221",
+    "processMode": "cartoon",
+    "iterations": 5
+  },
+  "results": [
+    {
+      "gridSize": "16x16",
+      "cells": 256,
+      "avgDurationMs": 395.85,
+      "minDurationMs": 126.76,
+      "maxDurationMs": 659.56,
+      "totalBeads": 122,
+      "uniqueColors": 4,
+      "checksum": "3b04bbd47b0a2ef9",
+      "determinism": "100% bitwise identical",
+      "heapDeltaKb": 8858.1
+    },
+    {
+      "gridSize": "24x24",
+      "cells": 576,
+      "avgDurationMs": 263.68,
+      "minDurationMs": 124,
+      "maxDurationMs": 375.87,
+      "totalBeads": 268,
+      "uniqueColors": 7,
+      "checksum": "e9586bb308017a4a",
+      "determinism": "100% bitwise identical",
+      "heapDeltaKb": -2101.9
+    },
+    {
+      "gridSize": "32x32",
+      "cells": 1024,
+      "avgDurationMs": 117.29,
+      "minDurationMs": 103.55,
+      "maxDurationMs": 131.41,
+      "totalBeads": 466,
+      "uniqueColors": 8,
+      "checksum": "be70ae3da006ec70",
+      "determinism": "100% bitwise identical",
+      "heapDeltaKb": 6978
+    },
+    {
+      "gridSize": "48x48",
+      "cells": 2304,
+      "avgDurationMs": 248.4,
+      "minDurationMs": 112.97,
+      "maxDurationMs": 563.01,
+      "totalBeads": 1028,
+      "uniqueColors": 9,
+      "checksum": "8c46216637a038bd",
+      "determinism": "100% bitwise identical",
+      "heapDeltaKb": -771
+    },
+    {
+      "gridSize": "60x60",
+      "cells": 3600,
+      "avgDurationMs": 138.3,
+      "minDurationMs": 122.76,
+      "maxDurationMs": 154.08,
+      "totalBeads": 1594,
+      "uniqueColors": 9,
+      "checksum": "5bb97a407d69b902",
+      "determinism": "100% bitwise identical",
+      "heapDeltaKb": 12071.1
+    }
+  ],
+  "notice": "Results may vary by machine."
+}

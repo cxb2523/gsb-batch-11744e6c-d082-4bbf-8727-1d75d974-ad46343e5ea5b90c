@@ -1,0 +1,86 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Install dependencies
+        run: npm ci
+      - name: Restore Playwright Chromium cache
+        id: playwright-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-${{ hashFiles('package-lock.json') }}
+      - name: Install Chromium browser
+        # Match CI: smoke-test both responsive Chromium projects, cache the
+        # runtime, and keep the cold download bounded and retryable. Ubuntu
+        # hosted images include the shared browser libraries; do not invoke apt
+        # here because it can block independently of Playwright. The smoke suite
+        # verifies the resulting browser can actually launch.
+        timeout-minutes: 20
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: 120000
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            echo "Installing Playwright Chromium (attempt ${attempt}/2)"
+            if timeout --signal=TERM --kill-after=30s 480s \
+              npx playwright install chromium; then
+              exit 0
+            else
+              status=$?
+            fi
+
+            if [ "$attempt" -eq 1 ]; then
+              echo "Playwright install timed out or failed; retrying with a clean browser cache."
+              rm -rf "$HOME/.cache/ms-playwright"
+              sleep 15
+            fi
+          done
+          exit "$status"
+      - name: Save Playwright Chromium cache
+        if: steps.playwright-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
+      - name: Verify production build
+        run: npm run qa:ci
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+  deploy:
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
