@@ -1,0 +1,60 @@
+{
+  "name": "tubespotting",
+  "version": "0.1.0",
+  "description": "Every London Underground train on one live map, moving as it happens",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NotAFlightRisk/tubespotting.git"
+  },
+  "homepage": "https://tubespotting.peng.ly",
+  "engines": {
+    "node": "^22.12.0 || >=24.0.0"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "node build/index.js",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "network": "node scripts/network.mjs",
+    "stations": "node scripts/stations.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@fontsource/doto": "^5.3.0",
+    "@fontsource/hammersmith-one": "^5.3.0",
+    "@sentry/browser": "^11.10.0",
+    "@sentry/vite-plugin": "^11.11.0",
+    "@sveltejs/adapter-cloudflare": "^8.0.2",
+    "@sveltejs/adapter-node": "^6.0.1",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@types/d3-interpolate": "^3.0.4",
+    "@types/d3-selection": "^3.0.12",
+    "@types/d3-transition": "^3.0.9",
+    "@types/d3-zoom": "^3.0.9",
+    "@types/node": "^26.6.6",
+    "d3-interpolate": "^3.0.1",
+    "d3-selection": "^3.0.0",
+    "d3-transition": "^3.0.1",
+    "d3-zoom": "^3.0.0",
+    "prettier": "^3.9.10",
+    "prettier-plugin-svelte": "^4.1.1",
+    "satori": "^0.63.2",
+    "sharp": "^0.35.5",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.156.2"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  }
+}

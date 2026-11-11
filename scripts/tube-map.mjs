@@ -1,0 +1,358 @@
+// Where TfL's standard tube map puts things, in grid steps east and south of its top left corner,
+// 20 to each of its index squares. Every junction, end of the line and interchange is here, along
+// with any stop the printed map spaces unevenly; schematic.mjs spreads the rest along the track.
+
+/** Grid points by station name, or by id where stations sharing a name are drawn apart */
+export const PLACES = {
+  // Metropolitan
+  Amersham: [2, 12],
+  Chesham: [9, 9],
+  'Chalfont & Latimer': [12, 12],
+  Chorleywood: [21, 14],
+  Watford: [25, 13],
+  'Moor Park': [25, 18],
+  'Harrow-on-the-Hill': [37, 30],
+  Uxbridge: [4, 23],
+  Ruislip: [18, 23],
+  'Ruislip Manor': [20, 23],
+  Eastcote: [24, 24],
+  'Rayners Lane': [25, 25],
+  'Northwick Park': [44, 30],
+  'Preston Road': [49, 30],
+  'Wembley Park': [54, 30],
+
+  // Jubilee
+  Stanmore: [52, 19],
+  Kingsbury: [52, 26],
+  'Willesden Green': [59, 35],
+  Kilburn: [61, 37],
+  '940GZZLUWHP': [65, 41], // West Hampstead
+  'Finchley Road': [66, 42],
+  'Swiss Cottage': [68, 44],
+  "St. John's Wood": [70, 46],
+  'Baker Street': [71, 49],
+  'Bond Street': [71, 59],
+  'Green Park': [73, 64],
+  Westminster: [80, 71],
+  Waterloo: [84, 76],
+  Southwark: [88, 77],
+  'London Bridge': [101, 70],
+  'Canada Water': [118, 74],
+  'Canary Wharf': [132, 74],
+  'North Greenwich': [138, 75],
+  'Canning Town': [140, 66],
+  '940GZZLUWHM': [140, 56], // West Ham
+  '940GZZLUSTD': [140, 44], // Stratford
+
+  // Bakerloo and Lioness
+  'Watford Junction': [47, 6],
+  'Harrow & Wealdstone': [47, 22],
+  Kenton: [47, 26],
+  'South Kenton': [47, 31],
+  'Willesden Junction': [47, 40],
+  "Queen's Park": [48, 44],
+  'Warwick Avenue': [54, 48],
+  '940GZZLUPAC': [59, 48], // Paddington
+  '940GZZLUERB': [61, 48], // Edgware Road
+  Marylebone: [66, 48],
+  'Oxford Circus': [76, 59],
+  'Piccadilly Circus': [80, 64],
+  'Charing Cross': [84, 68],
+  Embankment: [84, 71],
+  'Lambeth North': [85, 81],
+  'Elephant & Castle': [88, 84],
+  'Kilburn High Road': [56, 44],
+  'South Hampstead': [70, 43],
+  Euston: [87, 48],
+
+  // Central
+  'West Ruislip': [16, 19],
+  'Ruislip Gardens': [16, 27],
+  'South Ruislip': [16, 31],
+  Northolt: [16, 35],
+  Greenford: [19, 42],
+  Perivale: [23, 46],
+  'Hanger Lane': [29, 52],
+  '940GZZLUEBY': [22, 63], // Ealing Broadway
+  'North Acton': [40, 63],
+  'White City': [46, 63],
+  '940GZZLUSBC': [55, 63], // Shepherd's Bush
+  'Notting Hill Gate': [59, 63],
+  'Lancaster Gate': [65, 61],
+  'Marble Arch': [68, 59],
+  'Tottenham Court Road': [84, 59],
+  Holborn: [90, 59],
+  "St. Paul's": [95, 60],
+  Bank: [101, 60],
+  'Liverpool Street': [105, 56],
+  'Bethnal Green': [121, 54],
+  'Mile End': [128, 56],
+  Leyton: [143, 41],
+  Leytonstone: [146, 35],
+  Wanstead: [149, 32],
+  'Gants Hill': [153, 32],
+  'Newbury Park': [155, 30],
+  Hainault: [155, 23],
+  'Grange Hill': [153, 21],
+  'Roding Valley': [148, 21],
+  Woodford: [146, 23],
+  'Buckhurst Hill': [146, 17],
+  Epping: [153, 10],
+
+  // Circle, District and Hammersmith & City
+  'Royal Oak': [56, 52],
+  'Latimer Road': [49, 59],
+  'Wood Lane': [48, 64],
+  '940GZZLUHSC': [48, 69], // Hammersmith
+  '940GZZLUPAH': [58, 50], // Paddington
+  'Edgware Road': [63, 49],
+  'Euston Square': [82, 49],
+  "King's Cross St. Pancras": [91, 49],
+  Farringdon: [95, 53],
+  Moorgate: [101, 56],
+  Aldgate: [110, 59],
+  'Tower Hill': [110, 63],
+  Monument: [103, 63],
+  'Cannon Street': [97, 65],
+  Blackfriars: [93, 69],
+  Victoria: [73, 71],
+  'South Kensington': [64, 71],
+  'Gloucester Road': [61, 71],
+  "Earl's Court": [57, 71],
+  'High Street Kensington': [59, 66],
+  Bayswater: [59, 57],
+  'Aldgate East': [116, 56],
+  Whitechapel: [118, 56],
+  'Bow Road': [131, 56],
+  Barking: [156, 56],
+  Upney: [160, 55],
+  Upminster: [174, 41],
+  '940GZZLUHSD': [48, 71], // Hammersmith
+  'Turnham Green': [36, 71],
+  'Acton Town': [27, 71],
+  'Ealing Common': [25, 67],
+  Gunnersbury: [30, 77],
+  'Kew Gardens': [26, 81],
+  Richmond: [22, 85],
+  'Kensington (Olympia)': [54, 66],
+  'West Brompton': [55, 75],
+  'Putney Bridge': [55, 83],
+  Wimbledon: [55, 93],
+
+  // Northern
+  Edgware: [61, 15],
+  'Hendon Central': [69, 23],
+  'Golders Green': [73, 27],
+  Hampstead: [75, 29],
+  'Belsize Park': [83, 37],
+  'Camden Town': [87, 41],
+  'High Barnet': [91, 12],
+  'Mill Hill East': [89, 20],
+  'Finchley Central': [91, 22],
+  Archway: [91, 28],
+  'Kentish Town': [91, 34],
+  'Warren Street': [84, 51],
+  'Leicester Square': [84, 64],
+  Angel: [96, 49],
+  Kennington: [84, 88],
+  'Nine Elms': [69, 86],
+  'Battersea Power Station': [65, 86],
+  Stockwell: [79, 93],
+  'Clapham North': [76, 96],
+  Balham: [72, 100],
+  'South Wimbledon': [64, 108],
+  Morden: [60, 112],
+
+  // Piccadilly
+  Cockfosters: [108, 10],
+  'Manor House': [108, 28],
+  'Finsbury Park': [105, 32],
+  'Caledonian Road': [99, 38],
+  'South Harrow': [25, 33],
+  Alperton: [25, 44],
+  'Park Royal': [25, 53],
+  'North Ealing': [25, 57],
+  'South Ealing': [21, 71],
+  'Hounslow West': [13, 78],
+  'Hatton Cross': [11, 80],
+  'Heathrow Terminals 2 & 3': [8, 83],
+  'Heathrow Terminal 5': [3, 88],
+  'Heathrow Terminal 4': [10, 90],
+
+  // Victoria
+  'Walthamstow Central': [131, 30],
+  'Blackhorse Road': [125, 30],
+  'Tottenham Hale': [121, 30],
+  'Seven Sisters': [118, 30],
+  'Highbury & Islington': [105, 39],
+  Vauxhall: [74, 88],
+  Brixton: [83, 97],
+
+  // Elizabeth
+  Reading: [2, 30],
+  'West Drayton': [2, 57],
+  'Hayes & Harlington': [10, 61],
+  'Ealing Broadway': [22, 61],
+  'Acton Main Line': [34, 55],
+  Paddington: [61, 53],
+  '910GLIVSTLL': [105, 52], // Liverpool Street
+  '910GLIVST': [105, 52], // Liverpool Street
+  '910GSTFD': [138, 44], // Stratford
+  Maryland: [141, 41],
+  'Forest Gate': [148, 39],
+  Ilford: [156, 39],
+  Romford: [166, 33],
+  Shenfield: [177, 22],
+  '910GCANWHRF': [134, 71], // Canary Wharf
+  'Custom House': [156, 71],
+  Woolwich: [156, 89],
+  'Abbey Wood': [156, 93],
+
+  // Overground
+  'Kensal Rise': [51, 40],
+  Brondesbury: [59, 40],
+  '910GWHMDSTD': [66, 40], // West Hampstead
+  'Finchley Road & Frognal': [69, 40],
+  'Hampstead Heath': [77, 36],
+  'Gospel Oak': [84, 36],
+  'Kentish Town West': [86, 38],
+  'Camden Road': [90, 39],
+  'Caledonian Road & Barnsbury': [100, 39],
+  Canonbury: [110, 39],
+  'Dalston Kingsland': [114, 39],
+  'Hackney Central': [127, 44],
+  'Hackney Wick': [134, 44],
+  'Acton Central': [35, 65],
+  'South Acton': [35, 67],
+  '910GSHPDSB': [53, 64], // Shepherd's Bush
+  'Imperial Wharf': [60, 82],
+  'Clapham Junction': [62, 90],
+  'Upper Holloway': [92, 29],
+  'Crouch Hill': [98, 26],
+  'Harringay Green Lanes': [110, 26],
+  'South Tottenham': [120, 26],
+  'Walthamstow Queens Road': [128, 33],
+  'Leyton Midland Road': [131, 36],
+  'Leytonstone High Road': [143, 37],
+  'Wanstead Park': [150, 40],
+  'Woodgrange Park': [154, 44],
+  'Barking Riverside': [167, 60],
+  Cheshunt: [126, 9],
+  'Enfield Town': [118, 11],
+  'Edmonton Green': [118, 17],
+  Chingford: [131, 15],
+  'Hackney Downs': [124, 41],
+  'London Fields': [124, 45],
+  'Cambridge Heath': [124, 47],
+  '910GBTHNLGR': [121, 49], // Bethnal Green
+  'Dalston Junction': [115, 42],
+  Hoxton: [118, 46],
+  'Shoreditch High Street': [118, 51],
+  Shadwell: [118, 66],
+  Wapping: [118, 68],
+  Rotherhithe: [118, 71],
+  'Surrey Quays': [118, 78],
+  'New Cross': [120, 86],
+  'New Cross Gate': [118, 87],
+  'Queens Road Peckham': [108, 86],
+  'Peckham Rye': [105, 89],
+  'Denmark Hill': [96, 91],
+  'Clapham High Street': [77, 93],
+  'Wandsworth Road': [71, 90],
+  Sydenham: [118, 96],
+  'Crystal Palace': [112, 102],
+  'Norwood Junction': [118, 102],
+  'West Croydon': [118, 108],
+
+  // DLR
+  '940GZZDLBNK': [102, 61], // Bank
+  'Tower Gateway': [112, 65],
+  Westferry: [126, 66],
+  Poplar: [132, 66],
+  'West India Quay': [132, 70],
+  'Island Gardens': [132, 85],
+  'Cutty Sark': [132, 88],
+  Lewisham: [132, 98],
+  'Bow Church': [132, 55],
+  '940GZZDLSTD': [142, 44], // Stratford
+  'Stratford International': [134, 39],
+  '940GZZDLWHM': [142, 57], // West Ham
+  'Royal Victoria': [151, 66],
+  Beckton: [159, 85],
+  'West Silvertown': [150, 76],
+  'Woolwich Arsenal': [150, 89],
+
+  // Trams
+  'Merton Park': [58, 104],
+  'Morden Road': [68, 112],
+  Mitcham: [81, 112],
+  'Mitcham Junction': [87, 112],
+  'Wandle Park': [107, 112],
+  'Reeves Corner': [110, 109],
+  Centrale: [114, 108],
+  'Wellesley Road': [121, 108],
+  'East Croydon': [128, 112],
+  'George Street': [121, 112],
+  'Church Street': [115, 112],
+  Sandilands: [139, 112],
+  Arena: [147, 104],
+  'Elmers End': [151, 104],
+  'Harrington Road': [152, 101],
+  'Beckenham Junction': [168, 101],
+  'New Addington': [149, 122]
+};
+
+/** Where the tube map bends the track between two neighbouring stations, if routing it wouldn't */
+export const VIA = {
+  'Willesden Junction>Acton Central': [
+    [44, 40],
+    [41, 43],
+    [41, 50],
+    [35, 56]
+  ],
+  'West Drayton>Hayes & Harlington': [[2, 61]],
+  'Hayes & Harlington>Heathrow Terminals 2 & 3': [
+    [9, 62],
+    [9, 82]
+  ],
+  'Wembley Park>Willesden Green': [
+    [54, 31],
+    [58, 35]
+  ],
+  'Willesden Green>Finchley Road': [
+    [59, 36],
+    [65, 42]
+  ],
+  'Acton Main Line>Paddington': [[36, 53]],
+  '940GZZLUPAC>Edgware Road': [[60, 49]],
+  'Kennington>Nine Elms': [
+    [78, 88],
+    [76, 86]
+  ]
+};
+
+/** The Thames as the tube map simplifies it, west to east, with its corners still sharp */
+export const THAMES = [
+  [-2, 94],
+  [15, 94],
+  [15, 86],
+  [22, 79],
+  [40, 79],
+  [45, 84],
+  [76, 84],
+  [76, 74.5],
+  [90, 74.5],
+  [98, 66.5],
+  [111, 66.5],
+  [114, 69.5],
+  [125, 69.5],
+  [125, 86],
+  [136, 86],
+  [136, 72.5],
+  [143, 72.5],
+  [143, 86.5],
+  [168, 86.5],
+  [168, 60],
+  [170, 58.5],
+  [182, 58.5]
+];
