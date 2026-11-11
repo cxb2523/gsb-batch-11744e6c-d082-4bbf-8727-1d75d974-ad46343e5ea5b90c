@@ -6,7 +6,9 @@
   "scripts": {
     "serve": "node tools/serve.mjs",
     "shoot": "node tools/shoot.mjs",
-    "check": "node tools/check.mjs"
+    "check": "node tools/check.mjs",
+    "audio": "node tools/audio.mjs",
+    "audioevents": "node tools/audioevents.mjs"
   },
   "keywords": [],
   "author": "",

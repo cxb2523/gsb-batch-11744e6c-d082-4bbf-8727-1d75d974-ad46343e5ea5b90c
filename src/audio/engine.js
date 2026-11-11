@@ -39,6 +39,18 @@ const REV_IDLE = 1050;
 const FIRINGS_PER_REV = 2;       // four cylinders, four stroke
 const TAU = 0.03;                // parameter smoothing, seconds
 
+/* Bark level gate.
+ *
+ * The level bark() compares against is (0.14 + 0.62·load + 0.26·rpm) ·
+ * lerp(0.3, 1, throttle). Its theoretical floor — no load, no revs, throttle
+ * shut — is 0.14 · 0.3 = 0.042, and the value at idle rpm with the throttle
+ * closed is 0.0531. The previous 0.03 cutoff therefore could never trip: the
+ * pit-lane skip the comment below describes was unreachable code. 0.06 sits
+ * above that idle value and below the quietest real driving (closed throttle
+ * at 0.5 rev is 0.081), so only shifts with no pressure behind them are
+ * suppressed and every moving-car shift still barks. */
+const BARK_MIN_LEVEL = 0.06;
+
 export class EngineVoice {
   constructor(ctx, dest, buffers, seed = 91) {
     this.ctx = ctx;
@@ -212,6 +224,26 @@ export class EngineVoice {
     this.shiftDir = 1;
     this.gear = null;
     this.crackle = 0;
+
+    /* Queryable record of the most recent gearchange event.
+     *
+     * bark() used to fail silently: a shift at idle off the throttle returned
+     * undefined and nothing in the observable state said that the exhaust pop
+     * had been suppressed, so a caller could not tell "no event" apart from
+     * "event deliberately skipped". Every call to bark() now overwrites this
+     * plain field — no nodes are allocated, and nothing here is touched on a
+     * normal update() frame:
+     *
+     *   time       audio-context clock the bark was requested at
+     *   direction  +1 upshift, -1 downshift
+     *   sounded    true once the one-shot was scheduled, false when the level
+     *              gate skipped it
+     *   level      the pre-gate level the gate actually compared against, so
+     *              the skip is explainable rather than opaque
+     *   reason     'sounded', or the tag of the gate that suppressed it
+     *
+     * `null` before the first gearchange. */
+    this.lastShift = null;
   }
 
   /**
@@ -322,10 +354,18 @@ export class EngineVoice {
    * entirely in the numbers, which is the honest way to model it because the
    * difference in the real thing is entirely in the airflow.
    *
+   * Every call — including a suppressed one — records what happened in
+   * `this.lastShift` and returns the same record, so the level gate below can
+   * no longer fail silently. The record is a plain object; the only nodes this
+   * method ever allocates are the one-shot source and envelope of a bark that
+   * actually sounds, on the same rare-event terms as before.
+   *
    * @param {number} t
    * @param {number} rpm 0..1
    * @param {number} throttle 0..1
    * @param {number} dir +1 up, -1 down
+   * @returns {{time:number, direction:number, sounded:boolean, level:number,
+   *            reason:string}} the record also stored as `this.lastShift`
    */
   bark(t, rpm, throttle, dir) {
     const ctx = this.ctx;
@@ -333,9 +373,21 @@ export class EngineVoice {
     const up = dir > 0;
     /* A shift at idle off the throttle should be near silent. There is no
        pressure in the system to release, and barking anyway is how a car ends
-       up sounding like it is fighting itself in the pit lane. */
+       up sounding like it is fighting itself in the pit lane. The gate value
+       and the derivation of why the idle shift lands under it are documented
+       at BARK_MIN_LEVEL. */
     const level = (0.14 + 0.62 * this.load + 0.26 * rpm) * lerp(0.3, 1, throttle);
-    if (level < 0.03) return;
+    if (level < BARK_MIN_LEVEL) {
+      /* Expose the skip instead of returning into silence: the caller gets
+         the level the gate saw and the tag of the gate that fired. */
+      return this.lastShift = {
+        time: t,
+        direction: up ? 1 : -1,
+        sounded: false,
+        level,
+        reason: 'level-below-gate',
+      };
+    }
 
     const dur = up ? 0.085 : 0.16;
     const src = ctx.createBufferSource();
@@ -365,6 +417,14 @@ export class EngineVoice {
     this.barkBand.frequency.setValueAtTime(up ? f0 * 0.75 : f0 * 0.95, t);
     this.barkBand.frequency.exponentialRampToValueAtTime(
       up ? f0 * 0.40 : f0 * 2.3, t + dur);
+
+    return this.lastShift = {
+      time: t,
+      direction: up ? 1 : -1,
+      sounded: true,
+      level,
+      reason: 'sounded',
+    };
   }
 
   dispose() {

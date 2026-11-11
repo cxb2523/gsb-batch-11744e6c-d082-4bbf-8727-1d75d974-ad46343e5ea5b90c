@@ -18,14 +18,45 @@ import { harmonicWave, noiseSource } from './noise.js';
 
 const BOOST_SEC = 1.2;           // matches car/physics.js
 
+/* Rank-event dedup window, seconds.
+ *
+ * The race loop reports classification from sampled positions, so one pass can
+ * be observed on several consecutive frames: without a gate, a single overtake
+ * fires the rising pair repeatedly and smears into a trill. The window only has
+ * to outlast a frame at the lowest plausible update rate — 180 ms covers six
+ * 60 Hz frames and is still far shorter than two real overtakes can be. It is
+ * per direction, so a gain and a loss landing together both still sound. It can
+ * be overridden per instance via the constructor's opts.positionDedupSec. */
+const POSITION_DEDUP_SEC = 0.18;
+
 export class FeedbackVoices {
-  constructor(ctx, carDest, hitDest, buffers, seed = 1207) {
+  /**
+   * @param {object} [opts]
+   * @param {number} [opts.positionDedupSec] minimum seconds between two voiced
+   *        position events in the same direction; defaults to
+   *        POSITION_DEDUP_SEC. A call exactly at the end of the window is
+   *        allowed, so the gate is `dt < window`, not `<=`.
+   */
+  constructor(ctx, carDest, hitDest, buffers, seed = 1207, opts = {}) {
     this.ctx = ctx;
     this.nodes = [];
     this.sources = [];
     this.buf = buffers.white;
     this.boost = 0;
     const node = n => { this.nodes.push(n); return n; };
+
+    /* Rank-event dedup state. Plain fields only — a suppressed call allocates
+       no oscillators and schedules nothing; the only allocation position()
+       ever does is the short-lived tone pair of an event that actually
+       sounds. Timestamps are keyed by direction so the two never suppress each
+       other. -Infinity makes the first call in each direction always pass. */
+    this.positionDedupSec = clamp(
+      opts.positionDedupSec ?? POSITION_DEDUP_SEC, 0, 2);
+    this._lastPositionAt = { gained: -Infinity, lost: -Infinity };
+    /* Observable counters, so tests (and the game) can ask how many rank
+       events were voiced versus collapsed rather than inferring it by ear. */
+    this.positionEvents = 0;
+    this.positionDropped = 0;
 
     /* The pad's second engine ------------------------------------------ */
     this.boostOut = node(ctx.createGain());
@@ -117,8 +148,26 @@ export class FeedbackVoices {
    * The rank event. Rising and two-part is reward; falling and one-part is
    * information. Neither is a fanfare, and neither shares the start lights'
    * high signal pitches.
+   *
+   * Calls within positionDedupSec of the last VOICED event in the same
+   * direction are collapsed: they touch one numeric field and return false,
+   * scheduling no nodes, so a classification that flickers across a frame
+   * boundary cannot stack tone pairs. The other direction has its own clock.
+   * A call landing exactly on the window boundary passes (`<`, not `<=`).
+   *
+   * @returns {boolean} true if the event was voiced, false if deduped (or the
+   *          direction was unknown)
    */
   position(t, direction) {
+    if (direction !== 'gained' && direction !== 'lost') return false;
+    const last = this._lastPositionAt[direction];
+    if (t - last < this.positionDedupSec) {
+      this.positionDropped++;
+      return false;
+    }
+    this._lastPositionAt[direction] = t;
+    this.positionEvents++;
+
     if (direction === 'gained') {
       this._tone(t, 494, 554, 0.16, 0.22, 'triangle');
       this._tone(t + 0.072, 622, 698, 0.18, 0.30, 'triangle');
@@ -129,6 +178,7 @@ export class FeedbackVoices {
       this._tone(t, 349, 247, 0.13, 0.30, 'triangle');
       this._tone(t + 0.004, 698, 494, 0.028, 0.17, 'sine');
     }
+    return true;
   }
 
   /** The brief attack that says the pad fired before the motor carries on. */
