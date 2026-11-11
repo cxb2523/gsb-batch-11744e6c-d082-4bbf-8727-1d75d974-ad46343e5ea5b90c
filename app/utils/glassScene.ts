@@ -15,6 +15,7 @@ import { buildReliefGeometry, reliefScale, type ReliefData } from './relief'
 import type { SamplePose } from './samples'
 import { buildSurfaceCanvases, softenCanvas } from './surface'
 import type { Crop, TracedPolygon, TraceResult } from './trace'
+import { auditExportRequest, type ExportAuditResult, type ExportRequestKind } from './exportAudit'
 
 export * from './presets'
 
@@ -1329,6 +1330,31 @@ export class GlassStudio {
     this.camera.updateProjectionMatrix()
     this.controls.target.copy(target)
     this.placeBackdrop()
+  }
+
+  /**
+   * Read-only pre-export audit of one export request. Mirrors the guards and material branches of
+   * {@link exportGLB}, {@link exportSTL} and {@link screenshot} without running them: it never
+   * touches WebGL and never mutates studio state. A disposed studio is reported as not exportable
+   * instead of throwing. The result is plain, JSON-serialisable data for the UI or tests.
+   */
+  auditExport(kind: ExportRequestKind): ExportAuditResult {
+    // The export methods snap with { ...this.target }; audit the same values without snapping.
+    const params = { ...this.target }
+    // Read-only size query; null while no mesh or trace exists, exactly as the export guards see.
+    const dimensions = this.getDimensions()
+    // exportGLB calls ensurePrintTexture(), which reuses printTex or builds from source.
+    const printTextureAvailable = !!this.printTex || !!this.source
+    return auditExportRequest({
+      kind,
+      params,
+      dimensions,
+      finish: params.finish,
+      geometry: params.geometry,
+      hasMesh: !!this.mesh,
+      printTextureAvailable,
+      disposed: this.disposed,
+    })
   }
 
   async exportGLB(): Promise<Blob> {
