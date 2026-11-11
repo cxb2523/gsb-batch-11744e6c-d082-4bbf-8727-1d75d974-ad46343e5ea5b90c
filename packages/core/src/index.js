@@ -48,6 +48,13 @@ import {
 import { quantizePixels } from './quantize.js';
 
 import {
+  VALID_PROCESS_MODES,
+  VALID_WHITE_MODES,
+  auditQuantizeParameters,
+  auditQuantizeResult,
+} from './audit.js';
+
+import {
   analyzePattern,
   assessPatternQuality,
   createPattern,
@@ -169,6 +176,12 @@ export {
 
   // Quantize
   quantizePixels,
+
+  // Audit
+  auditQuantizeParameters,
+  auditQuantizeResult,
+  VALID_PROCESS_MODES,
+  VALID_WHITE_MODES,
 
   // Pattern
   embedPatternGrid,

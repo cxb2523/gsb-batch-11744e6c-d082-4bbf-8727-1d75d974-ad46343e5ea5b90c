@@ -169,6 +169,105 @@ export function generateBeadPattern(
 
 export function quantizePixels(payload: QuantizeOptions): QuantizeResult;
 
+export interface QuantizeParameterSnapshot {
+  cols: number;
+  rows: number;
+  maxColors?: number;
+  processMode?: 'cartoon' | 'detail' | 'document' | 'photo' | 'pixel' | string;
+  mergeStrength?: number;
+  whiteMode?: 'auto' | 'keep' | string;
+  protectDark?: boolean;
+  paletteColorCount?: number;
+  hasTransparentColor?: boolean;
+}
+
+export interface AuditCheck {
+  name: string;
+  passed: boolean;
+  reason: string;
+}
+
+export interface QuantizeParameterAudit {
+  valid: boolean;
+  degraded: boolean;
+  normalized: {
+    cols: number;
+    rows: number;
+    cellCount: number;
+    dimensionsValid: boolean;
+    paletteColorCount: number;
+    paletteColorCountValid: boolean;
+    hasTransparentColor: boolean;
+    maxColors: {
+      requested: number;
+      provided: boolean;
+      effective: number;
+      wasClamped: boolean;
+    };
+    mergeStrength: {
+      requested: number;
+      provided: boolean;
+      effective: number;
+      wasClamped: boolean;
+    };
+    processMode: {
+      requested: string;
+      effective: string;
+      valid: boolean;
+    };
+    whiteMode: {
+      requested: string;
+      effective: string;
+      valid: boolean;
+    };
+    protectDark: {
+      requested: boolean;
+      effective: boolean;
+      valid: boolean;
+    };
+  };
+  behavior: {
+    colorMergeEnabled: boolean;
+    colorCapEnabled: boolean;
+    cartoonMode: boolean;
+  };
+  checks: AuditCheck[];
+}
+
+export interface QuantizeResultSnapshot {
+  cells: Int16Array | number[];
+  selected: number[];
+  nonEmpty: number;
+  diagnostics?: Partial<QuantizeDiagnostics> | null;
+  cols: number;
+  rows: number;
+  maxColors?: number;
+}
+
+export interface QuantizeResultAudit {
+  valid: boolean;
+  degraded: boolean;
+  effectiveLimit: number;
+  observed: {
+    cellsLength: number;
+    expectedLength: number;
+    nonEmptyReported: number | null;
+    nonEmptyObserved: number;
+    selectedLength: number;
+    selectedUnique: boolean;
+    selectedSortedDescending: boolean;
+    cellIndicesOutsideSelected: number[];
+    usedBeforeMerge: number | null;
+    usage: Array<{ index: number; count: number }>;
+  };
+  checks: AuditCheck[];
+}
+
+export function auditQuantizeParameters(snapshot: QuantizeParameterSnapshot): QuantizeParameterAudit;
+export function auditQuantizeResult(result: QuantizeResultSnapshot): QuantizeResultAudit;
+export const VALID_PROCESS_MODES: readonly ('cartoon' | 'detail' | 'document' | 'photo' | 'pixel')[];
+export const VALID_WHITE_MODES: readonly ('auto' | 'keep')[];
+
 export function analyzePattern(
   cells: (string | number | null)[],
   palette?: readonly PaletteColor[],
