@@ -1,0 +1,30 @@
+.btn {
+  /* border: solid; */
+  /* background-color: #4c5c61; */
+  /* focus:ring-4 focus:outline-none focus:ring-gray-200 */
+  @apply border-none bg-button h-fit flex justify-center items-center font-normal text-text hover:bg-slate-700 focus:ring-2 focus:outline-none focus:ring-slate-400 cursor-pointer outline-none uppercase rounded-lg px-5 py-2.5;
+}
+
+.btn__icon {
+  @apply px-3 py-2.5;
+}
+
+.btn__icon-sm {
+  @apply px-2.5 py-2;
+}
+
+.btn-active {
+  @apply bg-slate-500;
+}
+
+/* .btn--img {
+  @apply flex;
+} */
+
+.btn--size {
+  @apply text-sm;
+}
+
+input[type="reset"] {
+  @apply bg-gray-200 text-gray-500;
+}
