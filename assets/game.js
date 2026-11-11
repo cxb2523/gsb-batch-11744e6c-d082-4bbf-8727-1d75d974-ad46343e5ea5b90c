@@ -1,5 +1,5 @@
 (() => {
-  // ../node_modules/three/build/three.module.js
+  // node_modules/three/build/three.module.js
   var REVISION = "169";
   var CullFaceNone = 0;
   var CullFaceBack = 1;
@@ -21797,7 +21797,7 @@ void main() {
     }
   }
 
-  // ../node_modules/three/examples/jsm/shaders/CopyShader.js
+  // node_modules/three/examples/jsm/shaders/CopyShader.js
   var CopyShader = {
     name: "CopyShader",
     uniforms: {
@@ -21837,7 +21837,7 @@ void main() {
     )
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/Pass.js
+  // node_modules/three/examples/jsm/postprocessing/Pass.js
   var Pass = class {
     constructor() {
       this.isPass = true;
@@ -21881,7 +21881,7 @@ void main() {
     }
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/ShaderPass.js
+  // node_modules/three/examples/jsm/postprocessing/ShaderPass.js
   var ShaderPass = class extends Pass {
     constructor(shader, textureID) {
       super();
@@ -21921,7 +21921,7 @@ void main() {
     }
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/MaskPass.js
+  // node_modules/three/examples/jsm/postprocessing/MaskPass.js
   var MaskPass = class extends Pass {
     constructor(scene, camera) {
       super();
@@ -21978,7 +21978,7 @@ void main() {
     }
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/EffectComposer.js
+  // node_modules/three/examples/jsm/postprocessing/EffectComposer.js
   var EffectComposer = class {
     constructor(renderer, renderTarget) {
       this.renderer = renderer;
@@ -22100,7 +22100,7 @@ void main() {
     }
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/RenderPass.js
+  // node_modules/three/examples/jsm/postprocessing/RenderPass.js
   var RenderPass = class extends Pass {
     constructor(scene, camera, overrideMaterial = null, clearColor = null, clearAlpha = null) {
       super();
@@ -22151,7 +22151,7 @@ void main() {
     }
   };
 
-  // ../node_modules/three/examples/jsm/shaders/LuminosityHighPassShader.js
+  // node_modules/three/examples/jsm/shaders/LuminosityHighPassShader.js
   var LuminosityHighPassShader = {
     name: "LuminosityHighPassShader",
     shaderID: "luminosityHighPass",
@@ -22204,7 +22204,7 @@ void main() {
     )
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js
+  // node_modules/three/examples/jsm/postprocessing/UnrealBloomPass.js
   var UnrealBloomPass = class _UnrealBloomPass extends Pass {
     constructor(resolution, strength, radius, threshold) {
       super();
@@ -22460,7 +22460,7 @@ void main() {
   UnrealBloomPass.BlurDirectionX = new Vector2(1, 0);
   UnrealBloomPass.BlurDirectionY = new Vector2(0, 1);
 
-  // ../node_modules/three/examples/jsm/shaders/OutputShader.js
+  // node_modules/three/examples/jsm/shaders/OutputShader.js
   var OutputShader = {
     name: "OutputShader",
     uniforms: {
@@ -22544,7 +22544,7 @@ void main() {
     )
   };
 
-  // ../node_modules/three/examples/jsm/postprocessing/OutputPass.js
+  // node_modules/three/examples/jsm/postprocessing/OutputPass.js
   var OutputPass = class extends Pass {
     constructor() {
       super();
@@ -25353,6 +25353,174 @@ void main() {
     }
   };
 
+  // src/targeting.js
+  var RELEASE_REASONS = {
+    NO_SKILL: "\u65E0\u5F85\u91CA\u653E\u6280\u80FD",
+    UNKNOWN_SKILL: "\u6280\u80FD\u4E0D\u5728\u6280\u80FD\u8868\u4E2D",
+    NOT_RACE: "\u5F53\u524D\u4E0D\u662F\u7ADE\u901F\u6A21\u5F0F",
+    PLAYER_DEAD: "\u73A9\u5BB6\u5DF2\u6B7B\u4EA1",
+    SELF_SKILL: "\u81EA\u7528\u6280\u80FD\u65E0\u9700\u9009\u76EE\u6807"
+  };
+  var TARGET_FAILURES = {
+    PLACE_NOT_FOUND: "\u540D\u6B21\u4E0D\u5B58\u5728",
+    TARGET_SELF: "\u9009\u4E2D\u81EA\u5DF1",
+    OPPONENT_GONE: "\u5BF9\u624B\u5DF2\u4E0D\u5B58\u5728"
+  };
+  function countValues(rows, pick) {
+    const counts = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const key = pick(row);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const duplicated = [];
+    for (const [key, n] of counts) if (n > 1) duplicated.push(key);
+    return duplicated;
+  }
+  function resolveSkillTarget(input2) {
+    const src = input2 && typeof input2 === "object" ? input2 : {};
+    const playerZ = Number.isFinite(src.playerZ) ? src.playerZ : 0;
+    const rows = Array.isArray(src.rows) ? src.rows : [];
+    const opponents = Array.isArray(src.opponents) ? src.opponents : [];
+    const skillKey = src.skillKey === void 0 ? null : src.skillKey;
+    const skills = src.skills && typeof src.skills === "object" ? src.skills : {};
+    const place = src.place === void 0 ? null : src.place;
+    const mode2 = typeof src.mode === "string" ? src.mode : "title";
+    const playerAlive = src.playerAlive !== false;
+    const checks = [];
+    const addCheck = (name, label, pass, reason2 = null) => checks.push({ name, label, pass, reason: reason2 });
+    const duplicateIds = countValues(rows, (r) => r === null || r === void 0 ? null : r.id);
+    const duplicateNames = countValues(rows, (r) => r === null || r === void 0 ? null : r.name);
+    const duplicates = {
+      hasDuplicateId: duplicateIds.length > 0,
+      hasDuplicateName: duplicateNames.length > 0,
+      duplicateIds,
+      duplicateNames
+    };
+    const hasKey = skillKey !== null && skillKey !== void 0 && skillKey !== "";
+    const skill = hasKey && Object.prototype.hasOwnProperty.call(skills, skillKey) ? skills[skillKey] : null;
+    let canRelease = false;
+    let reasonCode = null;
+    let reason = null;
+    let target = null;
+    let failureCode = null;
+    let failureReason = null;
+    let matchedBy = null;
+    let resolvedRow = null;
+    const finish = () => ({
+      canRelease,
+      ok: canRelease,
+      reasonCode,
+      reason,
+      skillKey: hasKey ? String(skillKey) : null,
+      skillName: skill && skill.name ? skill.name : null,
+      isAttack: !!(skill && skill.self === false),
+      isSelfSkill: !!(skill && skill.self === true),
+      place: place === null || place === void 0 ? null : place,
+      target,
+      failureCode,
+      failureReason,
+      matchedBy,
+      row: resolvedRow,
+      duplicates,
+      checks,
+      meta: {
+        mode: mode2,
+        playerAlive,
+        playerZ,
+        rowCount: rows.length,
+        opponentCount: opponents.length
+      }
+    });
+    addCheck("skill_equipped", "\u5B58\u5728\u5F85\u91CA\u653E\u6280\u80FD", hasKey, hasKey ? null : RELEASE_REASONS.NO_SKILL);
+    if (!hasKey) {
+      reasonCode = "NO_SKILL";
+      reason = RELEASE_REASONS.NO_SKILL;
+      return finish();
+    }
+    const known = skill !== null && skill !== void 0;
+    addCheck("skill_known", "\u6280\u80FD\u5728\u6280\u80FD\u8868\u4E2D", known, known ? null : RELEASE_REASONS.UNKNOWN_SKILL);
+    if (!known) {
+      reasonCode = "UNKNOWN_SKILL";
+      reason = RELEASE_REASONS.UNKNOWN_SKILL;
+      return finish();
+    }
+    const inRace = mode2 === "race";
+    addCheck("race_mode", "\u5904\u4E8E\u7ADE\u901F\u6A21\u5F0F", inRace, inRace ? null : RELEASE_REASONS.NOT_RACE);
+    if (!inRace) {
+      reasonCode = "NOT_RACE";
+      reason = RELEASE_REASONS.NOT_RACE;
+      return finish();
+    }
+    addCheck("player_alive", "\u73A9\u5BB6\u5B58\u6D3B", playerAlive, playerAlive ? null : RELEASE_REASONS.PLAYER_DEAD);
+    if (!playerAlive) {
+      reasonCode = "PLAYER_DEAD";
+      reason = RELEASE_REASONS.PLAYER_DEAD;
+      return finish();
+    }
+    const isAttack = skill.self === false;
+    addCheck("attack_type", "\u653B\u51FB\u7C7B\u6280\u80FD", isAttack, isAttack ? null : RELEASE_REASONS.SELF_SKILL);
+    if (!isAttack) {
+      reasonCode = "SELF_SKILL";
+      reason = RELEASE_REASONS.SELF_SKILL;
+      return finish();
+    }
+    const row = rows.find((r) => r && r.place === place);
+    const placeExists = row !== void 0;
+    addCheck(
+      "place_exists",
+      "\u540D\u6B21\u8868\u4E2D\u5B58\u5728\u8BE5\u540D\u6B21",
+      placeExists,
+      placeExists ? null : TARGET_FAILURES.PLACE_NOT_FOUND
+    );
+    if (!placeExists) {
+      failureCode = "PLACE_NOT_FOUND";
+      failureReason = TARGET_FAILURES.PLACE_NOT_FOUND;
+      return finish();
+    }
+    const notSelf = row.me !== true;
+    addCheck("not_self", "\u9009\u4E2D\u540D\u6B21\u4E0D\u662F\u81EA\u5DF1", notSelf, notSelf ? null : TARGET_FAILURES.TARGET_SELF);
+    if (!notSelf) {
+      failureCode = "TARGET_SELF";
+      failureReason = TARGET_FAILURES.TARGET_SELF;
+      return finish();
+    }
+    resolvedRow = {
+      place: row.place,
+      id: row.id === void 0 ? null : row.id,
+      name: row.name === void 0 ? null : row.name,
+      me: row.me === true
+    };
+    const dupParts = [];
+    if (duplicates.hasDuplicateId) dupParts.push(`\u91CD\u590D id: ${duplicateIds.map((v) => String(v)).join(", ")}`);
+    if (duplicates.hasDuplicateName) dupParts.push(`\u91CD\u590D name: ${duplicateNames.map((v) => String(v)).join(", ")}`);
+    addCheck("row_unique", "\u540D\u6B21\u8868 id/name \u65E0\u91CD\u590D", dupParts.length === 0, dupParts.length ? dupParts.join("\uFF1B") : null);
+    const byId = opponents.find((x) => x && x.id === row.id);
+    const byName = byId ? void 0 : opponents.find((x) => x && x.name === row.name);
+    const opponent = byId || byName || null;
+    matchedBy = byId ? "id" : byName ? "name" : null;
+    const opponentExists = opponent !== null;
+    addCheck(
+      "opponent_exists",
+      "\u5BF9\u624B\u6570\u7EC4\u4E2D\u53EF\u53CD\u67E5\u5230\u76EE\u6807",
+      opponentExists,
+      opponentExists ? null : TARGET_FAILURES.OPPONENT_GONE
+    );
+    if (!opponentExists) {
+      failureCode = "OPPONENT_GONE";
+      failureReason = TARGET_FAILURES.OPPONENT_GONE;
+      return finish();
+    }
+    target = {
+      id: opponent.id === void 0 ? null : opponent.id,
+      name: opponent.name === void 0 ? null : opponent.name,
+      remote: opponent.remote === true,
+      z: opponent.z === void 0 ? null : opponent.z,
+      matchedBy
+    };
+    canRelease = true;
+    return finish();
+  }
+
   // src/main.js
   window.addEventListener("error", (e) => {
     const el = document.getElementById("toast");
@@ -26121,6 +26289,17 @@ void main() {
       },
       giveSkill: (k) => pickupSkill({ skill: k, x: player.pos.x, y: player.pos.y + 1, z: player.pos.z }),
       cast: (place) => castAttack(place),
+      // 只读审计：用当前运行态采集输入，交给纯函数模块解析；不改变技能槽与任何判定
+      auditTarget: (place) => resolveSkillTarget({
+        playerZ: player.pos.z,
+        rows: mode === "race" ? race.rows(player.pos.z) : [],
+        opponents: race.opponents.map((o) => ({ id: o.id, name: o.name, remote: o.remote === true, z: o.z })),
+        skillKey: atkSkill,
+        skills: SKILLS,
+        place: place === void 0 || place === null ? null : place,
+        mode,
+        playerAlive: !!player.alive
+      }),
       hitBy: (kind, from) => hitBy(kind, from),
       toBox: (i) => {
         const b = powerups.boxes[i];

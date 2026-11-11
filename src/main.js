@@ -11,6 +11,7 @@ import { Daylight } from './daylight.js';
 import { Race, RACE_LEN } from './race.js';
 import { Powerups, SKILLS } from './powerups.js';
 import { Net } from './net.js';
+import { resolveSkillTarget } from './targeting.js';
 import { clamp, damp } from './utils.js';
 
 // 运行时错误可视化（调试用）
@@ -881,6 +882,18 @@ window.__game = {
     },
     giveSkill: (k) => pickupSkill({ skill: k, x: player.pos.x, y: player.pos.y + 1, z: player.pos.z }),
     cast: (place) => castAttack(place),
+    // 只读审计：用当前运行态采集输入，交给纯函数模块解析；不改变技能槽与任何判定
+    auditTarget: (place) =>
+      resolveSkillTarget({
+        playerZ: player.pos.z,
+        rows: mode === 'race' ? race.rows(player.pos.z) : [],
+        opponents: race.opponents.map((o) => ({ id: o.id, name: o.name, remote: o.remote === true, z: o.z })),
+        skillKey: atkSkill,
+        skills: SKILLS,
+        place: place === undefined || place === null ? null : place,
+        mode,
+        playerAlive: !!player.alive,
+      }),
     hitBy: (kind, from) => hitBy(kind, from),
     toBox: (i) => {
       const b = powerups.boxes[i];
