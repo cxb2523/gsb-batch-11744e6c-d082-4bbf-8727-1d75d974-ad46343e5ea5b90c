@@ -2,13 +2,11 @@ import {
   AddEquation, BufferAttribute, BufferGeometry, Color, CustomBlending, DoubleSide, Mesh, OneFactor,
   OneMinusSrcAlphaFactor, ShaderMaterial, SrcAlphaFactor, ZeroFactor, type PerspectiveCamera,
 } from 'three';
-import { THREAD_COLORS } from '../chapter/data';
+import { PALETTE, diagnoseWoven, undiagnosableDiagnosis, type WovenDiagnosis } from './diagnose';
 
 /** Everyone's walks as thin glowing ribbons, with a spark walking along each
  * one. One draw call for all of them. Over-blended on color; alpha (the ink
  * surface id) and the ink normal target stay untouched. */
-
-const PALETTE = [THREAD_COLORS.power, THREAD_COLORS.water, THREAD_COLORS.lights, THREAD_COLORS.voice, THREAD_COLORS.root, '#fff1d6'];
 
 const vertex = /* glsl */ `
   attribute vec3 aTangent;
@@ -77,6 +75,9 @@ export interface Woven {
   material: ShaderMaterial;
   travelers: number;
   update(time: number, camera: PerspectiveCamera, viewportHeight: number): void;
+  /** 只读诊断：从当前几何体属性与材质 uniform 采集快照，返回纯数据的渲染诊断。
+   * mesh 已移除或几何体属性缺失时返回“不可诊断”的降级结果，不抛异常。 */
+  audit(): WovenDiagnosis;
 }
 
 export interface Traveler { c: number; p: ArrayLike<number> }
@@ -143,11 +144,28 @@ export function createWoven(travelers: Traveler[], options: { width?: number; li
   mesh.userData.ignoreDepthPrepass = true;
   mesh.frustumCulled = false;
   mesh.renderOrder = 5;
+  // Snapshot of what was baked into the geometry, for audit().
+  const routeMeta = travelers.map(t => ({ c: t.c, points: t.p.length / 3 }));
   return {
     mesh, material, travelers: travelers.length,
     update(time, camera, viewportHeight) {
       material.uniforms.uTime.value = time;
       material.uniforms.uPixel.value = 2 * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, viewportHeight);
+    },
+    audit() {
+      const position = mesh.geometry?.getAttribute('position');
+      const index = mesh.geometry?.getIndex();
+      if (!mesh.parent || !position || !mesh.geometry.getAttribute('aTangent') || !mesh.geometry.getAttribute('aColor') || !index) {
+        return undiagnosableDiagnosis('mesh 已不在场景中，或几何体属性缺失（position/aTangent/aColor/index）');
+      }
+      return diagnoseWoven({
+        travelers: routeMeta,
+        width: Number(material.uniforms.uWidth.value),
+        lift,
+        budget: null, // 已经构建完成，截断发生在上游 main.ts
+        camera: { uPixel: Number(material.uniforms.uPixel.value) },
+        actual: { vertices: position.count, indices: index.count },
+      });
     },
   };
 }
