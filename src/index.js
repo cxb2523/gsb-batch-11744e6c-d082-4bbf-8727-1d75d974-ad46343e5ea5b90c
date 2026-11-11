@@ -5,8 +5,10 @@
 // full reference.
 
 import { createHttp, ThreeWsError } from './http.js';
+import { auditThemeMesh } from './theme-audit.js';
 
 export { ThreeWsError, PaymentRequiredError, DEFAULT_BASE_URL } from './http.js';
+export { auditThemeMesh } from './theme-audit.js';
 
 // Loose Solana base58 sanity check, mirrors BASE58_RE in api/x402/mint-to-mesh.js
 // so theme() rejects obvious garbage before paying for a network round trip.

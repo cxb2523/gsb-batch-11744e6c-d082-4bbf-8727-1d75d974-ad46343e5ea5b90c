@@ -109,11 +109,11 @@ console.log(baked.bakedStorageKey, baked.sizeBytes);
 
 ## API
 
-Public exports: `inspect`, `theme`, `bake`, `createGlbTools`, `ThreeWsError`,
-`PaymentRequiredError`, and `DEFAULT_BASE_URL`. The three headline functions
-use a shared zero-config client; `createGlbTools({ baseUrl, fetch, apiKey,
-headers })` builds your own when you need a payment-aware fetch, an owner
-token, or a custom origin reused across calls.
+Public exports: `inspect`, `theme`, `bake`, `auditThemeMesh`, `createGlbTools`,
+`ThreeWsError`, `PaymentRequiredError`, and `DEFAULT_BASE_URL`. The three
+headline functions use a shared zero-config client; `createGlbTools({ baseUrl,
+fetch, apiKey, headers })` builds your own when you need a payment-aware fetch,
+an owner token, or a custom origin reused across calls.
 
 ### `inspect(url, options?) → Promise<InspectReport>`
 
@@ -179,6 +179,41 @@ texture on every face. The mint's name, symbol, and a timestamp are written to
 
 The raw endpoint returns the GLB base64-encoded under `glb.base64`; the SDK
 decodes it for you into `bytes` and leaves `glb.bytes` as the size.
+
+### `auditThemeMesh(input) → ThemeAuditReport`
+
+Locally verify the GLB carried by a `ThemedMesh` (or any
+`{ theme, bytes }` equivalent). A pure, dependency-free function: it never
+touches the network or disk, never mutates `bytes`, needs no three/glTF
+library, and never throws — malformed or non-GLB input degrades into a report
+whose affected checks fail with readable reasons. The returned object is plain
+JSON-serializable data (no `TypedArray`s, functions, or class instances).
+
+```js
+import { theme, auditThemeMesh } from '@three-ws/glb-tools';
+
+const mesh = await theme(mint);
+const audit = auditThemeMesh(mesh); // or { theme: mesh.theme, bytes: mesh.bytes }
+if (!audit.ok) {
+  for (const check of audit.checks.filter((c) => !c.passed)) {
+    console.error(`${check.name}: ${check.reason}`);
+  }
+}
+```
+
+The report summarizes the GLB container header (`magicIsGltf`, `version`,
+`declaredLength` vs `actualLength`), the JSON chunk (`assetVersion`,
+`generator`), `asset.extras` name/symbol matching, per-primitive `mode` /
+vertex / index / derived triangle counts, `baseColorFactor` matching against
+`theme.color` (per-component tolerance `1e-3`), and any embedded baseColor
+texture image (`mimeType`, `byteLength`). Its ordered `checks[]` each carry
+`{ name, passed, status, observed, reason }`, where `status` is `passed`,
+`failed`, or `not_comparable` (used when e.g. `theme.symbol` is null and there
+is no metadata to compare). Checks cover: container header and declared length,
+parseable JSON with `asset.version === '2.0'`, at least one mesh whose
+primitives all use mode 4 (TRIANGLES), a triangle count in 12–100000, the
+baseColor texture contract implied by `theme.hasImage`, the color-factor match,
+and the extras name/symbol match.
 
 ### `bake(avatarId, appearance, options?) → Promise<BakeResult>`
 
