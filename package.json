@@ -15,6 +15,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
+    "test": "node --test --experimental-strip-types src/audio/mixAudit.test.ts",
     "check": "npm run typecheck && npm run build",
     "prepare-sources": "node tools/prepare.ts",
     "paint": "node tools/paint.ts",
