@@ -2,6 +2,12 @@ import DEFAULTS from './defaults.js';
 import {
   WINDOW,
 } from './constants.js';
+
+export {
+  auditOutput,
+  EXIF_ACTIONS,
+  FALLBACK_REASONS,
+} from './audit.js';
 import {
   getAdjustedSizes,
   imageTypeToExtension,
