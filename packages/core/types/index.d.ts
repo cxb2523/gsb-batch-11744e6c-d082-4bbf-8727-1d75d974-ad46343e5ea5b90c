@@ -147,8 +147,8 @@ export function drawShape(
   shape: ShapeRecord,
   opts: { theme: Theme; store: Store; zoom?: number; ghost?: boolean; onAssetLoad?: () => void }
 ): void
-/** Point hit-test in page space. */
-export function hitShape(shape: ShapeRecord, px: number, py: number, tol: number, store: Store): boolean
+/** Point hit-test in page space. extraTol widens both the coarse filter and local tests (default 0). */
+export function hitShape(shape: ShapeRecord, px: number, py: number, tol: number, store: Store, extraTol?: number): boolean
 
 /** The ink's stroke options (perfect-freehand's). */
 export interface StrokeOptions {

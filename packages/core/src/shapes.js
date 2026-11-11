@@ -506,21 +506,40 @@ export function drawShape(ctx, shape, opts) {
 
 // ---- hit testing -----------------------------------------------------------
 
-// point hit in PAGE space; returns true when (px,py) touches the shape
-export function hitShape(shape, px, py, tol, store) {
-  const b = pageBounds(shape)
-  const wide = tol + SIZES[shape.props.size || 'm'] * 2
-  if (!boundsContain({ x: b.x - wide, y: b.y - wide, w: b.w + wide * 2, h: b.h + wide * 2 }, px, py)) return false
-  const l = toLocal(shape, px, py)
+// Floating-point slack for the coarse filter: rotation math can leave a point
+// a tiny epsilon outside the axis-aligned page bounds even when the local test
+// would accept it, so never reject on sub-pixel disagreement.
+const HIT_EPS = 1e-6
+
+// point hit in PAGE space; returns true when (px,py) touches the shape.
+// extraTol widens BOTH the coarse page-bounds prefilter and every local
+// precise test by the same amount (touch screens, etc.); 0/undefined keeps
+// the historical behavior exactly.
+export function hitShape(shape, px, py, tol, store, extraTol = 0) {
   const p = shape.props
+  const wide = tol + extraTol + SIZES[p.size || 'm'] * 2
+  const b = pageBounds(shape)
+  // Coarse filter safety under rotation: pageBounds is the rotated local
+  // bounds' axis-aligned hull, and rotation preserves distances. Every local
+  // acceptance radius is <= wide (ink reach, SIZES and half-highlighter are
+  // all covered by the local bounds' own stroke margin plus SIZES*2), so any
+  // point the local test accepts is within `wide` of this expanded rect.
+  if (!boundsContain(
+    { x: b.x - wide - HIT_EPS, y: b.y - wide - HIT_EPS, w: b.w + (wide + HIT_EPS) * 2, h: b.h + (wide + HIT_EPS) * 2 },
+    px, py,
+  )) return false
+  const l = toLocal(shape, px, py)
   switch (shape.type) {
     case 'draw':
-      return distToPolyline(l.x, l.y, p.pts, 3) <= tol + inkReach(p.size)
+      return distToPolyline(l.x, l.y, p.pts, 3) <= tol + extraTol + inkReach(p.size)
     case 'highlight':
-      return distToPolyline(l.x, l.y, p.pts, 3) <= tol + (SIZES[p.size] * HIGHLIGHT_SCALE) / 2
+      return distToPolyline(l.x, l.y, p.pts, 3) <= tol + extraTol + (SIZES[p.size] * HIGHLIGHT_SCALE) / 2
     case 'geo': {
-      const edgeTol = tol + SIZES[p.size]
+      const edgeTol = tol + extraTol + SIZES[p.size]
       if (p.geo === 'ellipse') {
+        // Degenerate ellipse (zero radius): no interior and no edge band can
+        // exist — answer false explicitly instead of trusting NaN compares.
+        if (!(p.w > 0) || !(p.h > 0)) return false
         const inside = pointInEllipse(l.x, l.y, p.w / 2, p.h / 2, p.w / 2, p.h / 2)
         if (p.fill !== 'none' || p.label) return inside || nearEllipseEdge(l, p, edgeTol)
         return nearEllipseEdge(l, p, edgeTol)
@@ -534,13 +553,14 @@ export function hitShape(shape, px, py, tol, store) {
     case 'arrow':
     case 'line': {
       const pts = sampleLinePts(p, p.bend || 0)
-      return distToPolyline(l.x, l.y, pts, 2) <= tol + SIZES[p.size]
+      return distToPolyline(l.x, l.y, pts, 2) <= tol + extraTol + SIZES[p.size]
     }
     case 'text':
     case 'note':
     case 'image': {
       const lb = localBounds(shape)
-      return l.x >= lb.x - tol && l.x <= lb.x + lb.w + tol && l.y >= lb.y - tol && l.y <= lb.y + lb.h + tol
+      const r = tol + extraTol
+      return l.x >= lb.x - r && l.x <= lb.x + lb.w + r && l.y >= lb.y - r && l.y <= lb.y + lb.h + r
     }
   }
   return false
@@ -548,7 +568,7 @@ export function hitShape(shape, px, py, tol, store) {
 
 const nearEllipseEdge = (l, p, tol) => {
   const rx = p.w / 2, ry = p.h / 2
-  if (rx <= 0 || ry <= 0) return false
+  if (!(rx > 0) || !(ry > 0)) return false
   const outer = pointInEllipse(l.x, l.y, rx, ry, rx + tol, ry + tol)
   const inner = pointInEllipse(l.x, l.y, rx, ry, Math.max(0.5, rx - tol), Math.max(0.5, ry - tol))
   return outer && !inner
