@@ -1,0 +1,12 @@
+{
+  "name": "open-3d-skills",
+  "interface": { "displayName": "Open 3D Skills" },
+  "plugins": [
+    {
+      "name": "open-3d-skills",
+      "source": { "source": "url", "url": "https://github.com/Moh4696/open-3d-skills.git", "ref": "main" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Design"
+    }
+  ]
+}

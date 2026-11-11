@@ -1,0 +1,3 @@
+interface:
+  display_name: "three.js Scene"
+  short_description: "Code-built 3D worlds with real light, shadows and 60 fps"

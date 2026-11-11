@@ -1,0 +1,33 @@
+{
+  "name": "open-3d-skills",
+  "description": "Eight agent skills for 3D and animated websites: three.js scenes built from code, scroll-scrubbed films, transparent video, cursor-following characters, exploded views, AI motion assets, real-browser checks and frame-exact recording.",
+  "owner": {
+    "name": "exploraX",
+    "url": "https://x.com/exploraX_"
+  },
+  "plugins": [
+    {
+      "name": "open-3d-skills",
+      "description": "Eight agent skills for 3D and animated websites: three.js scenes built from code, scroll-scrubbed films, transparent video, cursor-following characters, exploded views, AI motion assets, real-browser checks and frame-exact recording.",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "exploraX",
+        "url": "https://x.com/exploraX_"
+      },
+      "homepage": "https://github.com/Moh4696/open-3d-skills",
+      "repository": "https://github.com/Moh4696/open-3d-skills",
+      "license": "MIT",
+      "keywords": [
+        "skills",
+        "3d",
+        "threejs",
+        "webgl",
+        "animation",
+        "scroll",
+        "frontend",
+        "video"
+      ]
+    }
+  ]
+}

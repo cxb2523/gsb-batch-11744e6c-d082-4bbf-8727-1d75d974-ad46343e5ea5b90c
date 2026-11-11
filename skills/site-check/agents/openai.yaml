@@ -1,0 +1,3 @@
+interface:
+  display_name: "Site Check"
+  short_description: "Shoot, measure and stress a 3D or animated page in real browsers"

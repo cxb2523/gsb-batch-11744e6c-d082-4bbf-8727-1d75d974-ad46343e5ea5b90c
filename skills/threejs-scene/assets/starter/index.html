@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Pavilion · three.js starter</title>
+  <meta name="description" content="A procedural three.js scene: sky, sun, soft shadows, ambient occlusion and bloom, built from code.">
+  <!-- Pin the version. For production, vendor these files next to the page (see SKILL.md). -->
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    } }
+  </script>
+  <style>
+    :root { color-scheme: dark; --ink: #f4efe6; --muted: rgba(244, 239, 230, .62); }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0d0f12; overflow: hidden; }
+    canvas#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+    .title { position: fixed; left: clamp(16px, 4vw, 48px); top: clamp(16px, 4vw, 44px); color: var(--ink);
+      font: 600 clamp(20px, 2.4vw, 30px)/1.1 ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em;
+      text-shadow: 0 1px 12px rgba(0, 0, 0, .35); pointer-events: none; }
+    .title small { display: block; margin-top: 8px; font-weight: 400; font-size: 14px; color: var(--muted); letter-spacing: .04em; }
+    .bar { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+      display: flex; gap: 6px; padding: 6px; border-radius: 999px; background: rgba(16, 18, 22, .55);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 0 0 1px rgba(255, 255, 255, .08); }
+    .bar button { appearance: none; border: 0; border-radius: 999px; padding: 9px 14px; min-height: 40px;
+      font: 500 13px/1 ui-sans-serif, system-ui, sans-serif; color: var(--ink); background: transparent; cursor: pointer; }
+    .bar button[aria-pressed="true"] { background: rgba(255, 255, 255, .16); }
+    .bar button:focus-visible { outline: 2px solid #ffd28a; outline-offset: 2px; }
+    #loader { position: fixed; inset: 0; display: grid; place-items: center; background: #0d0f12; color: var(--muted);
+      font: 14px ui-sans-serif, system-ui, sans-serif; transition: opacity .8s ease; }
+    #loader.done { opacity: 0; pointer-events: none; }
+    @media (max-width: 560px) { .bar { width: calc(100% - 24px); justify-content: center; flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+  <canvas id="gl" tabindex="0" aria-label="A 3D pavilion on a lawn. Drag to orbit, scroll or pinch to zoom."></canvas>
+  <div class="title">Pavilion<small>procedural three.js starter</small></div>
+  <nav class="bar" aria-label="Light">
+    <button data-light="morning">Morning</button>
+    <button data-light="golden">Golden hour</button>
+    <button data-light="night">Night</button>
+  </nav>
+  <div id="loader">Building the scene</div>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

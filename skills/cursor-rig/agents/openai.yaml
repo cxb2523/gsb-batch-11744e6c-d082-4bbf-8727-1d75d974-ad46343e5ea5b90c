@@ -1,0 +1,3 @@
+interface:
+  display_name: "Cursor Rig"
+  short_description: "A painted character whose head follows the cursor, no 3D needed"

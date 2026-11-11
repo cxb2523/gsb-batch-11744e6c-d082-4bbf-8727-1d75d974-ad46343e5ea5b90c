@@ -1,0 +1,29 @@
+name: Check skills
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Skills load in every agent, manifests agree, scripts parse
+        run: |
+          npm install --no-save --no-package-lock yaml@2.6.1
+          node tests/check.mjs
+      - name: Installer works in a clean home
+        run: |
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME/.claude" "$HOME/.codex"
+          bash install.sh
+          test -L "$HOME/.claude/skills/threejs-scene" && test -L "$HOME/.codex/skills/frame-capture"
+          bash install.sh --uninstall --claude --codex
+          test ! -e "$HOME/.claude/skills/threejs-scene"

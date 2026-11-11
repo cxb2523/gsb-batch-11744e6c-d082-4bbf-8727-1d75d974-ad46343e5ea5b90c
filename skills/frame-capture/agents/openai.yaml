@@ -1,0 +1,3 @@
+interface:
+  display_name: "Frame Capture"
+  short_description: "Record any animated or 3D page to a perfectly smooth 60 fps video"
